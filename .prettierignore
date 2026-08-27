@@ -1,0 +1,10 @@
+node_modules
+.next
+.superpowers
+coverage
+playwright-report
+test-results
+supabase/.temp
+supabase/.branches
+package-lock.json
+**/*.md

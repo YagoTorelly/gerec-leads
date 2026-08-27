@@ -1,0 +1,18 @@
+# Arquivos temporários de ferramentas
+.superpowers/
+
+# Dependências e builds
+node_modules/
+.next/
+coverage/
+playwright-report/
+test-results/
+
+# Configuração local e segredos
+.env
+.env.*
+!.env.example
+
+# Estado local do Supabase
+supabase/.branches/
+supabase/.temp/

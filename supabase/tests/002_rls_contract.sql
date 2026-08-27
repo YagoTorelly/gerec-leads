@@ -1,0 +1,16 @@
+begin;
+select plan(12);
+select ok((select relrowsecurity from pg_class where oid = 'public.profiles'::regclass), 'profiles RLS enabled');
+select ok((select relforcerowsecurity from pg_class where oid = 'public.leads'::regclass), 'leads RLS forced');
+select ok((select relforcerowsecurity from pg_class where oid = 'public.audit_log'::regclass), 'audit RLS forced');
+select ok(exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'profiles' and policyname = 'profiles_select_self_or_admin'), 'profile policy');
+select ok(exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'leads' and policyname = 'leads_admin_select'), 'lead admin policy');
+select ok(exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'leads' and policyname = 'leads_current_seller_select'), 'lead seller policy');
+select ok(exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'feedbacks' and policyname = 'feedbacks_current_or_historical_select'), 'feedback seller policy');
+select ok(exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'contact_attempts' and policyname = 'attempts_current_or_historical_select'), 'attempt policy');
+select ok(exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'audit_log' and policyname = 'audit_admin_select'), 'audit policy');
+select ok(has_table_privilege('authenticated', 'public.profiles', 'SELECT'), 'profiles select grant');
+select ok(not has_table_privilege('authenticated', 'public.leads', 'UPDATE'), 'leads update denied');
+select ok(not has_table_privilege('authenticated', 'public.audit_log', 'SELECT'), 'audit select denied');
+select * from finish();
+rollback;

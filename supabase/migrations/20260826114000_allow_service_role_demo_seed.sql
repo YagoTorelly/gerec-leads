@@ -1,0 +1,12 @@
+create policy import_runs_service_role_write on public.import_runs for all to service_role using (true) with check (true);
+create policy campaigns_service_role_write on public.campaigns for all to service_role using (true) with check (true);
+create policy companies_service_role_write on public.companies for all to service_role using (true) with check (true);
+create policy leads_service_role_write on public.leads for all to service_role using (true) with check (true);
+create policy source_records_service_role_write on public.lead_source_records for all to service_role using (true) with check (true);
+create policy assignments_service_role_write on public.assignments for all to service_role using (true) with check (true);
+create policy feedback_cycles_service_role_write on public.feedback_cycles for all to service_role using (true) with check (true);
+create policy feedbacks_service_role_write on public.feedbacks for all to service_role using (true) with check (true);
+create policy attempts_service_role_write on public.contact_attempts for all to service_role using (true) with check (true);
+create policy qualification_events_service_role_write on public.qualification_events for all to service_role using (true) with check (true);
+create policy sales_service_role_write on public.sales for all to service_role using (true) with check (true);
+create policy audit_log_service_role_write on public.audit_log for all to service_role using (true) with check (true);
