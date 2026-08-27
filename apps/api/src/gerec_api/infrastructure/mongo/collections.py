@@ -13,7 +13,7 @@ class MongoCollections:
     SESSIONS: Final = "sessions"
     SELLER_QUEUE: Final = "seller_queue"
     QUEUE_STATE: Final = "queue_state"
-    SELLER_SKIP_BALANCES: Final = "seller_skip_balances"
+    SKIP_BALANCES: Final = "skip_balances"
     CAMPAIGNS: Final = "campaigns"
     COMPANIES: Final = "companies"
     LEADS: Final = "leads"
@@ -24,7 +24,7 @@ class MongoCollections:
     CONTACT_ATTEMPTS: Final = "contact_attempts"
     QUALIFICATION_EVENTS: Final = "qualification_events"
     SALES: Final = "sales"
-    BUSINESS_HOLIDAYS: Final = "business_holidays"
+    HOLIDAYS: Final = "holidays"
     SOURCE_SNAPSHOTS: Final = "source_snapshots"
     FIELD_OVERRIDES: Final = "field_overrides"
     SOURCE_CONFLICTS: Final = "source_conflicts"
@@ -32,13 +32,14 @@ class MongoCollections:
     NOTIFICATION_INCIDENTS: Final = "notification_incidents"
     AUDIT_LOG: Final = "audit_log"
     SYSTEM_SETTINGS: Final = "system_settings"
+    COMMAND_RESULTS: Final = "command_results"
 
     ALL: Final = (
         USERS,
         SESSIONS,
         SELLER_QUEUE,
         QUEUE_STATE,
-        SELLER_SKIP_BALANCES,
+        SKIP_BALANCES,
         CAMPAIGNS,
         COMPANIES,
         LEADS,
@@ -49,7 +50,7 @@ class MongoCollections:
         CONTACT_ATTEMPTS,
         QUALIFICATION_EVENTS,
         SALES,
-        BUSINESS_HOLIDAYS,
+        HOLIDAYS,
         SOURCE_SNAPSHOTS,
         FIELD_OVERRIDES,
         SOURCE_CONFLICTS,
@@ -57,6 +58,7 @@ class MongoCollections:
         NOTIFICATION_INCIDENTS,
         AUDIT_LOG,
         SYSTEM_SETTINGS,
+        COMMAND_RESULTS,
     )
 
 

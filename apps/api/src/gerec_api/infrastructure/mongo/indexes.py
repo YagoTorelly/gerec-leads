@@ -21,10 +21,45 @@ class MongoIndex:
 
     def apply(self, target: Collection) -> str:
         """Cria ou reconcilia o \u00edndice sem apagar documentos existentes."""
-        options: dict[str, Any] = {"name": self.name, "unique": self.unique}
+        existing = target.index_information().get(self.name)
+        if existing is None:
+            return self._create(target, self.name)
+        if self._matches(existing):
+            return self.name
+
+        replacement_name = f"{self.name}__replacement"
+        replacement = target.index_information().get(replacement_name)
+        if replacement is None:
+            self._create(target, replacement_name)
+        elif not self._matches(replacement):
+            target.drop_index(replacement_name)
+            self._create(target, replacement_name)
+
+        target.drop_index(self.name)
+        try:
+            return self._create(target, self.name)
+        except Exception:
+            # O \u00edndice tempor\u00e1rio continua protegendo os documentos para a pr\u00f3xima tentativa de bootstrap.
+            raise
+        finally:
+            if self._matches(target.index_information().get(self.name, {})):
+                target.drop_index(replacement_name)
+
+    def _create(self, target: Collection, name: str) -> str:
+        return target.create_index(self.keys, **self._options(name))
+
+    def _options(self, name: str) -> dict[str, Any]:
+        options: dict[str, Any] = {"name": name, "unique": self.unique}
         if self.partial_filter is not None:
             options["partialFilterExpression"] = self.partial_filter
-        return target.create_index(self.keys, **options)
+        return options
+
+    def _matches(self, index: dict[str, Any]) -> bool:
+        return (
+            index.get("key") == list(self.keys)
+            and index.get("unique", False) is self.unique
+            and index.get("partialFilterExpression") == self.partial_filter
+        )
 
 
 INDEXES: Final[tuple[MongoIndex, ...]] = (
@@ -65,6 +100,12 @@ INDEXES: Final[tuple[MongoIndex, ...]] = (
         MongoCollections.SESSIONS,
         (("tokenHash", ASCENDING),),
         "sessions_token_hash_unique",
+        unique=True,
+    ),
+    MongoIndex(
+        MongoCollections.COMMAND_RESULTS,
+        (("idempotencyKey", ASCENDING),),
+        "command_results_idempotency_key_unique",
         unique=True,
     ),
 )

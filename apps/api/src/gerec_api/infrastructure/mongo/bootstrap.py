@@ -13,12 +13,14 @@ SCHEMA_VALIDATORS: Final[dict[str, dict[str, Any]]] = {
     MongoCollections.USERS: {
         "$jsonSchema": {
             "bsonType": "object",
+            "required": ["emailNormalized"],
             "properties": {"emailNormalized": {"bsonType": "string", "minLength": 1}},
         }
     },
     MongoCollections.SOURCE_RECORDS: {
         "$jsonSchema": {
             "bsonType": "object",
+            "required": ["sourceLeadId"],
             "properties": {"sourceLeadId": {"bsonType": "string", "minLength": 1}},
         }
     },
@@ -33,6 +35,7 @@ SCHEMA_VALIDATORS: Final[dict[str, dict[str, Any]]] = {
     MongoCollections.LEADS: {
         "$jsonSchema": {
             "bsonType": "object",
+            "required": ["companyId", "campaignId", "archivedAt"],
             "properties": {
                 "companyId": {"bsonType": "objectId"},
                 "campaignId": {"bsonType": "objectId"},
@@ -43,6 +46,7 @@ SCHEMA_VALIDATORS: Final[dict[str, dict[str, Any]]] = {
     MongoCollections.SALES: {
         "$jsonSchema": {
             "bsonType": "object",
+            "required": ["leadId", "reversedAt"],
             "properties": {
                 "leadId": {"bsonType": "objectId"},
                 "reversedAt": {"bsonType": ["date", "null"]},
@@ -52,7 +56,20 @@ SCHEMA_VALIDATORS: Final[dict[str, dict[str, Any]]] = {
     MongoCollections.SESSIONS: {
         "$jsonSchema": {
             "bsonType": "object",
+            "required": ["tokenHash"],
             "properties": {"tokenHash": {"bsonType": "string", "minLength": 1}},
+        }
+    },
+    MongoCollections.COMMAND_RESULTS: {
+        "$jsonSchema": {
+            "bsonType": "object",
+            "required": ["commandName", "idempotencyKey", "result", "createdAt"],
+            "properties": {
+                "commandName": {"bsonType": "string", "minLength": 1},
+                "idempotencyKey": {"bsonType": "string", "minLength": 1},
+                "result": {"bsonType": "object"},
+                "createdAt": {"bsonType": "date"},
+            },
         }
     },
 }

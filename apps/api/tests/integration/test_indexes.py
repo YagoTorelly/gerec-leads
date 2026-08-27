@@ -12,9 +12,10 @@ from pymongo.errors import DuplicateKeyError, PyMongoError, ServerSelectionTimeo
 
 from gerec_api.domain.documents import InvalidDocumentError, prepare_company_for_persistence
 from gerec_api.infrastructure.mongo import collections as collection_contracts
-from gerec_api.infrastructure.mongo.bootstrap import ensure_schema
+from gerec_api.infrastructure.mongo.bootstrap import SCHEMA_VALIDATORS, ensure_schema
+from gerec_api.infrastructure.mongo.companies import CompanyRepository
 from gerec_api.infrastructure.mongo.collections import MongoCollections
-from gerec_api.infrastructure.mongo.indexes import INDEXES
+from gerec_api.infrastructure.mongo.indexes import INDEXES, MongoIndex
 
 
 def test_canonical_collection_registry_exposes_users() -> None:
@@ -22,9 +23,21 @@ def test_canonical_collection_registry_exposes_users() -> None:
     assert collection_contracts.MongoCollections.USERS == "users"
 
 
+def test_canonical_collection_registry_uses_the_migration_contract_names() -> None:
+    """Breaks if a legacy collection name leaks into new MongoDB queries."""
+    assert collection_contracts.MongoCollections.SKIP_BALANCES == "skip_balances"
+    assert collection_contracts.MongoCollections.HOLIDAYS == "holidays"
+    assert collection_contracts.MongoCollections.COMMAND_RESULTS == "command_results"
+
+
 def test_document_validator_is_available_to_guard_persistence() -> None:
     """Breaks if company writes lack the domain document-validation boundary."""
     assert importlib.util.find_spec("gerec_api.domain.documents") is not None
+
+
+def test_company_repository_uses_the_document_validation_boundary() -> None:
+    """Breaks if a MongoDB company write can bypass CPF/CNPJ checksum validation."""
+    assert importlib.util.find_spec("gerec_api.infrastructure.mongo.companies") is not None
 
 
 def test_document_domain_validation_normalizes_valid_values_and_rejects_invalid_ones() -> None:
@@ -34,6 +47,26 @@ def test_document_domain_validation_normalizes_valid_values_and_rejects_invalid_
     assert prepared == {"documentNormalized": "04252011000110", "name": "WTG"}
     with pytest.raises(InvalidDocumentError):
         prepare_company_for_persistence({"documentNormalized": "11.111.111/1111-11"})
+
+
+def test_company_repository_rejects_a_checksum_invalid_document_before_any_write() -> None:
+    """Breaks if the persistence adapter sends checksum-invalid CNPJ data to MongoDB."""
+
+    class TrackingCollection:
+        def __init__(self) -> None:
+            self.documents = []
+
+        def insert_one(self, document):
+            self.documents.append(document)
+            return document
+
+    target = TrackingCollection()
+    repository = CompanyRepository(target)
+
+    with pytest.raises(InvalidDocumentError):
+        repository.insert({"documentNormalized": "12.345.678/0001-00"})
+
+    assert target.documents == []
 
 
 def test_index_contract_covers_each_persisted_identity_and_active_lifecycle() -> None:
@@ -49,7 +82,75 @@ def test_index_contract_covers_each_persisted_identity_and_active_lifecycle() ->
     assert definitions["leads_active_company_campaign_unique"].partial_filter == {"archivedAt": None}
     assert definitions["sales_active_lead_unique"].partial_filter == {"reversedAt": None}
     assert definitions["sessions_token_hash_unique"].keys == (("tokenHash", 1),)
+    assert definitions["command_results_idempotency_key_unique"].keys == (("idempotencyKey", 1),)
     assert all(definition.unique for definition in INDEXES)
+
+
+def test_command_results_enforce_idempotency_key_and_command_receipt_shape() -> None:
+    """Breaks if a repeated critical command can create another operational result."""
+    definitions = {definition.name: definition for definition in INDEXES}
+
+    assert definitions["command_results_idempotency_key_unique"].keys == (("idempotencyKey", 1),)
+    assert SCHEMA_VALIDATORS[MongoCollections.COMMAND_RESULTS]["$jsonSchema"]["required"] == [
+        "commandName",
+        "idempotencyKey",
+        "result",
+        "createdAt",
+    ]
+
+
+def test_indexed_fields_are_required_except_for_the_explicitly_optional_document_identity() -> None:
+    """Breaks if a document without an indexed identity joins an active unique index."""
+    required_by_collection = {
+        name: definition["$jsonSchema"].get("required", []) for name, definition in SCHEMA_VALIDATORS.items()
+    }
+
+    assert required_by_collection[MongoCollections.USERS] == ["emailNormalized"]
+    assert required_by_collection[MongoCollections.SOURCE_RECORDS] == ["sourceLeadId"]
+    assert required_by_collection[MongoCollections.LEADS] == ["companyId", "campaignId", "archivedAt"]
+    assert required_by_collection[MongoCollections.SALES] == ["leadId", "reversedAt"]
+    assert required_by_collection[MongoCollections.SESSIONS] == ["tokenHash"]
+    assert "documentNormalized" not in required_by_collection[MongoCollections.COMPANIES]
+
+
+def test_mongo_index_reconciles_a_conflicting_named_index_without_touching_documents() -> None:
+    """Breaks if bootstrap cannot safely replace an obsolete index definition by name."""
+
+    class IndexCollection:
+        def __init__(self) -> None:
+            self.documents = [{"emailNormalized": "yago@wtgseguros.com.br"}]
+            self.indexes = {
+                "users_email_normalized_unique": {"key": [("emailNormalized", 1)], "unique": False}
+            }
+
+        def index_information(self):
+            return self.indexes
+
+        def create_index(self, keys, **options):
+            name = options["name"]
+            expected = {"key": list(keys), "unique": options.get("unique", False)}
+            if "partialFilterExpression" in options:
+                expected["partialFilterExpression"] = options["partialFilterExpression"]
+            existing = self.indexes.get(name)
+            if existing is not None and existing != expected:
+                raise RuntimeError("IndexOptionsConflict")
+            self.indexes[name] = expected
+            return name
+
+        def drop_index(self, name):
+            del self.indexes[name]
+
+    target = IndexCollection()
+    definition = MongoIndex(
+        MongoCollections.USERS,
+        (("emailNormalized", 1),),
+        "users_email_normalized_unique",
+        unique=True,
+    )
+
+    assert definition.apply(target) == "users_email_normalized_unique"
+    assert target.documents == [{"emailNormalized": "yago@wtgseguros.com.br"}]
+    assert target.indexes == {"users_email_normalized_unique": {"key": [("emailNormalized", 1)], "unique": True}}
 
 
 @pytest.fixture
@@ -100,6 +201,7 @@ def test_ensure_schema_creates_canonical_collections_and_is_idempotent(mongo_db)
         "partialFilterExpression": {"reversedAt": None},
     }
     assert indexes[MongoCollections.SESSIONS]["sessions_token_hash_unique"]["unique"] is True
+    assert indexes[MongoCollections.COMMAND_RESULTS]["command_results_idempotency_key_unique"]["unique"] is True
 
 
 def test_unique_indexes_protect_active_records_without_blocking_archived_or_reversed_ones(mongo_db) -> None:
@@ -116,6 +218,14 @@ def test_unique_indexes_protect_active_records_without_blocking_archived_or_reve
     )
     mongo_db[MongoCollections.SALES].insert_one({"leadId": lead_id, "reversedAt": None})
     mongo_db[MongoCollections.SESSIONS].insert_one({"tokenHash": "sha256-token"})
+    mongo_db[MongoCollections.COMMAND_RESULTS].insert_one(
+        {
+            "commandName": "lead.assign",
+            "idempotencyKey": "command-1",
+            "result": {"assignmentId": "assignment-1"},
+            "createdAt": datetime.now(UTC),
+        }
+    )
 
     with pytest.raises(DuplicateKeyError):
         mongo_db[MongoCollections.USERS].insert_one({"emailNormalized": "yago@wtgseguros.com.br"})
@@ -131,6 +241,15 @@ def test_unique_indexes_protect_active_records_without_blocking_archived_or_reve
         mongo_db[MongoCollections.SALES].insert_one({"leadId": lead_id, "reversedAt": None})
     with pytest.raises(DuplicateKeyError):
         mongo_db[MongoCollections.SESSIONS].insert_one({"tokenHash": "sha256-token"})
+    with pytest.raises(DuplicateKeyError):
+        mongo_db[MongoCollections.COMMAND_RESULTS].insert_one(
+            {
+                "commandName": "lead.assign",
+                "idempotencyKey": "command-1",
+                "result": {"assignmentId": "assignment-1"},
+                "createdAt": datetime.now(UTC),
+            }
+        )
 
     mongo_db[MongoCollections.LEADS].insert_one(
         {"companyId": company_id, "campaignId": campaign_id, "archivedAt": datetime.now(UTC)}
@@ -144,3 +263,21 @@ def test_company_schema_rejects_malformed_normalized_document(mongo_db) -> None:
 
     with pytest.raises(WriteError):
         mongo_db[MongoCollections.COMPANIES].insert_one({"documentNormalized": "invalid"})
+
+
+def test_schema_rejects_missing_indexed_fields_but_allows_a_company_without_document(mongo_db) -> None:
+    """Breaks if active records can be stored without their indexed identity fields."""
+    ensure_schema(mongo_db)
+
+    for name, payload in (
+        (MongoCollections.USERS, {}),
+        (MongoCollections.SOURCE_RECORDS, {}),
+        (MongoCollections.LEADS, {"companyId": ObjectId(), "campaignId": ObjectId()}),
+        (MongoCollections.SALES, {"leadId": ObjectId()}),
+        (MongoCollections.SESSIONS, {}),
+        (MongoCollections.COMMAND_RESULTS, {"commandName": "lead.assign"}),
+    ):
+        with pytest.raises(WriteError):
+            mongo_db[name].insert_one(payload)
+
+    mongo_db[MongoCollections.COMPANIES].insert_one({"name": "Documento pendente"})
