@@ -18,10 +18,10 @@ A IA responsável pelo desenvolvimento deve:
 3. Identificar contradições entre o código existente e esta especificação antes de continuar.
 4. Produzir um plano de implementação dividido em etapas pequenas e verificáveis.
 5. Implementar primeiro o núcleo transacional e seus testes; a interface não deve anteceder as regras críticas de fila.
-6. Usar migrações versionadas para qualquer alteração de banco de dados.
+6. Versionar toda alteração de schema, índices ou validações do MongoDB.
 7. Aplicar TDD nas regras de distribuição, prazo útil, duplicidade, permissões e resultados finais.
-8. Não colocar a lógica crítica de rodízio dentro do n8n.
-9. Não expor chaves administrativas ou `service_role` no navegador.
+8. Manter a lógica crítica de rodízio no backend/API Python, nunca em jobs de automação.
+9. Não expor credenciais administrativas ou de banco no navegador.
 10. Considerar concluído somente o que tiver critérios de aceite automatizados e evidência de validação.
 
 ### Prompt curto de inicialização para a IA desenvolvedora
@@ -87,7 +87,7 @@ Sem uma fonte operacional única, o rodízio pode se tornar injusto, leads podem
 - Garantir distribuição exatamente uma vez, mesmo com sincronizações ou requisições simultâneas.
 - Tornar importações idempotentes.
 - Preservar histórico completo de alterações, atribuições e resultados.
-- Aplicar isolamento por perfil no banco de dados, não apenas na interface.
+- Aplicar isolamento por perfil no backend/API e em toda consulta ao banco, não apenas na interface.
 - Manter integrações externas desacopladas do núcleo de negócio.
 - Permitir evolução posterior para WhatsApp corporativo sem refazer a modelagem principal.
 
@@ -152,29 +152,33 @@ A fase posterior deverá usar um único número corporativo compartilhado. O cha
 
 ## 6. Abordagens arquiteturais avaliadas
 
-### 6.1 Opção recomendada — núcleo transacional no Supabase/PostgreSQL
+### 6.1 Opção aprovada — backend Python transacional com MongoDB
 
-**Composição:** Next.js/React + TypeScript; Supabase Auth/PostgreSQL/RLS; n8n para Google Sheets, e-mails e agendas; Vercel para o frontend e APIs compatíveis.
+**Composição:** Next.js/React + TypeScript como cliente web hospedado na Vercel; backend/API e automações em Python hospedados na Railway; MongoDB como única fonte de persistência.
 
 **Vantagens:**
 
-- A atribuição ocorre em transação de banco.
-- Regras de concorrência podem usar bloqueios e constraints.
+- A atribuição ocorre em transação do MongoDB.
+- Regras de concorrência usam transações, escritas condicionais, índices únicos e controle de versão.
 - O histórico e a auditoria permanecem próximos dos dados.
-- RLS protege os dados mesmo se a interface tiver uma falha.
-- O n8n pode falhar ou repetir um evento sem duplicar atribuições.
+- O backend Python aplica autorização por perfil em todos os comandos e consultas.
+- Jobs podem falhar ou repetir um evento sem duplicar atribuições, pois outbox e comandos são idempotentes.
 
-**Desvantagem:** exige cuidado maior na modelagem inicial e nos testes do banco.
+**Desvantagem:** transações do MongoDB exigem replica set em todos os ambientes e testes explícitos de concorrência, autorização e recuperação.
 
 **Decisão:** adotar esta abordagem.
 
-### 6.2 Alternativa rejeitada — toda a regra de fila no n8n
+### 6.2 Alternativa rejeitada — regra de fila em automações externas
 
-Seria mais rápida para uma demonstração, mas exporia a operação a condições de corrida, execuções duplicadas, dificuldade de reprocessamento e baixa testabilidade. O n8n continuará importante, porém somente como orquestrador de integrações.
+Seria mais rápida para uma demonstração, mas exporia a operação a condições de corrida, execuções duplicadas, dificuldade de reprocessamento e baixa testabilidade. As automações serão jobs Python na Railway e atuarão somente como adaptadores idempotentes; não controlarão regras de negócio.
 
-### 6.3 Alternativa adiada — backend totalmente próprio
+### 6.3 Alternativa rejeitada — acesso do cliente web ao banco
 
-Um serviço Node.js independente daria controle completo, mas aumentaria infraestrutura, autenticação, observabilidade e manutenção sem benefício proporcional para o tamanho inicial da equipe. Pode ser reconsiderado se o produto crescer para múltiplas empresas ou volume muito superior.
+Conectar o Next.js/React diretamente ao MongoDB reduziria a separação de responsabilidades e permitiria contornar autorização e invariantes do domínio. O cliente web acessará somente a API Python.
+
+### 6.4 Tecnologias removidas da arquitetura nova
+
+O sistema novo não usará Supabase, PostgreSQL, RLS, `service_role` nem n8n. Artefatos legados dessas tecnologias podem permanecer temporariamente no repositório até uma tarefa própria de remoção, mas não são fonte de verdade nem destino de novas implementações.
 
 ---
 
@@ -182,33 +186,33 @@ Um serviço Node.js independente daria controle completo, mas aumentaria infraes
 
 ```mermaid
 flowchart TD
-    A["Google Sheets"] -->|"leitura a cada 5 min"| B["n8n: ingestão"]
-    B -->|"comando idempotente"| C["API/RPC de ingestão"]
-    C --> D["Supabase PostgreSQL"]
-    D --> E["Motor transacional de fila"]
+    A["Google Sheets"] -->|"leitura a cada 5 min"| B["Job Python de ingestão — Railway"]
+    B -->|"comando idempotente"| C["Backend/API Python — Railway"]
+    C --> D["MongoDB — banco gerec_leads"]
+    C --> E["Motor transacional de fila"]
     E --> D
     D --> F["Outbox de eventos"]
-    F --> G["n8n: e-mails e agendas"]
-    H["Next.js / React"] -->|"JWT + RLS"| D
-    H --> I["Administrador e vendedores"]
+    F --> G["Workers Python de notificações — Railway"]
+    H["Next.js / React — Vercel"] -->|"HTTPS; sem acesso direto ao banco"| C
+    I["Administrador e vendedores"] --> H
 ```
 
 ### 7.1 Responsabilidades por componente
 
 | Componente | Responsabilidade | Não deve fazer |
 |---|---|---|
-| Next.js/React | Interface, validação de experiência, APIs/ações de servidor | Decidir sozinho quem recebe um lead |
-| Supabase Auth | Login, recuperação de senha, sessão | Cadastro público |
-| PostgreSQL | Fonte de verdade, fila, ownership, estados, histórico, constraints | Enviar e-mails diretamente |
-| RLS | Limitar leitura e escrita por usuário | Substituir validações de domínio |
-| n8n ingestão | Ler a planilha, normalizar payload e chamar comando idempotente | Manter cursor de fila ou escolher vendedor |
-| n8n notificações | Consumir eventos, consolidar e enviar e-mails | Alterar resultado de lead |
+| Next.js/React na Vercel | Cliente web, apresentação e validação de experiência | Acessar MongoDB ou decidir regras críticas |
+| Backend/API Python na Railway | Autenticação, autorização, comandos, consultas e regras críticas | Delegar invariantes ao cliente ou aos jobs |
+| MongoDB (`gerec_leads`) | Única fonte de persistência para estados, histórico, auditoria e outbox | Ser acessado diretamente pelo cliente web |
+| Jobs Python na Railway | Ler a planilha, normalizar payload, consumir outbox e chamar comandos idempotentes | Manter cursor de fila, escolher vendedor ou alterar resultado por conta própria |
 | Google Sheets | Entrada de dados da operação | Receber atualizações do sistema |
-| Vercel | Hospedagem da aplicação | Armazenar segredos no cliente |
+| Vercel | Hospedagem do cliente Next.js/React | Hospedar o núcleo Python ou armazenar segredos no cliente |
+
+O MongoDB usa o banco `gerec_leads`, com coleções normalizadas por agregado e referência explícita entre entidades. Índices únicos, validações de schema e transações multi-documento protegem os invariantes; essas transações só são suportadas sobre replica set, obrigatório em desenvolvimento, staging e produção.
 
 ### 7.2 Princípio estrutural
 
-As ações críticas deverão ser comandos explícitos do domínio. Não se deve permitir que o frontend atualize diretamente colunas sensíveis como `assignee_id`, `queue_cursor`, `won_by` ou `remaining_skips`.
+As ações críticas deverão ser comandos explícitos do domínio implementados em Python. Não se deve permitir que o frontend atualize diretamente campos sensíveis como `assignee_id`, `queue_cursor`, `won_by` ou `remaining_skips`, nem que possua credencial ou conexão com MongoDB.
 
 ---
 
@@ -619,9 +623,9 @@ Se todos os vendedores disponíveis possuírem créditos de pulo, o algoritmo po
 ### 15.7 Concorrência
 
 - Duas sincronizações simultâneas não podem ler e atualizar o mesmo cursor sem bloqueio.
-- Usar lock transacional exclusivo para a fila global, por exemplo advisory lock ou linha única com `SELECT ... FOR UPDATE`.
+- Usar uma transação MongoDB que faça escrita condicional no documento único de `queue_state`, com versão, dentro de uma sessão conectada a replica set.
 - A atribuição, o avanço do cursor, o consumo de crédito e a criação do histórico devem confirmar ou falhar juntos.
-- Cada lead possui constraint que impede duas atribuições atuais.
+- Cada lead possui índice único parcial que impede duas atribuições atuais.
 
 ### 15.8 Reordenação
 
@@ -964,8 +968,8 @@ As categorias não devem ser combinadas no mesmo e-mail:
 
 ### 22.4 Outbox e idempotência
 
-- A transação de negócio grava um evento em `notification_outbox`.
-- O n8n consome eventos pendentes.
+- A transação de negócio grava um evento na coleção `notification_outbox`.
+- Um worker Python idempotente na Railway consome eventos pendentes.
 - Cada mensagem usa uma chave idempotente.
 - Falha de e-mail não desfaz atribuição ou feedback.
 - Reenvios preservam o mesmo evento e incrementam tentativas.
@@ -1109,7 +1113,7 @@ Separar em abas ou grupos:
 
 ### UC-01 — Sincronizar nova linha
 
-**Ator:** n8n/serviço.  
+**Ator:** job Python de integração na Railway.
 **Pré-condição:** linha possui ID do Lead.  
 **Fluxo:** normalizar → validar → deduplicar → resolver campanha/empresa → gravar → distribuir ou deixar pendente.  
 **Pós-condição:** uma única ocorrência criada ou atualizada, com histórico da sincronização.
@@ -1164,7 +1168,9 @@ Separar em abas ou grupos:
 
 ---
 
-## 25. Modelo de dados recomendado
+## 25. Modelo de dados recomendado no MongoDB
+
+O banco canônico chama-se `gerec_leads`. Cada entidade abaixo corresponde a uma coleção normalizada, ligada por identificadores estáveis. Não duplicar estado crítico em documentos embutidos quando isso impedir atualização atômica, auditoria ou aplicação uniforme de permissões.
 
 ### 25.1 Entidades
 
@@ -1209,12 +1215,12 @@ erDiagram
     PROFILES ||--o| SELLER_SKIP_BALANCES : compensa
 ```
 
-### 25.3 Constraints essenciais
+### 25.3 Índices e validações essenciais
 
-- `profiles.email` único sem diferença de caixa.
-- `companies.cnpj` único quando presente e válido.
-- `lead_source_records.source_lead_id` único.
-- ocorrência ativa única por `company_id + campaign_id`.
+- índice único de `profiles.email_normalized`.
+- índice único parcial de `companies.cnpj` quando presente e válido.
+- índice único de `lead_source_records.source_lead_id`.
+- índice único parcial para ocorrência ativa por `company_id + campaign_id`.
 - uma atribuição atual por lead.
 - `sales.lead_id` único.
 - saldo de pulo maior ou igual a zero.
@@ -1224,9 +1230,11 @@ erDiagram
 - motivo de desqualificação pertencente ao conjunto permitido.
 - `won_at` obrigatório quando conversão for ganha.
 
-### 25.4 Histórico
+### 25.4 Histórico e transações
 
-Tabelas de evento não devem ser atualizadas destrutivamente. Correções criam eventos de reversão ou novos registros. Dados atuais podem ser materializados nas tabelas principais para consulta rápida, mas devem ser reproduzíveis a partir do histórico crítico.
+Coleções de evento não devem ser atualizadas destrutivamente. Correções criam eventos de reversão ou novos documentos. Dados atuais podem ser materializados nas coleções principais para consulta rápida, mas devem ser reproduzíveis a partir do histórico crítico.
+
+Comandos que alteram mais de uma coleção — incluindo atribuição, cursor, créditos, histórico, auditoria e outbox — executam em uma única transação MongoDB. Todos os ambientes precisam fornecer replica set; a aplicação deve falhar de forma explícita na inicialização quando o ambiente não suportar essas transações.
 
 ---
 
@@ -1292,7 +1300,7 @@ Todos exigem comentário; `disqualified` exige motivo; `won` cria registro de ve
 
 ### 26.5 Leitura
 
-As consultas devem aplicar RLS e filtros no servidor. Não baixar todos os leads para filtrar no navegador.
+As consultas devem aplicar autorização por perfil e filtros no backend Python. Não baixar todos os leads para filtrar no navegador e nunca consultar MongoDB diretamente a partir do cliente web.
 
 ---
 
@@ -1330,12 +1338,12 @@ Cada evento deve ter ID único, instante, agregado, ator quando aplicável e pay
 
 ### 28.1 Controles obrigatórios
 
-- RLS em todas as tabelas com dados comerciais.
-- Políticas de vendedor baseadas no responsável atual e em histórico permitido.
+- Autorização por perfil em todos os comandos e consultas do backend Python.
+- Filtros obrigatórios de vendedor baseados no responsável atual e no histórico permitido, aplicados antes de consultar ou alterar coleções.
 - Rotas administrativas verificam papel no servidor.
-- `service_role` somente em ambiente seguro de backend/n8n.
+- Credenciais do MongoDB e chaves administrativas somente no backend e nos jobs Python da Railway.
 - Segredos em variáveis de ambiente ou cofre, nunca no repositório.
-- Senhas gerenciadas pelo Supabase Auth; nunca armazenadas em tabela própria.
+- Senhas armazenadas somente como hash forte pelo serviço de autenticação do backend Python; nunca em texto puro nem em documentos comerciais.
 - Proteção contra enumeração de contas no login/recuperação.
 - Auditoria de exportação e ações finais.
 - Sessão expirada e logout confiável.
@@ -1344,13 +1352,13 @@ Cada evento deve ter ID único, instante, agregado, ator quando aplicável e pay
 
 Telefone, e-mail, nome, CPF/CNPJ e histórico de contato são dados protegidos. Exibir apenas a usuários com necessidade operacional. Logs técnicos não devem copiar payload completo sem necessidade.
 
-### 28.3 RLS esperada
+### 28.3 Autorização e escopo de dados esperados
 
 - Administrador: acesso operacional completo.
-- Vendedor: leitura de leads cujo responsável atual é ele; histórico necessário de leads que atendeu pode ser mantido em visão restrita, sem permitir novas alterações.
+- Vendedor: leitura de leads cujo responsável atual é ele; histórico necessário de leads que atendeu é retornado por projeção restrita, sem permitir novas alterações.
 - Feedback: inserção somente pelo responsável atual.
-- Fila global: vendedor recebe apenas uma projeção da própria posição.
-- Métricas: consultas de vendedor sempre filtradas por seu usuário no banco.
+- Fila global: o backend retorna ao vendedor apenas uma projeção da própria posição.
+- Métricas: consultas de vendedor sempre incluem o identificador do usuário autenticado no filtro MongoDB e passam por testes de acesso cruzado.
 
 ---
 
@@ -1431,7 +1439,7 @@ Cada registro deve conter `actor_id`, ação, entidade, antes/depois quando apli
 - último e-mail enviado por fluxo;
 - eventos pendentes na outbox;
 - falhas definitivas;
-- versão da aplicação e da migração.
+- versão da aplicação e do schema de dados.
 
 ### 31.2 Logs
 
@@ -1446,7 +1454,7 @@ Cada registro deve conter `actor_id`, ação, entidade, antes/depois quando apli
 - fila de outbox crescendo;
 - erro de autenticação do Google Sheets;
 - falha do provedor de e-mail;
-- migração de banco inconsistente.
+- alteração de schema ou índice inconsistente.
 
 ---
 
@@ -1464,7 +1472,7 @@ Cada registro deve conter `actor_id`, ação, entidade, antes/depois quando apli
 | Localização | pt-BR, moeda BRL e horário de São Paulo |
 | Histórico | Dados operacionais não são apagados fisicamente por ações comuns |
 | Backup | Backups automáticos do banco e procedimento de restauração testado |
-| Segurança | RLS, segredos server-side, auditoria e princípio do menor privilégio |
+| Segurança | Autorização server-side, filtros por perfil, segredos fora do cliente, auditoria e princípio do menor privilégio |
 
 ---
 
@@ -1489,8 +1497,8 @@ Cada registro deve conter `actor_id`, ação, entidade, antes/depois quando apli
 - mesmo CNPJ/campanha diferente;
 - owner bloqueado;
 - atribuição temporária;
-- constraint de venda única;
-- RLS de administrador/vendedor;
+- índice único de venda por lead;
+- autorização e isolamento de administrador/vendedor;
 - override e conflito;
 - arquivamento de linha removida;
 - outbox idempotente.
@@ -1691,8 +1699,8 @@ Testes de SLA não podem depender do relógio real. O serviço de tempo deve ser
 Esta ordem é de dependência, não uma autorização automática para implementar.
 
 1. Fundação do repositório, ambientes e qualidade.
-2. Modelo de dados e migrações.
-3. Auth, perfis e RLS.
+2. Backend/API Python, configuração do MongoDB com replica set e modelo de coleções normalizadas.
+3. Autenticação, perfis e autorização server-side.
 4. Calendário útil e serviço de prazo.
 5. Motor transacional da fila com testes concorrentes.
 6. Importação idempotente e deduplicação.
@@ -1724,17 +1732,17 @@ Nenhum ambiente deve compartilhar chaves administrativas com outro.
 - lint;
 - typecheck;
 - testes unitários;
-- testes de banco/RLS;
+- testes de banco, transações e autorização;
 - build;
-- migrações validadas;
+- alterações de schema e índices validadas;
 - deploy de preview;
 - aprovação antes de produção.
 
-### 36.3 Migrações
+### 36.3 Evolução do schema MongoDB
 
-- Nunca editar migração aplicada.
-- Uma nova alteração gera nova migração.
-- Toda migração possui rollback operacional ou plano de recuperação.
+- Nunca alterar silenciosamente um script de evolução já aplicado.
+- Uma nova alteração gera um script versionado e idempotente para dados, validações ou índices.
+- Toda alteração possui rollback operacional ou plano de recuperação.
 - Seed de desenvolvimento separado de produção.
 
 ---
@@ -1743,10 +1751,12 @@ Nenhum ambiente deve compartilhar chaves administrativas com outro.
 
 Antes do go-live, serão necessários:
 
-- projeto Supabase e variáveis de ambiente;
+- cluster MongoDB com replica set e banco `gerec_leads` para cada ambiente;
+- serviço de backend/API Python e workers na Railway;
+- projeto Vercel para o cliente Next.js/React;
 - planilha Google oficial e nome da aba;
 - credencial de leitura da Google Sheets;
-- instância n8n;
+- agenda dos jobs Python de integração na Railway;
 - provedor SMTP/transacional autorizado para `contato@wtgseguros.com.br`;
 - lista anual de feriados nacionais e estaduais de SP;
 - domínio/URL final da aplicação;
@@ -1836,6 +1846,17 @@ Nenhuma IA ou desenvolvedor deve “melhorar” uma regra de negócio sem aprese
 - **Migração necessária:** nenhuma agora. Na chegada da planilha definitiva, mapear e validar o novo contrato no adapter, preservando histórico e regras canônicas.
 - **Novos testes de aceite:** verificar os 17 headers A–Q e sua ordem; comprovar a projeção M–P e a exclusão de Q; impedir que M seja interpretada como CNPJ; testar a substituição localizada do contrato pelo adapter sem enfraquecer permissões.
 - **Aprovação:** Yago, em 25 de agosto de 2026.
+
+### GOV-003 — MongoDB, backend Python e separação de hospedagem
+
+- **Regra anterior:** o núcleo transacional, autenticação e persistência seriam implementados com Supabase/PostgreSQL/RLS; integrações usariam n8n; Vercel hospedaria frontend e APIs compatíveis.
+- **Nova regra:** MongoDB é a única persistência, no banco `gerec_leads`, com coleções normalizadas e transações dependentes de replica set. O backend/API Python concentra autenticação, autorização e regras críticas; backend e automações Python idempotentes rodam na Railway. O Next.js/React roda na Vercel exclusivamente como cliente web e nunca acessa MongoDB diretamente. O sistema novo não usa Supabase, PostgreSQL, RLS, `service_role` nem n8n.
+- **Motivo:** adotar a infraestrutura aprovada para o sistema novo, com fronteira única de backend, implantação independente do cliente web e automações versionadas em Python.
+- **Impacto em dados existentes:** não há migração de dados nesta tarefa documental. Artefatos locais da fundação anterior são legados temporários e não devem receber novas regras ou dados; uma etapa própria definirá sua retirada e qualquer conversão necessária.
+- **Impacto em métricas:** nenhum. Fórmulas, dimensões temporais e regras de visibilidade permanecem inalteradas; consultas passam a ser calculadas pela API Python sobre MongoDB.
+- **Migração necessária:** criar o modelo normalizado de coleções e índices no banco `gerec_leads`, exigir replica set em todos os ambientes, implementar autenticação/autorização no backend Python e substituir integrações anteriores por jobs/outbox Python na Railway. Não editar migrações legadas nesta mudança.
+- **Novos testes de aceite:** comprovar transações multi-documento e rollback em replica set; concorrência equivalente ao processamento sequencial; índices únicos e idempotência; acesso cruzado negado pela API; ausência de conexão ou credencial MongoDB no cliente; reprocessamento seguro de jobs e outbox.
+- **Aprovação:** Yago, em 27 de agosto de 2026.
 
 ---
 
