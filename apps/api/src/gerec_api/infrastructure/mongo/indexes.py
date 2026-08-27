@@ -89,6 +89,12 @@ INDEXES: Final[tuple[MongoIndex, ...]] = (
         unique=True,
     ),
     MongoIndex(
+        MongoCollections.CAMPAIGNS,
+        (("identityKey", ASCENDING),),
+        "campaigns_identity_key_unique",
+        unique=True,
+    ),
+    MongoIndex(
         MongoCollections.COMPANIES,
         (("documentNormalized", ASCENDING),),
         "companies_document_normalized_present_unique",
