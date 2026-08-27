@@ -9,6 +9,12 @@ playwright-report/
 test-results/
 .worktrees/
 
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
 # Configuração local e segredos
 .env
 .env.*

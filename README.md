@@ -4,39 +4,42 @@ Projeto novo e isolado. Antes de desenvolver, leia `AGENTS.md`, o SPEC e o roadm
 
 ## Pré-requisitos
 
-- Node.js 24 LTS
-- npm
-- Docker Desktop em execução
+- Node.js 24 LTS e npm (cliente web)
+- Python 3.12 ou 3.13 (API)
+- Docker Desktop em execução (MongoDB local)
 
-## Primeira execução
+## MongoDB local
 
-```powershell
-nvm use 24
-npm ci
-npm run test:e2e:install
-npm run supabase:start
-npm run env:local
-npm run supabase:bootstrap-users
-npm run dev
-```
-
-Acesse `http://127.0.0.1:3000` e confirme “Supabase local conectado”.
-
-## Verificação
+O MongoDB local roda como replica set `rs0`, requisito para as transações do produto:
 
 ```powershell
-npm run typecheck
-npm run test
-npm run test:supabase-tooling
-npm run build
+docker compose -f infra/mongodb/docker-compose.yml up -d
 ```
 
-## Encerramento
+Para encerrar:
 
 ```powershell
-npm run supabase:stop
+docker compose -f infra/mongodb/docker-compose.yml down
 ```
 
-`apps/web/.env.local` é gerado com URL pública, chave pública e a `SUPABASE_SERVICE_ROLE_KEY` apenas para uso server-side. O arquivo nunca deve ser versionado.
+## API Python
 
-O bootstrap local reconcilia os cinco usuários, fixa a senha do admin em `Wtg@2026!Admin`, gera senhas aleatórias para os vendedores em `supabase/.temp/local-users.json` e popula campanhas, fila, histórico e leads demonstrativos no Supabase local.
+Instale as dependências de desenvolvimento e defina os valores apenas no ambiente do processo da API. Os exemplos abaixo são placeholders, não credenciais reais:
+
+```powershell
+cd apps/api
+python -m pip install -e ".[dev]"
+$env:MONGODB_URI = "mongodb://localhost:27017/?replicaSet=rs0"
+$env:MONGODB_DATABASE = "gerec_leads"
+$env:APP_SECRET = "replace-with-a-local-secret"
+python -m uvicorn gerec_api.main:create_app --factory --reload
+```
+
+Verifique a fundação da API:
+
+```powershell
+cd apps/api
+python -m pytest -q
+```
+
+As credenciais MongoDB e os segredos de aplicação pertencem exclusivamente aos processos Python do backend e dos jobs na Railway; eles nunca devem ser enviados ao cliente web na Vercel.
