@@ -99,7 +99,8 @@ class LeadRepository:
             )
         else:
             pending_reasons = list(row.data_issues)
-            lead_id = existing_source.get("leadId") if existing_source else None
+            previous_lead_id = existing_source.get("leadId") if existing_source else None
+            lead_id = None
             occurrence_created = False
             if not row.data_issues:
                 assert campaign is not None
@@ -116,6 +117,13 @@ class LeadRepository:
                 now,
                 session,
             )
+            if previous_lead_id is not None and previous_lead_id != lead_id:
+                self._archive_detached_lead_if_orphaned(
+                    previous_lead_id,
+                    "source_became_pending" if lead_id is None else "source_relinked",
+                    now,
+                    session,
+                )
             status = "pending" if pending_reasons else ("created" if occurrence_created else "updated")
             result = ImportResult(
                 status=status,
@@ -268,6 +276,32 @@ class LeadRepository:
             session=session,
         )
         return existing_source["_id"]
+
+    def _archive_detached_lead_if_orphaned(
+        self,
+        lead_id: Any,
+        reason: str,
+        now: datetime,
+        session: Any,
+    ) -> None:
+        another_active = self._source_records.find_one(
+            {"leadId": lead_id, "present": True},
+            session=session,
+        )
+        if another_active is not None:
+            return
+        self._leads.update_one(
+            {"_id": lead_id, "archivedAt": None},
+            {
+                "$set": {
+                    "archivedAt": now,
+                    "archiveReason": reason,
+                    "assignmentStatus": "archived",
+                    "updatedAt": now,
+                }
+            },
+            session=session,
+        )
 
     def _mark_source_seen(
         self,

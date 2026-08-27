@@ -200,6 +200,67 @@ def test_changed_informational_source_field_updates_the_source_record() -> None:
     assert stored["payload"]["lead_status"] == "CONTACTED"
 
 
+def test_valid_source_becoming_pending_detaches_and_archives_its_only_lead() -> None:
+    """Breaks if a newly invalid source leaves its previous lead active and distributable."""
+    database = FakeDatabase()
+    database["campaigns"].insert_one(
+        {
+            "identityKey": "external:campaign-a",
+            "externalId": "campaign-a",
+            "sourceName": "Campaign campaign-a",
+            "status": "approved",
+        }
+    )
+    service = LeadService(LeadRepository(database))
+    valid = _complete_row("source-transition")
+    service.import_row(valid, "command-valid")
+    lead_id = database["source_records"].documents[0]["leadId"]
+    pending_payload = {**valid.source_payload, "document": ""}
+
+    result = service.import_row(normalize_source_row(pending_payload), "command-pending")
+
+    source = database["source_records"].documents[0]
+    lead = database["leads"].find_one({"_id": lead_id})
+    assert result.lead_id is None
+    assert result.pending_reasons == ("document",)
+    assert source["leadId"] is None
+    assert lead["archivedAt"] is not None
+    assert lead["assignmentStatus"] == "archived"
+    assert lead["archiveReason"] == "source_became_pending"
+
+
+def test_one_shared_source_becoming_pending_preserves_lead_for_the_other_active_source() -> None:
+    """Breaks if detaching one source archives a lead still backed by another active source."""
+    database = FakeDatabase()
+    database["campaigns"].insert_one(
+        {
+            "identityKey": "external:campaign-a",
+            "externalId": "campaign-a",
+            "sourceName": "Campaign campaign-a",
+            "status": "approved",
+        }
+    )
+    service = LeadService(LeadRepository(database))
+    first = _complete_row("source-shared-1")
+    second = _complete_row("source-shared-2")
+    service.import_row(first, "command-shared-1")
+    service.import_row(second, "command-shared-2")
+    lead_id = database["source_records"].documents[0]["leadId"]
+
+    service.import_row(
+        normalize_source_row({**first.source_payload, "document": ""}),
+        "command-shared-pending",
+    )
+
+    first_source = database["source_records"].find_one({"sourceLeadId": "source-shared-1"})
+    second_source = database["source_records"].find_one({"sourceLeadId": "source-shared-2"})
+    lead = database["leads"].find_one({"_id": lead_id})
+    assert first_source["leadId"] is None
+    assert second_source["leadId"] == lead_id
+    assert lead["archivedAt"] is None
+    assert lead["assignmentStatus"] == "ready"
+
+
 def test_mock_pending_row_stays_in_source_records_and_never_enters_the_queue() -> None:
     """Breaks if missing document/state creates a fictitious company or distributable lead."""
     database = FakeDatabase()
