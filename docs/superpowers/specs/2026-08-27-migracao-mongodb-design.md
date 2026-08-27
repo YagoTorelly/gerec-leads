@@ -14,7 +14,7 @@ O SPEC definia Next.js/React + Supabase Auth/PostgreSQL/RLS como arquitetura pri
 
 ### Nova regra proposta
 
-Next.js/React continuará sendo a aplicação. MongoDB será a única infraestrutura de persistência, incluindo usuários, sessões, dados comerciais, fila, histórico, auditoria e outbox. As regras críticas serão comandos server-side executados em transações MongoDB.
+Next.js/React será o site publicado na Vercel. Uma API/backend Python na Railway será o único núcleo de autenticação, domínio, persistência e automações. MongoDB será a única infraestrutura de dados, incluindo usuários, sessões, dados comerciais, fila, histórico, auditoria e outbox. As regras críticas serão comandos Python executados em transações MongoDB.
 
 ### Motivo
 
@@ -27,9 +27,11 @@ Nenhum dado será migrado. O workbook continua sendo mock de origem e a coluna `
 ### Impacto técnico
 
 - substituir migrations SQL por criação versionada de índices e validações MongoDB;
-- substituir RLS por autorização server-side e filtros obrigatórios nos repositórios;
-- substituir Supabase Auth por autenticação própria;
+- substituir RLS por autorização no backend Python e filtros obrigatórios nos repositórios;
+- substituir Supabase Auth por autenticação própria no backend Python;
 - exigir MongoDB replica set para transações locais, staging e produção;
+- publicar o site Next.js na Vercel e a API/worker Python na Railway;
+- executar sincronizações, notificações e tarefas agendadas exclusivamente na Railway;
 - atualizar tooling, testes, documentação e CI;
 - manter as regras funcionais do SPEC, salvo aprovação posterior registrada.
 
@@ -40,25 +42,36 @@ Serão necessários testes de índices, transações, rollback, idempotência, c
 ## 2. Arquitetura aprovada
 
 ```text
-Next.js/React
-  -> módulos server-side de autenticação e domínio
+Navegador
+  -> site Next.js na Vercel
+  -> API/backend Python na Railway
   -> adapter MongoDB
   -> MongoDB replica set (database gerec_leads)
 ```
 
-O frontend não decide atribuição, cursor, propriedade, SLA, créditos ou venda. Componentes React chamam ações server-side autorizadas.
+O navegador nunca acessa o MongoDB diretamente. O frontend não decide atribuição, cursor, propriedade, SLA, créditos ou venda; ele chama a API Python autorizada.
 
 Módulos e responsabilidades:
 
-- `auth`: usuários, derivação de senha, sessões, revogação e autorização;
+- `web`: apresentação Next.js e experiência desktop na Vercel;
+- `auth`: usuários, derivação de senha, sessões, revogação e autorização no backend Python;
 - `leads`: origem, normalização, deduplicação, campanhas, empresas e ocorrências;
 - `queue`: cursor global, elegibilidade, rodízio, pausas e créditos de pulo;
 - `operations`: feedbacks, SLA, tentativas, qualificação, conversão e vendas;
 - `audit`: histórico imutável e auditoria;
-- `notifications`: outbox e reprocessamento;
+- `notifications`: outbox, reprocessamento e integrações;
+- `automation`: sincronização da origem, e-mails, alertas e tarefas agendadas na Railway;
 - `mongo`: conexão, transações, índices e repositórios.
 
-Cada módulo expõe uma interface pequena e profunda. O adapter MongoDB fica atrás de uma seam única, permitindo testes com banco real e adapter em memória controlado.
+Cada módulo de domínio expõe uma interface pequena e profunda. A API Python e o worker de automações reutilizam essas mesmas interfaces. O adapter MongoDB fica atrás de uma seam única, permitindo testes com banco real e adapter em memória controlado.
+
+## 2.1. Implantação
+
+- Vercel hospeda somente o site Next.js e seus assets públicos;
+- Railway hospeda a API Python e os workers/agendamentos Python;
+- MongoDB é compartilhado por API e workers através de URI server-side;
+- nenhum segredo ou URI do MongoDB chega ao bundle do navegador;
+- ambientes local, staging e produção usam URIs, credenciais e bancos isolados.
 
 ## 3. Coleções do database `gerec_leads`
 
@@ -132,15 +145,15 @@ MongoDB local, staging e produção terão replica set, URI isolada, credenciais
 
 ## 8. Sequência de implementação
 
-1. atualizar SPEC, decisões e arquitetura para a governança MongoDB;
-2. remover Supabase e criar configuração/URI MongoDB;
+1. atualizar SPEC, decisões e arquitetura para a governança MongoDB/Vercel/Railway;
+2. remover Supabase e criar configuração do site Vercel e da API Python;
 3. criar adapter, conexão, replica set local e índices;
-4. implementar autenticação e sessões;
+4. implementar autenticação e sessões no backend Python;
 5. implementar coleções e repositórios, começando por `leads`;
-6. migrar comandos transacionais de fila, SLA, propriedade e resultados;
-7. implementar adapter do workbook e importação idempotente;
-8. adaptar dashboards e ações existentes;
+6. migrar comandos transacionais de fila, SLA, propriedade e resultados para Python;
+7. implementar automações Python, adapter do workbook e importação idempotente;
+8. adaptar o site Next.js para consumir a API Python;
 9. concluir testes unitários, integração, concorrência e E2E;
-10. validar backup, restauração e piloto.
+10. validar deploy Vercel/Railway, backup, restauração e piloto.
 
 Nenhuma implementação começa antes da revisão escrita deste documento.
