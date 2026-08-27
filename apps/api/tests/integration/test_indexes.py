@@ -69,6 +69,24 @@ def test_company_repository_rejects_a_checksum_invalid_document_before_any_write
     assert target.documents == []
 
 
+def test_company_repository_allows_a_pending_company_without_document() -> None:
+    """Breaks if an import with missing CPF/CNPJ cannot persist its pending company record."""
+
+    class TrackingCollection:
+        def __init__(self) -> None:
+            self.documents = []
+
+        def insert_one(self, document):
+            self.documents.append(document)
+            return document
+
+    target = TrackingCollection()
+
+    CompanyRepository(target).insert({"name": "Documento pendente"})
+
+    assert target.documents == [{"name": "Documento pendente"}]
+
+
 def test_index_contract_covers_each_persisted_identity_and_active_lifecycle() -> None:
     """Breaks if the schema stops declaring a required unique or partial invariant."""
     definitions = {definition.name: definition for definition in INDEXES}
@@ -151,6 +169,74 @@ def test_mongo_index_reconciles_a_conflicting_named_index_without_touching_docum
     assert definition.apply(target) == "users_email_normalized_unique"
     assert target.documents == [{"emailNormalized": "yago@wtgseguros.com.br"}]
     assert target.indexes == {"users_email_normalized_unique": {"key": [("emailNormalized", 1)], "unique": True}}
+
+
+def test_mongo_index_removes_a_stale_replacement_after_a_previous_attempt() -> None:
+    """Breaks if a rerun leaves the name__replacement index after recovering the canonical index."""
+
+    class IndexCollection:
+        def __init__(self) -> None:
+            expected = {"key": [("emailNormalized", 1)], "unique": True}
+            self.indexes = {
+                "users_email_normalized_unique": expected.copy(),
+                "users_email_normalized_unique__replacement": expected.copy(),
+            }
+
+        def index_information(self):
+            return self.indexes
+
+        def create_index(self, keys, **options):
+            self.indexes[options["name"]] = {"key": list(keys), "unique": options.get("unique", False)}
+            return options["name"]
+
+        def drop_index(self, name):
+            del self.indexes[name]
+
+    target = IndexCollection()
+    definition = MongoIndex(
+        MongoCollections.USERS,
+        (("emailNormalized", 1),),
+        "users_email_normalized_unique",
+        unique=True,
+    )
+
+    definition.apply(target)
+
+    assert target.indexes == {"users_email_normalized_unique": {"key": [("emailNormalized", 1)], "unique": True}}
+
+
+def test_mongo_index_restores_the_previous_index_and_cleans_replacement_after_failure() -> None:
+    """Breaks if a failed reconciliation leaves a temporary index or removes the prior protection."""
+
+    class IndexCollection:
+        def __init__(self) -> None:
+            self.indexes = {"users_email_normalized_unique": {"key": [("emailNormalized", 1)], "unique": False}}
+
+        def index_information(self):
+            return self.indexes
+
+        def create_index(self, keys, **options):
+            name = options["name"]
+            if name == "users_email_normalized_unique" and options.get("unique") is True:
+                raise RuntimeError("IndexBuildFailed")
+            self.indexes[name] = {"key": list(keys), "unique": options.get("unique", False)}
+            return name
+
+        def drop_index(self, name):
+            del self.indexes[name]
+
+    target = IndexCollection()
+    definition = MongoIndex(
+        MongoCollections.USERS,
+        (("emailNormalized", 1),),
+        "users_email_normalized_unique",
+        unique=True,
+    )
+
+    with pytest.raises(RuntimeError, match="IndexBuildFailed"):
+        definition.apply(target)
+
+    assert target.indexes == {"users_email_normalized_unique": {"key": [("emailNormalized", 1)], "unique": False}}
 
 
 @pytest.fixture

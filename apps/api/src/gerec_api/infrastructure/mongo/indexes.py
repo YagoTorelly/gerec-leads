@@ -21,29 +21,28 @@ class MongoIndex:
 
     def apply(self, target: Collection) -> str:
         """Cria ou reconcilia o \u00edndice sem apagar documentos existentes."""
+        replacement_name = f"{self.name}__replacement"
         existing = target.index_information().get(self.name)
-        if existing is None:
-            return self._create(target, self.name)
-        if self._matches(existing):
+        if existing is not None and self._matches(existing):
+            self._drop_replacement(target, replacement_name)
             return self.name
 
-        replacement_name = f"{self.name}__replacement"
-        replacement = target.index_information().get(replacement_name)
-        if replacement is None:
-            self._create(target, replacement_name)
-        elif not self._matches(replacement):
-            target.drop_index(replacement_name)
-            self._create(target, replacement_name)
+        if existing is None:
+            try:
+                return self._create(target, self.name)
+            finally:
+                self._drop_replacement(target, replacement_name)
 
-        target.drop_index(self.name)
         try:
+            self._drop_replacement(target, replacement_name)
+            self._create(target, replacement_name)
+            target.drop_index(self.name)
             return self._create(target, self.name)
         except Exception:
-            # O \u00edndice tempor\u00e1rio continua protegendo os documentos para a pr\u00f3xima tentativa de bootstrap.
+            self._restore(target, self.name, existing)
             raise
         finally:
-            if self._matches(target.index_information().get(self.name, {})):
-                target.drop_index(replacement_name)
+            self._drop_replacement(target, replacement_name)
 
     def _create(self, target: Collection, name: str) -> str:
         return target.create_index(self.keys, **self._options(name))
@@ -60,6 +59,20 @@ class MongoIndex:
             and index.get("unique", False) is self.unique
             and index.get("partialFilterExpression") == self.partial_filter
         )
+
+    @staticmethod
+    def _drop_replacement(target: Collection, name: str) -> None:
+        if name in target.index_information():
+            target.drop_index(name)
+
+    @staticmethod
+    def _restore(target: Collection, name: str, index: dict[str, Any] | None) -> None:
+        if index is None or name in target.index_information():
+            return
+        options: dict[str, Any] = {"name": name, "unique": index.get("unique", False)}
+        if "partialFilterExpression" in index:
+            options["partialFilterExpression"] = index["partialFilterExpression"]
+        target.create_index(index["key"], **options)
 
 
 INDEXES: Final[tuple[MongoIndex, ...]] = (

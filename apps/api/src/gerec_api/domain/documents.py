@@ -24,9 +24,11 @@ def require_valid_document(value: str) -> str:
 
 
 def prepare_company_for_persistence(company: Mapping[str, Any]) -> dict[str, Any]:
-    """Devolve uma c\u00f3pia com CPF/CNPJ validado antes de uma escrita de empresa."""
+    """Devolve uma c\u00f3pia, validando CPF/CNPJ somente quando ele foi informado."""
     value = company.get("documentNormalized")
     if not isinstance(value, str):
+        if "documentNormalized" not in company:
+            return dict(company)
         raise InvalidDocumentError("CPF ou CNPJ obrigat\u00f3rio para persist\u00eancia")
     prepared = dict(company)
     prepared["documentNormalized"] = require_valid_document(value)
