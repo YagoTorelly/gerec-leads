@@ -4,7 +4,7 @@ import { AdminControls } from "../../components/admin-controls";
 import { Pagination } from "../../components/pagination";
 import { ResourceTable } from "../../components/resource-table";
 import { getSessionContext } from "../../lib/auth/session";
-import { getDashboardData } from "../../lib/dashboard/queries";
+import { getDashboardData, pageNumber } from "../../lib/dashboard/queries";
 
 export const dynamic = "force-dynamic";
 export default async function DashboardPage({
@@ -14,13 +14,11 @@ export default async function DashboardPage({
 }) {
   const session = await getSessionContext();
   if (session.status !== "authenticated") redirect("/login");
-  const page = Math.max(1, Number((await searchParams).page) || 1);
+  const page = pageNumber((await searchParams).page ?? "1");
   const data = await getDashboardData(session.sessionToken, page);
   return (
     <AppShell profile={session.profile} activePath="/dashboard" heading="Visão geral">
-      {session.profile.role === "admin" ? (
-        <AdminControls leadId={String(data.leads.items[0]?.id ?? "")} />
-      ) : null}
+      {session.profile.role === "admin" ? <AdminControls /> : null}
       <ResourceTable
         title="Leads"
         items={data.leads.items}

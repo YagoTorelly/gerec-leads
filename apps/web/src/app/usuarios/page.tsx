@@ -5,6 +5,7 @@ import { UserManagement } from "../../components/user-management";
 import { apiFetch } from "../../lib/api/client";
 import type { Page } from "../../lib/api/types";
 import { getSessionContext, SESSION_COOKIE } from "../../lib/auth/session";
+import { pageNumber } from "../../lib/dashboard/queries";
 
 export const dynamic = "force-dynamic";
 export default async function UsersPage({
@@ -15,7 +16,7 @@ export default async function UsersPage({
   const session = await getSessionContext();
   if (session.status !== "authenticated" || session.profile.role !== "admin")
     redirect("/dashboard");
-  const page = Math.max(1, Number((await searchParams).page) || 1);
+  const page = pageNumber((await searchParams).page ?? "1");
   const users = await apiFetch<Page<Record<string, unknown>>>(
     `/api/admin/users?page=${page}&limit=50`,
     { cache: "no-store", headers: { Cookie: `${SESSION_COOKIE}=${session.sessionToken}` } },

@@ -51,6 +51,8 @@ export async function signOutAction() {
         method: "POST",
         headers: { Cookie: `${SESSION_COOKIE}=${token}` },
       });
+  } catch {
+    // A sessão local deve encerrar mesmo se a API estiver indisponível.
   } finally {
     cookieStore.delete(SESSION_COOKIE);
   }

@@ -37,11 +37,12 @@ describe("ações de sessão", () => {
     expect(redirect).toHaveBeenCalledWith("/dashboard");
   });
 
-  it("apaga cookie local mesmo quando logout remoto falha", async () => {
+  it("apaga cookie e volta ao login quando logout remoto falha", async () => {
     cookieStore.get.mockReturnValue({ value: "opaque" });
     apiRequest.mockRejectedValue(new Error("indisponível"));
 
-    await expect(signOutAction()).rejects.toThrow("indisponível");
+    await signOutAction();
     expect(cookieStore.delete).toHaveBeenCalledWith("gerec_session");
+    expect(redirect).toHaveBeenCalledWith("/login");
   });
 });
