@@ -30,3 +30,5 @@ def dashboard(
         return service.for_user(current_user, page=page, limit=limit)
     except PermissionDenied as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden") from error
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error

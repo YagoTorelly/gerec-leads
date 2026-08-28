@@ -65,8 +65,8 @@ def test_dashboard_reads_are_paginated_and_expose_audit_ready_ids():
     assert payload["leads"]["pageSize"] == 50
 
 
-def test_dashboard_serializes_nested_bson_identifiers() -> None:
-    """Breaks if a real Mongo document reaches FastAPI with a nested ObjectId."""
+def test_dashboard_read_model_hides_nested_bson_identifiers() -> None:
+    """Breaks if technical database keys return to a seller read projection."""
     database = Database()
     seller_id = ObjectId()
     company_id = ObjectId()
@@ -86,9 +86,8 @@ def test_dashboard_serializes_nested_bson_identifiers() -> None:
     )
 
     item = payload["leads"]["items"][0]
-    assert item["assigneeId"] == str(seller_id)
-    assert item["companyId"] == str(company_id)
-    assert isinstance(item["metadata"]["relatedIds"][0], str)
+    assert item["id"]
+    assert {"assigneeId", "companyId", "metadata"}.isdisjoint(item)
 
 
 def test_dashboard_enriches_operational_rows_with_human_labels() -> None:
@@ -179,4 +178,3 @@ def test_seller_scopes_history_queue_and_balance_to_session_identity():
     assert PermissionService.scope_query(seller, "history") == {"sellerId": {"$in": ["seller-a"]}}
     assert PermissionService.scope_query(seller, "queue") == {"sellerId": {"$in": ["seller-a"]}}
     assert PermissionService.scope_query(seller, "skip_balance") == {"sellerId": {"$in": ["seller-a"]}}
-

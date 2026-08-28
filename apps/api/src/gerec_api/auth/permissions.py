@@ -1,14 +1,20 @@
-"""Centralized authorization and read-scope policies for the API."""
+"""Centralized authorization and role-specific operational read models."""
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Mapping
 
 from bson import ObjectId
 
 from gerec_api.auth.sessions import CurrentUser
+from gerec_api.domain.queue import QueueSnapshot
 from gerec_api.infrastructure.mongo.collections import MongoCollections
+from gerec_api.infrastructure.mongo.queue_repository import QueueRepository
 from gerec_api.infrastructure.mongo.serialization import serialize_bson
+
+
+NOT_INFORMED = "Não informado"
 
 
 class PermissionDenied(PermissionError):
@@ -32,15 +38,11 @@ class PermissionService:
 
     @classmethod
     def scope_query(cls, user: CurrentUser | None, resource: str) -> dict[str, Any]:
-        """Return an immutable server-side Mongo filter for a read resource.
-
-        Seller identity is always derived from the session. A caller cannot pass a
-        seller id to widen this filter.
-        """
+        """Return a server-side Mongo filter; seller identity only comes from session."""
         current = cls.require_current_user(user)
         if resource not in {
             "leads", "history", "queue", "skip_balance", "companies", "campaigns",
-            "users", "audit",
+            "users", "audit", "treatments",
         }:
             raise ValueError(f"unknown protected resource: {resource}")
         if current.role == "admin":
@@ -48,52 +50,151 @@ class PermissionService:
         ids = _identity_values(current.id)
         if resource == "leads":
             return {"assigneeId": {"$in": ids}}
-        if resource == "companies":
-            return {"ownerId": {"$in": ids}}
-        if resource == "history":
+        if resource in {"history", "treatments"}:
             return {"sellerId": {"$in": ids}}
         if resource in {"queue", "skip_balance"}:
             return {"sellerId": {"$in": ids}}
-        # Sellers must not receive user, campaign or audit data.
         raise PermissionDenied(f"seller cannot read {resource}")
 
 
 class DashboardService:
-    """Paginated dashboard reads with scope applied before every collection query."""
+    """Read-model boundary with intentionally different contracts for each role.
 
-    def __init__(self, database: Any, *, page_size: int = 50) -> None:
+    The service contains no command logic. Queue availability is delegated to the
+    Task 5 repository snapshot so the read model cannot invent an eligibility rule.
+    """
+
+    def __init__(
+        self,
+        database: Any,
+        *,
+        page_size: int = 50,
+        queue_snapshot: Any | None = None,
+    ) -> None:
         self._database = database
         self._page_size = max(1, min(page_size, 200))
+        self._queue_snapshot = queue_snapshot or QueueRepository(database).snapshot
 
-    def for_user(self, user: CurrentUser | None, *, page: int = 1, limit: int | None = None) -> dict[str, Any]:
+    def for_user(
+        self,
+        user: CurrentUser | None,
+        *,
+        page: int = 1,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
         current = PermissionService.require_current_user(user)
-        page = _page_number(page)
-        page_size = _page_limit(self._page_size if limit is None else limit)
-        leads = self._page(MongoCollections.LEADS, PermissionService.scope_query(current, "leads"), page, page_size)
-        history = self._page(
-            MongoCollections.ASSIGNMENTS,
-            PermissionService.scope_query(current, "history"), page, page_size,
+        return (
+            self.for_admin(current, page=page, limit=limit)
+            if current.role == "admin"
+            else self.for_seller(current, page=page, limit=limit)
         )
-        queue = self._page(
-            MongoCollections.SELLER_QUEUE,
-            PermissionService.scope_query(current, "queue"), page, page_size,
-        )
-        state = self._database[MongoCollections.QUEUE_STATE].find_one({"_id": "global"})
-        next_seller = self._find_by_id(MongoCollections.USERS, (state or {}).get("nextSellerId"))
-        queue["nextSellerName"] = _display_name(next_seller)
-        balance = self._first(
-            MongoCollections.SKIP_BALANCES,
-            PermissionService.scope_query(current, "skip_balance"),
-        )
+
+    def for_admin(
+        self,
+        user: CurrentUser | None,
+        *,
+        page: int = 1,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        PermissionService.require_admin(user)
+        current = PermissionService.require_current_user(user)
+        page, page_size = self._pagination(page, limit)
         return {
-            "user": {"id": current.id, "email": current.email, "role": current.role},
-            "leads": leads,
-            "history": history,
-            "queue": queue,
-            "skipBalance": balance,
+            "user": _public_user(current),
+            "leads": self._lead_page({}, page, page_size),
+            "history": self._treatment_page({}, page, page_size, include_lead_name=True),
+            "queue": self._admin_queue(),
         }
 
-    def _page(self, collection_name: str, query: Mapping[str, Any], page: int, page_size: int) -> dict[str, Any]:
+    def for_seller(
+        self,
+        user: CurrentUser | None,
+        *,
+        page: int = 1,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        current = PermissionService.require_current_user(user)
+        if current.role != "seller":
+            raise PermissionDenied("seller role is required")
+        page, page_size = self._pagination(page, limit)
+        return {
+            "user": _public_user(current),
+            "leads": self._lead_page(PermissionService.scope_query(current, "leads"), page, page_size),
+            "history": self._treatment_page(
+                PermissionService.scope_query(current, "treatments"),
+                page,
+                page_size,
+                include_lead_name=True,
+            ),
+            "queue": self._seller_queue(current),
+        }
+
+    def queue_for_user(self, user: CurrentUser | None) -> dict[str, Any]:
+        current = PermissionService.require_current_user(user)
+        return self._admin_queue() if current.role == "admin" else self._seller_queue(current)
+
+    def lead_treatments_for_user(
+        self,
+        lead_id: str,
+        user: CurrentUser | None,
+        *,
+        page: int = 1,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        current = PermissionService.require_current_user(user)
+        page, page_size = self._pagination(page, limit)
+        lead = self._find_by_id(MongoCollections.LEADS, lead_id)
+        if lead is None:
+            raise PermissionDenied("lead is outside current user scope")
+
+        query: dict[str, Any] = {"leadId": {"$in": _identity_values(lead_id)}}
+        if current.role == "seller":
+            seller_query = PermissionService.scope_query(current, "treatments")
+            own_treatments = self._database[MongoCollections.LEAD_TREATMENTS].find_one(
+                {**query, **seller_query}
+            )
+            current_owner = lead.get("assigneeId") in _identity_values(current.id)
+            if not current_owner and own_treatments is None:
+                raise PermissionDenied("lead is outside current user scope")
+            query.update(seller_query)
+        return self._treatment_page(query, page, page_size, include_lead_name=False)
+
+    def _pagination(self, page: int, limit: int | None) -> tuple[int, int]:
+        return _page_number(page), _page_limit(self._page_size if limit is None else limit)
+
+    def _lead_page(self, query: Mapping[str, Any], page: int, page_size: int) -> dict[str, Any]:
+        return self._page(
+            MongoCollections.LEADS,
+            query,
+            page,
+            page_size,
+            self._lead_projection,
+        )
+
+    def _treatment_page(
+        self,
+        query: Mapping[str, Any],
+        page: int,
+        page_size: int,
+        *,
+        include_lead_name: bool,
+    ) -> dict[str, Any]:
+        return self._page(
+            MongoCollections.LEAD_TREATMENTS,
+            query,
+            page,
+            page_size,
+            lambda treatment: self._treatment_projection(treatment, include_lead_name=include_lead_name),
+        )
+
+    def _page(
+        self,
+        collection_name: str,
+        query: Mapping[str, Any],
+        page: int,
+        page_size: int,
+        projection: Any,
+    ) -> dict[str, Any]:
         collection = self._database[collection_name]
         cursor = collection.find(dict(query))
         if hasattr(cursor, "sort"):
@@ -102,76 +203,145 @@ class DashboardService:
             cursor = cursor.skip((page - 1) * page_size)
         if hasattr(cursor, "limit"):
             cursor = cursor.limit(page_size)
-        raw_items = list(cursor)
-        if collection_name == MongoCollections.SELLER_QUEUE:
-            state = self._database[MongoCollections.QUEUE_STATE].find_one({"_id": "global"})
-            next_id = (state or {}).get("nextSellerId")
-            if next_id is not None:
-                positions = {item.get("sellerId"): item.get("position", 0) for item in raw_items}
-                start = positions.get(next_id)
-                if start is not None:
-                    raw_items.sort(key=lambda item: (item.get("position", 0) - start) % max(len(raw_items), 1))
-        items = [self._enrich(collection_name, item) for item in raw_items]
+        items = [projection(item) for item in cursor]
         total = collection.count_documents(dict(query)) if hasattr(collection, "count_documents") else len(items)
         return {"items": items, "page": page, "pageSize": page_size, "total": total}
 
-    def _enrich(self, collection_name: str, document: Mapping[str, Any]) -> dict[str, Any]:
-        """Expose human-readable names while retaining IDs for internal actions."""
-        result = dict(document)
-        if collection_name == MongoCollections.SELLER_QUEUE:
-            seller = self._find_by_id(MongoCollections.USERS, result.get("sellerId"))
-            result["sellerName"] = _display_name(seller, result.get("sellerId"))
-        elif collection_name == MongoCollections.ASSIGNMENTS:
-            seller = self._find_by_id(MongoCollections.USERS, result.get("sellerId"))
-            lead = self._find_by_id(MongoCollections.LEADS, result.get("leadId"))
-            result["sellerName"] = _display_name(seller, result.get("sellerId"))
-            result["leadName"] = (lead or {}).get("contactName") or (lead or {}).get("email") or "Lead sem nome"
-            if lead:
-                company = self._find_by_id(MongoCollections.COMPANIES, lead.get("companyId"))
-                campaign = self._find_by_id(MongoCollections.CAMPAIGNS, lead.get("campaignId"))
-                result["companyName"] = _display_name(company, lead.get("companyId"))
-                result["campaignName"] = _campaign_name(campaign, lead.get("campaignId"))
-        elif collection_name == MongoCollections.LEADS:
-            result["email"] = result.get("email") or result.get("emailNormalized")
-            result["commercialStatus"] = _commercial_status(result)
-            company = self._find_by_id(MongoCollections.COMPANIES, result.get("companyId"))
-            campaign = self._find_by_id(MongoCollections.CAMPAIGNS, result.get("campaignId"))
-            result["companyName"] = _display_name(company, result.get("companyId"))
-            result["campaignName"] = _campaign_name(campaign, result.get("campaignId"))
-            seller = self._find_by_id(MongoCollections.USERS, result.get("assigneeId"))
-            result["sellerName"] = _display_name(seller, result.get("assigneeId"))
-        return _public_document(result)
+    def _lead_projection(self, lead: Mapping[str, Any]) -> dict[str, Any]:
+        company = self._find_by_id(MongoCollections.COMPANIES, lead.get("companyId"))
+        campaign = self._find_by_id(MongoCollections.CAMPAIGNS, lead.get("campaignId"))
+        seller = self._find_by_id(MongoCollections.USERS, lead.get("assigneeId"))
+        return _serialize_read_model(
+            {
+                "id": str(lead["_id"]),
+                "contactName": _text_or_fallback(lead.get("contactName")),
+                "sellerName": _name_or_fallback(seller),
+                "companyName": _company_name(company),
+                "campaignName": _campaign_name(campaign),
+                "phoneDisplay": _phone_without_country_code(lead.get("phoneNormalized")),
+                "email": _text_or_fallback(lead.get("email") or lead.get("emailNormalized")),
+                "commercialStatus": _commercial_status(lead),
+                "isDisqualified": bool(lead.get("isDisqualified", False)),
+                "commentCount": int(lead.get("commentCount", 0)),
+                "feedbackDueAt": lead.get("feedbackDueAt"),
+            }
+        )
+
+    def _treatment_projection(
+        self, treatment: Mapping[str, Any], *, include_lead_name: bool
+    ) -> dict[str, Any]:
+        seller = self._find_by_id(MongoCollections.USERS, treatment.get("sellerId"))
+        result: dict[str, Any] = {
+            "sellerName": _name_or_fallback(seller),
+            "comment": _text_or_fallback(treatment.get("comment")),
+            "commercialStatus": _commercial_status(treatment),
+            "isDisqualified": bool(treatment.get("isDisqualified", False)),
+            "createdAt": treatment.get("createdAt"),
+        }
+        if include_lead_name:
+            lead = self._find_by_id(MongoCollections.LEADS, treatment.get("leadId"))
+            result["leadName"] = _text_or_fallback((lead or {}).get("contactName"))
+        return _serialize_read_model(result)
+
+    def _admin_queue(self) -> dict[str, Any]:
+        snapshot = self._snapshot()
+        entries = []
+        for position, entry in enumerate(snapshot.entries, start=1):
+            seller = self._find_by_id(MongoCollections.USERS, entry.seller_id)
+            entries.append(
+                {
+                    "sellerName": _name_or_fallback(seller),
+                    "position": position,
+                    "availability": entry.availability.status,
+                    "reason": entry.availability.reason,
+                    "skipBalance": entry.skip_balance,
+                }
+            )
+        return {
+            "items": entries,
+            "total": len(entries),
+            "nextSellerName": entries[0]["sellerName"] if entries else NOT_INFORMED,
+            "cursorSellerName": _name_or_fallback(
+                self._find_by_id(MongoCollections.USERS, snapshot.cursor_seller_id)
+            ),
+        }
+
+    def _seller_queue(self, user: CurrentUser) -> dict[str, Any]:
+        for position, entry in enumerate(self._snapshot().entries, start=1):
+            if entry.seller_id in _identity_values(user.id):
+                return {
+                    "position": position,
+                    "availability": entry.availability.status,
+                    "skipBalance": entry.skip_balance,
+                }
+        # A seller can remain authenticated while an administrative migration or
+        # deactivation has removed it from the queue. This is its own state, not
+        # a reason to disclose the global queue or fail the complete dashboard.
+        return {"position": None, "availability": "paused", "skipBalance": 0}
+
+    def _snapshot(self) -> QueueSnapshot:
+        return self._queue_snapshot()
 
     def _find_by_id(self, collection_name: str, value: Any) -> Mapping[str, Any] | None:
         if value is None:
             return None
         collection = self._database[collection_name]
-        item = collection.find_one({"_id": value})
-        if item is None and isinstance(value, str) and ObjectId.is_valid(value):
-            item = collection.find_one({"_id": ObjectId(value)})
-        return item
-
-    def _first(self, collection_name: str, query: Mapping[str, Any]) -> dict[str, Any] | None:
-        item = self._database[collection_name].find_one(dict(query))
-        return _public_document(item) if item is not None else None
+        for candidate in _identity_values(value):
+            item = collection.find_one({"_id": candidate})
+            if item is not None:
+                return item
+        return None
 
 
-def _identity_values(value: str) -> list[Any]:
+def _identity_values(value: Any) -> list[Any]:
     values: list[Any] = [value]
-    if ObjectId.is_valid(value):
+    if isinstance(value, str) and ObjectId.is_valid(value):
         values.append(ObjectId(value))
     return values
 
 
-def _display_name(document: Mapping[str, Any] | None, identifier: Any = None) -> str:
-    """Resolve a human label at the read seam; never make the UI know Mongo IDs."""
+def _public_user(user: CurrentUser) -> dict[str, str]:
+    return {"id": user.id, "email": user.email, "role": user.role}
+
+
+def _text_or_fallback(value: Any) -> str:
+    text = str(value).strip() if value is not None else ""
+    return text or NOT_INFORMED
+
+
+def _name_or_fallback(document: Mapping[str, Any] | None) -> str:
     value = (document or {}).get("fullName") or (document or {}).get("name") or (document or {}).get("email")
-    return str(value) if value else "Não identificado"
+    return _text_or_fallback(value)
 
 
-def _campaign_name(document: Mapping[str, Any] | None, identifier: Any = None) -> str:
-    value = (document or {}).get("displayName") or (document or {}).get("sourceName") or (document or {}).get("name")
-    return str(value) if value else "Campanha não identificada"
+def _company_name(document: Mapping[str, Any] | None) -> str:
+    return _text_or_fallback((document or {}).get("name") or (document or {}).get("legalName"))
+
+
+def _campaign_name(document: Mapping[str, Any] | None) -> str:
+    return _text_or_fallback(
+        (document or {}).get("displayName")
+        or (document or {}).get("sourceName")
+        or (document or {}).get("name")
+    )
+
+
+def _phone_without_country_code(value: Any) -> str:
+    digits = "".join(character for character in str(value or "") if character.isdigit())
+    if digits.startswith("55") and len(digits) in {12, 13}:
+        digits = digits[2:]
+    return digits or NOT_INFORMED
+
+
+def _commercial_status(document: Mapping[str, Any]) -> str:
+    direct = document.get("commercialStatus")
+    if direct in {"undefined", "negotiation", "won"}:
+        return str(direct)
+    if document.get("conversionStatus") == "won":
+        return "won"
+    if document.get("qualificationStatus") in {"qualified", "in_negotiation", "negotiation"}:
+        return "negotiation"
+    return "undefined"
 
 
 def _page_number(value: int) -> int:
@@ -180,24 +350,16 @@ def _page_number(value: int) -> int:
     return value
 
 
-def _commercial_status(document: Mapping[str, Any]) -> str:
-    if document.get("conversionStatus") == "won":
-        return "won"
-    if document.get("conversionStatus") == "disqualified":
-        return "disqualified"
-    if document.get("qualificationStatus") in {"qualified", "in_negotiation", "negotiation"}:
-        return "negotiation"
-    return "undefined"
-
-
 def _page_limit(value: int) -> int:
     if value < 1 or value > 200:
         raise ValueError("limit must be between 1 and 200")
     return value
 
 
-def _public_document(document: Mapping[str, Any]) -> dict[str, Any]:
-    result = dict(document)
-    if "_id" in result:
-        result["id"] = str(result.pop("_id"))
-    return serialize_bson(result)
+def _serialize_read_model(value: Mapping[str, Any]) -> dict[str, Any]:
+    return serialize_bson(
+        {
+            key: item.isoformat() if isinstance(item, datetime) else item
+            for key, item in value.items()
+        }
+    )

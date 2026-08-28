@@ -4,14 +4,18 @@ from dataclasses import replace
 from hmac import compare_digest
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
+from gerec_api.auth.dependencies import get_current_user
+from gerec_api.auth.permissions import DashboardService, PermissionDenied
+from gerec_api.auth.sessions import CurrentUser
 from gerec_api.domain.leads import LeadService
 from gerec_api.domain.normalization import normalize_source_row
 
 
-router = APIRouter(prefix="/api/internal/imports/google-sheets", tags=["lead-imports"])
+router = APIRouter(tags=["lead-imports", "lead-read"])
+internal_router = APIRouter(prefix="/api/internal/imports/google-sheets", tags=["lead-imports"])
 
 
 class SyncRequest(BaseModel):
@@ -39,7 +43,7 @@ def require_internal_key(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
 
 
-@router.post("/sync", dependencies=[Depends(require_internal_key)])
+@internal_router.post("/sync", dependencies=[Depends(require_internal_key)])
 def sync_rows(
     payload: SyncRequest,
     service: LeadService = Depends(get_lead_service),
@@ -59,3 +63,31 @@ def sync_rows(
         )
     archive = service.archive_missing(payload.source_snapshot_id)
     return {"rows": results, "archive": archive.to_document()}
+
+
+def get_dashboard_service(request: Request) -> DashboardService:
+    service = getattr(request.app.state, "dashboard_service", None)
+    if not isinstance(service, DashboardService):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Operational read model unavailable",
+        )
+    return service
+
+
+@router.get("/api/leads/{lead_id}/treatments")
+def lead_treatments(
+    lead_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+    service: DashboardService = Depends(get_dashboard_service),
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=200),
+) -> dict[str, Any]:
+    """Return immutable treatments visible to the authenticated role only."""
+    try:
+        return service.lead_treatments_for_user(lead_id, current_user, page=page, limit=limit)
+    except PermissionDenied as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden") from error
+
+
+router.include_router(internal_router)

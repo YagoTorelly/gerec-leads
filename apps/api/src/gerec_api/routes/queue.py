@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from gerec_api.auth.dependencies import get_current_user
+from gerec_api.auth.permissions import DashboardService, PermissionDenied
 from gerec_api.auth.sessions import CurrentUser
 from gerec_api.domain.queue import QueueService
 from gerec_api.infrastructure.mongo.queue_repository import QueueStateError
@@ -42,10 +43,32 @@ def get_queue_service(request: Request) -> QueueService:
     return service
 
 
+def get_dashboard_service(request: Request) -> DashboardService:
+    service = getattr(request.app.state, "dashboard_service", None)
+    if not isinstance(service, DashboardService):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Operational read model unavailable",
+        )
+    return service
+
+
 def require_admin(current_user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
     if current_user.role != "admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
     return current_user
+
+
+@router.get("/api/queue")
+def queue_snapshot(
+    current_user: CurrentUser = Depends(get_current_user),
+    service: DashboardService = Depends(get_dashboard_service),
+) -> dict[str, Any]:
+    """Expose global queue only to admin and the caller's own state to sellers."""
+    try:
+        return service.queue_for_user(current_user)
+    except PermissionDenied as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden") from error
 
 
 @router.post(
