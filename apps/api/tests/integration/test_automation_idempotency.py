@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from bson import ObjectId
 
 from gerec_api.automation.google_sheets_adapter import GoogleSheetsAdapter
 from gerec_api.automation.outbox_worker import (
@@ -109,6 +110,34 @@ def test_webhook_delivery_forwards_the_outbox_idempotency_key(monkeypatch: pytes
 
     assert captured["headers"]["Idempotency-key"] == "assignment-1"
     assert captured["timeout"] == 10
+
+
+def test_webhook_delivery_serializes_bson_and_datetime_payloads(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Breaks if a real Mongo event crashes before reaching the configured provider."""
+    captured: dict[str, Any] = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_: Any) -> None:
+            return None
+
+    def open_request(request: Any, *, timeout: float):
+        captured["headers"] = dict(request.header_items())
+        captured["body"] = request.data
+        return Response()
+
+    occurred_at = datetime(2026, 8, 27, 13, tzinfo=UTC)
+    aggregate_id = ObjectId()
+    monkeypatch.setenv("OUTBOX_DELIVERY_WEBHOOK_URL", "https://provider.example/send")
+    WebhookDeliveryAdapter.from_env(open_request=open_request).deliver(
+        OutboxEvent("event-2", "lead.assigned", "assignment-2", {"leadId": aggregate_id, "occurredAt": occurred_at})
+    )
+
+    body = __import__("json").loads(captured["body"])
+    assert captured["headers"]["Idempotency-key"] == "assignment-2"
+    assert body["payload"] == {"leadId": str(aggregate_id), "occurredAt": occurred_at.isoformat()}
 
 
 class RecordingLeadService:

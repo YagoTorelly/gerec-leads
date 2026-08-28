@@ -14,6 +14,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
+from bson import ObjectId
 from pymongo import ReturnDocument
 
 from gerec_api.config import Settings
@@ -22,6 +23,15 @@ from gerec_api.infrastructure.mongo.collections import MongoCollections
 
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _json_value(value: Any) -> str:
+    """Project only transport-safe representations to the external provider."""
+    if isinstance(value, ObjectId):
+        return str(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    raise TypeError(f"unsupported notification payload value: {type(value).__name__}")
 
 
 @dataclass(frozen=True)
@@ -196,7 +206,10 @@ class WebhookDeliveryAdapter:
         headers = {"Content-Type": "application/json", "Idempotency-Key": event.idempotency_key}
         if self._token:
             headers["Authorization"] = f"Bearer {self._token}"
-        body = json.dumps({"eventType": event.event_type, "idempotencyKey": event.idempotency_key, "payload": event.payload}).encode("utf-8")
+        body = json.dumps(
+            {"eventType": event.event_type, "idempotencyKey": event.idempotency_key, "payload": event.payload},
+            default=_json_value,
+        ).encode("utf-8")
         request = Request(self._url, data=body, headers=headers, method="POST")
         try:
             with self._open_request(request, timeout=10):

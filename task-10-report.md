@@ -21,12 +21,13 @@
 - Contrato de deploy Railway sem credenciais versionadas.
 - Eventos de feedback com contador de tentativas inicial.
 - Fencing de outbox contra worker com lease vencido; provider recebe `Idempotency-Key`; sync antigo não arquiva snapshot novo; cron falho retorna exit code 1.
+- Payloads reais da outbox com `ObjectId` e `datetime` são projetados para strings JSON antes do POST, sem alterar sua chave de idempotência.
 
 ## Verificação
 
 ```text
 pytest -q
-94 passed, 5 skipped in 15.75s
+95 passed, 5 skipped in 15.83s
 
 python -m compileall -q src
 passed
