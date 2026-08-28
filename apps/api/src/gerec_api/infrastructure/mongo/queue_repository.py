@@ -501,6 +501,26 @@ class QueueRepository:
             session=session,
             reason=reason,
         )
+        if self._business_clock is not None:
+            cycle_id = lead_update["feedbackCycleId"]
+            reminder_at = lead_update["feedbackReminderAt"]
+            due_at = lead_update["feedbackDueAt"]
+            self._notification_outbox.insert_one(
+                {
+                    "eventType": "lead.feedback_due_soon",
+                    "aggregateId": lead["_id"],
+                    "actorId": actor_id,
+                    "idempotencyKey": f"{lead['_id']}:{cycle_id}:feedback_due_soon",
+                    "cycleId": cycle_id,
+                    "scheduledFor": reminder_at,
+                    "dueAt": due_at,
+                    "status": "scheduled",
+                    "attempts": 0,
+                    "payload": {"leadId": lead["_id"], "cycleId": cycle_id},
+                    "createdAt": now,
+                },
+                session=session,
+            )
         return AssignmentResult(
             lead_id=str(lead["_id"]),
             assignment_id=str(assignment_id),

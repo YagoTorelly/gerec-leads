@@ -135,10 +135,25 @@ def test_ac22_no_conversion_remains_a_qualified_outcome() -> None:
             "qualified_closed_no_conversion",
             "Cliente recusou a proposta",
             "outcome-no-sale",
+            None,
+            True,
         )
     )
 
     assert result.outcome == "qualified_closed_no_conversion"
+
+
+def test_qualified_outcome_requires_explicit_real_response_confirmation() -> None:
+    """Breaks if qualification can be recorded without confirming a real contact response."""
+    with pytest.raises(ValueError, match="response"):
+        _service().register_outcome(
+            OutcomeCommand(
+                "lead-1",
+                "qualified_follow_up",
+                "Cliente respondeu e pediu retorno",
+                "outcome-unconfirmed",
+            )
+        )
 
 
 def test_attempt_date_has_a_unique_database_guard() -> None:

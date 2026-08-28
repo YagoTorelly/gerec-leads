@@ -32,8 +32,18 @@ class NoHolidays:
 
 
 class FixedClock:
-    def now(self) -> datetime:
+    def now(self, session=None) -> datetime:
         return NOW
+
+
+class SessionClock:
+    def __init__(self, value: datetime) -> None:
+        self.value = value
+        self.sessions = []
+
+    def now(self, session=None) -> datetime:
+        self.sessions.append(session)
+        return self.value
 
 
 class FakeSession:
@@ -157,7 +167,11 @@ def _seed_assigned_lead(database: FakeDatabase, *, state: str = "SP"):
 
 
 def _service(database: FakeDatabase, seller_id: Any, *, role: str = "seller") -> OperationsService:
-    repository = MongoOperationsRepository(database)
+    repository = MongoOperationsRepository(
+        database,
+        clock=FixedClock(),
+        business_clock=BusinessClock(NoHolidays()),
+    )
     return OperationsService(
         repository,
         business_clock=BusinessClock(NoHolidays()),
@@ -173,6 +187,9 @@ def test_ac20_feedback_closes_previous_cycle_and_opens_the_next_atomically() -> 
     result = _service(database, seller_id).register_feedback(
         FeedbackCommand(lead_id, "Cliente pediu retorno", True, "feedback-cycle")
     )
+    replay = _service(database, seller_id).register_feedback(
+        FeedbackCommand(lead_id, "Cliente pediu retorno", True, "feedback-cycle")
+    )
 
     previous = database["feedback_cycles"].find_one({"_id": previous_cycle_id})
     lead = database["leads"].find_one({"_id": lead_id})
@@ -180,9 +197,15 @@ def test_ac20_feedback_closes_previous_cycle_and_opens_the_next_atomically() -> 
     assert result.cycle_id != str(previous_cycle_id)
     assert lead["feedbackDueAt"] == result.due_at
     assert len(database["feedbacks"].documents) == 1
-    assert [event["eventType"] for event in database["notification_outbox"].documents] == [
-        "lead.feedback_recorded"
+    assert replay == result
+    events = database["notification_outbox"].documents
+    assert [event["eventType"] for event in events] == [
+        "lead.feedback_recorded",
+        "lead.feedback_due_soon",
     ]
+    reminder = events[1]
+    assert reminder["scheduledFor"] == result.reminder_at
+    assert reminder["idempotencyKey"] == f"{lead_id}:{result.cycle_id}:feedback_due_soon"
 
 
 def test_ac21_five_distinct_attempts_enable_but_do_not_apply_manual_disqualification() -> None:
@@ -250,6 +273,8 @@ def test_ac22_closed_without_conversion_stays_qualified_and_closes_sla() -> None
             "qualified_closed_no_conversion",
             "Cliente recusou a proposta",
             "closed-no-conversion",
+            None,
+            True,
         )
     )
 
@@ -338,6 +363,32 @@ def test_won_rolls_back_lead_company_cycle_and_event_when_sale_insert_fails() ->
     assert database["feedback_cycles"].find_one({"_id": cycle_id})["closedAt"] is None
     assert database["qualification_events"].documents == []
     assert database["command_results"].documents == []
+
+
+def test_public_feedback_uses_the_database_clock_inside_the_transaction() -> None:
+    """Breaks if process-clock time leaks into the persisted SLA or is read outside session."""
+    database = FakeDatabase()
+    lead_id, _, seller_id, _ = _seed_assigned_lead(database)
+    transaction_clock = SessionClock(NOW)
+    process_clock = FixedClock()
+    repository = MongoOperationsRepository(
+        database,
+        clock=transaction_clock,
+        business_clock=BusinessClock(NoHolidays()),
+    )
+    service = OperationsService(
+        repository,
+        business_clock=BusinessClock(NoHolidays()),
+        clock=process_clock,
+    ).with_actor(seller_id, "seller")
+
+    result = service.register_feedback(
+        FeedbackCommand(lead_id, "Cliente pediu retorno", True, "database-clock")
+    )
+
+    assert result.due_at == datetime(2026, 9, 7, 14, 0, tzinfo=SAO_PAULO)
+    assert transaction_clock.sessions
+    assert all(session is not None for session in transaction_clock.sessions)
 
 
 def test_operations_routes_bind_authenticated_actor_without_exposing_mongodb() -> None:

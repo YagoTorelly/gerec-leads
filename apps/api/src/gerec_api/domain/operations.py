@@ -42,6 +42,7 @@ class OutcomeCommand:
     comment: str
     idempotency_key: str
     disqualification_reason: str | None = None
+    response_confirmed: bool = False
 
 
 @dataclass(frozen=True)
@@ -137,11 +138,11 @@ class OutcomeResult:
 
 
 class Clock(Protocol):
-    def now(self) -> datetime: ...
+    def now(self, session: Any | None = None) -> datetime: ...
 
 
 class SystemClock:
-    def now(self) -> datetime:
+    def now(self, session: Any | None = None) -> datetime:
         return datetime.now(UTC)
 
 
@@ -278,7 +279,10 @@ class OperationsService:
             _comment(command.comment),
             _required(command.idempotency_key, "idempotency key"),
             reason,
+            command.response_confirmed,
         )
+        if command.outcome in {"qualified_follow_up", "qualified_closed_no_conversion"} and not command.response_confirmed:
+            raise ValueError("qualified outcome requires explicit response confirmation")
         return self._persistence.register_outcome(
             command,
             actor_id=self._actor_id,

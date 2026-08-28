@@ -15,7 +15,10 @@ from gerec_api.domain.operations import (
     FeedbackResult,
     OutcomeCommand,
     OutcomeResult,
+    Clock,
+    SystemClock,
 )
+from gerec_api.domain.business_time import BusinessClock
 from gerec_api.infrastructure.mongo.collections import MongoCollections
 
 
@@ -33,8 +36,16 @@ class OperationsStateError(RuntimeError):
 class MongoOperationsRepository:
     """Commit each operational command and all its effects in one Mongo transaction."""
 
-    def __init__(self, database: Any) -> None:
+    def __init__(
+        self,
+        database: Any,
+        *,
+        clock: Clock | None = None,
+        business_clock: BusinessClock | None = None,
+    ) -> None:
         self._database = database
+        self._clock = clock or SystemClock()
+        self._business_clock = business_clock
 
     def register_feedback(
         self,
@@ -51,8 +62,14 @@ class MongoOperationsRepository:
             command.idempotency_key,
             FeedbackResult,
             now,
-            lambda session: self._register_feedback(
-                command, actor_id, actor_role, now, reminder_at, due_at, session
+            lambda session, transaction_now: self._register_feedback(
+                command,
+                actor_id,
+                actor_role,
+                transaction_now,
+                reminder_at,
+                due_at,
+                session,
             ),
         )
 
@@ -70,8 +87,8 @@ class MongoOperationsRepository:
             command.idempotency_key,
             AttemptResult,
             now,
-            lambda session: self._register_attempt(
-                command, actor_id, actor_role, now, business_date, session
+            lambda session, transaction_now: self._register_attempt(
+                command, actor_id, actor_role, transaction_now, business_date, session
             ),
         )
 
@@ -88,7 +105,9 @@ class MongoOperationsRepository:
             command.idempotency_key,
             OutcomeResult,
             now,
-            lambda session: self._register_outcome(command, actor_id, actor_role, now, session),
+            lambda session, transaction_now: self._register_outcome(
+                command, actor_id, actor_role, transaction_now, session
+            ),
         )
 
     def _execute(
@@ -97,7 +116,7 @@ class MongoOperationsRepository:
         idempotency_key: str,
         result_type: type[ResultT],
         now: datetime,
-        operation: Callable[[Any], ResultT],
+        operation: Callable[[Any, datetime], ResultT],
     ) -> ResultT:
         receipt = self._receipt(command_name, idempotency_key)
         if receipt is not None:
@@ -107,13 +126,14 @@ class MongoOperationsRepository:
             existing = self._receipt(command_name, idempotency_key, session=session)
             if existing is not None:
                 return result_type.from_document(existing["result"])
-            result = operation(session)
+            transaction_now = self._clock.now(session)
+            result = operation(session, transaction_now)
             self._command_results.insert_one(
                 {
                     "commandName": command_name,
                     "idempotencyKey": idempotency_key,
                     "result": result.to_document(),
-                    "createdAt": now,
+                    "createdAt": transaction_now,
                 },
                 session=session,
             )
@@ -125,7 +145,7 @@ class MongoOperationsRepository:
         except DuplicateKeyError:
             receipt = self._receipt(command_name, idempotency_key)
             if receipt is None:
-                raise
+                raise OperationsStateError("operation conflicted with a concurrent command") from None
             return result_type.from_document(receipt["result"])
 
     def _receipt(
@@ -184,6 +204,10 @@ class MongoOperationsRepository:
                 str(command.lead_id), str(feedback_id), None, "administrative_note", None, None
             )
 
+        if self._business_clock is None:
+            raise OperationsStateError("business clock is required for seller feedback")
+        reminder_at = self._business_clock.add_business_hours(now, 20)
+        due_at = self._business_clock.add_business_hours(now, 24)
         self._require_current_seller(lead, actor_id, actor_role)
         self._require_active(lead)
         cycle = self._feedback_cycles.find_one(
@@ -243,6 +267,16 @@ class MongoOperationsRepository:
             actor_id,
             command.idempotency_key,
             {"feedbackId": feedback_id, "cycleId": cycle_id, "dueAt": due_at},
+            now,
+            session,
+        )
+        self._schedule_reminder(
+            command.lead_id,
+            cycle_id,
+            reminder_at,
+            due_at,
+            actor_id,
+            command.idempotency_key,
             now,
             session,
         )
@@ -498,6 +532,36 @@ class MongoOperationsRepository:
                 "idempotencyKey": f"{command_id}:{event_type}",
                 "payload": after,
                 "status": "pending",
+                "createdAt": now,
+            },
+            session=session,
+        )
+
+    def _schedule_reminder(
+        self,
+        lead_id: Any,
+        cycle_id: Any,
+        reminder_at: datetime | None,
+        due_at: datetime | None,
+        actor_id: Any,
+        command_id: str,
+        now: datetime,
+        session: Any,
+    ) -> None:
+        if reminder_at is None:
+            return
+        self._notification_outbox.insert_one(
+            {
+                "_id": ObjectId(),
+                "eventType": "lead.feedback_due_soon",
+                "aggregateId": lead_id,
+                "actorId": actor_id,
+                "idempotencyKey": f"{lead_id}:{cycle_id}:feedback_due_soon",
+                "cycleId": cycle_id,
+                "scheduledFor": reminder_at,
+                "dueAt": due_at,
+                "status": "scheduled",
+                "payload": {"leadId": lead_id, "cycleId": cycle_id},
                 "createdAt": now,
             },
             session=session,

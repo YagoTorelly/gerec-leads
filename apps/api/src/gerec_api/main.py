@@ -8,9 +8,10 @@ from gerec_api.auth.sessions import AuthService
 from gerec_api.config import Settings
 from gerec_api.domain.business_time import BusinessClock, MongoHolidayRepository
 from gerec_api.domain.leads import LeadService
-from gerec_api.domain.operations import OperationsService, SystemClock
+from gerec_api.domain.operations import OperationsService
 from gerec_api.domain.queue import QueueService
 from gerec_api.infrastructure.mongo.client import MongoClientFactory
+from gerec_api.infrastructure.mongo.clock import MongoClock
 from gerec_api.infrastructure.mongo.collections import MongoCollections
 from gerec_api.infrastructure.mongo.lead_repository import LeadRepository
 from gerec_api.infrastructure.mongo.operations_repository import MongoOperationsRepository
@@ -39,13 +40,18 @@ def create_app(
     business_clock = BusinessClock(
         MongoHolidayRepository(database[MongoCollections.HOLIDAYS])
     )
+    database_clock = MongoClock(database)
     app.state.queue_service = QueueService(
         QueueRepository(database, business_clock=business_clock)
     )
     app.state.operations_service = OperationsService(
-        MongoOperationsRepository(database),
+        MongoOperationsRepository(
+            database,
+            clock=database_clock,
+            business_clock=business_clock,
+        ),
         business_clock=business_clock,
-        clock=SystemClock(),
+        clock=database_clock,
     )
 
     @app.get("/health")

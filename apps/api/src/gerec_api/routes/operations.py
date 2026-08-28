@@ -39,6 +39,7 @@ class OutcomeRequest(BaseModel):
     comment: str = Field(min_length=1, max_length=2_000)
     idempotency_key: str = Field(min_length=1, max_length=200)
     disqualification_reason: str | None = None
+    response_confirmed: bool = False
 
 
 class AdministrativeNoteRequest(BaseModel):
@@ -115,6 +116,7 @@ def register_outcome(
                 payload.comment,
                 payload.idempotency_key,
                 payload.disqualification_reason,
+                payload.response_confirmed,
             )
         )
     )

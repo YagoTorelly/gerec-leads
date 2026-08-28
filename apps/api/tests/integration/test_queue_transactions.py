@@ -176,8 +176,18 @@ def test_ac01_normal_rotation_is_atomic_and_first_assignment_defines_owner() -> 
         == datetime(2026, 8, 28, 12, tzinfo=ZoneInfo("America/Sao_Paulo"))
         for lead_id in leads
     )
+    reminders = [
+        event
+        for event in database["notification_outbox"].documents
+        if event["eventType"] == "lead.feedback_due_soon"
+    ]
+    assert len(reminders) == 4
+    for reminder in reminders:
+        assert reminder["idempotencyKey"] == (
+            f"{reminder['aggregateId']}:{reminder['cycleId']}:feedback_due_soon"
+        )
     assert len(database["audit_log"].documents) == 4
-    assert len(database["notification_outbox"].documents) == 4
+    assert len(database["notification_outbox"].documents) == 8
     for lead_id in leads:
         lead = database["leads"].find_one({"_id": lead_id})
         company = database["companies"].find_one({"_id": lead["companyId"]})
@@ -410,7 +420,7 @@ def test_command_replay_returns_original_result_without_duplicate_side_effects()
     assert replay == first
     assert len(database["assignments"].documents) == 1
     assert len(database["audit_log"].documents) == 1
-    assert len(database["notification_outbox"].documents) == 1
+    assert len(database["notification_outbox"].documents) == 2
 
 
 def test_internal_queue_route_calls_the_transactional_service_without_exposing_mongodb() -> None:
