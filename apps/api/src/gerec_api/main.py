@@ -11,6 +11,7 @@ from gerec_api.domain.business_time import BusinessClock, MongoHolidayRepository
 from gerec_api.domain.leads import LeadService
 from gerec_api.domain.operations import OperationsService
 from gerec_api.domain.queue import QueueService
+from gerec_api.domain.user_administration import UserAdministrationService
 from gerec_api.infrastructure.mongo.client import MongoClientFactory
 from gerec_api.infrastructure.mongo import bootstrap
 from gerec_api.infrastructure.mongo.clock import MongoClock
@@ -18,6 +19,7 @@ from gerec_api.infrastructure.mongo.collections import MongoCollections
 from gerec_api.infrastructure.mongo.lead_repository import LeadRepository
 from gerec_api.infrastructure.mongo.operations_repository import MongoOperationsRepository
 from gerec_api.infrastructure.mongo.queue_repository import QueueRepository
+from gerec_api.infrastructure.mongo.user_repository import UserRepository
 from gerec_api.routes.auth import router as auth_router
 from gerec_api.routes.leads import router as leads_router
 from gerec_api.routes.operations import router as operations_router
@@ -63,6 +65,9 @@ def create_app(
         ),
         business_clock=business_clock,
         clock=database_clock,
+    )
+    app.state.user_administration_service = UserAdministrationService(
+        UserRepository(database)
     )
 
     @app.middleware("http")

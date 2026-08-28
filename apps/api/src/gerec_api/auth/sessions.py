@@ -98,6 +98,10 @@ class AuthService:
             {"$set": {"revokedAt": now, "updatedAt": now}},
         )
 
+    def revoke_all_for_user(self, user_id: Any) -> None:
+        """Invalidate every currently active session for one account."""
+        revoke_sessions_for_user(self._sessions, user_id, now=_as_utc(self._now()))
+
     def current_user(self, raw_token: str) -> CurrentUser:
         """Resolve a current user only from an unrevoked, unexpired opaque session."""
         if not raw_token:
@@ -130,6 +134,22 @@ def _normalize_email(email: str) -> str:
 
 def _token_hash(raw_token: str) -> str:
     return sha256(raw_token.encode("utf-8")).hexdigest()
+
+
+def revoke_sessions_for_user(
+    sessions: Any,
+    user_id: Any,
+    *,
+    now: datetime,
+    session: Any | None = None,
+) -> None:
+    """Revoke all active sessions, optionally in the caller's Mongo transaction."""
+    options = {} if session is None else {"session": session}
+    sessions.update_many(
+        {"userId": user_id, "revokedAt": None},
+        {"$set": {"revokedAt": now, "updatedAt": now}},
+        **options,
+    )
 
 
 def _current_user_from_document(user: Mapping[str, Any]) -> CurrentUser:

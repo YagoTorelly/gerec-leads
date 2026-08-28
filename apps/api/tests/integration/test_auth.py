@@ -37,6 +37,11 @@ class FakeCollection:
                 document.update(deepcopy(update["$set"]))
                 return
 
+    def update_many(self, query: dict[str, Any], update: dict[str, Any]) -> None:
+        for document in self.documents:
+            if _matches(document, query):
+                document.update(deepcopy(update["$set"]))
+
 
 class FakeDatabase:
     def __init__(self) -> None:
@@ -225,3 +230,24 @@ def test_logout_clears_the_cookie_and_revokes_its_persisted_session() -> None:
     assert response.status_code == 204
     assert "max-age=0" in response.headers["set-cookie"].lower()
     assert database["sessions"].documents[0]["revokedAt"] is not None
+
+
+def test_revoke_all_for_user_invalidates_every_active_session() -> None:
+    """Breaks if a password reset cannot revoke all sessions for one account."""
+    database = FakeDatabase()
+    user_id = _seed_active_user(database)
+    now = datetime(2026, 8, 27, 12, tzinfo=UTC)
+    service = AuthService(database, now=lambda: now)
+    first = service.login("yago@wtgseguros.com.br", "Senha-inicial-2026!")
+    second = service.login("yago@wtgseguros.com.br", "Senha-inicial-2026!")
+
+    service.revoke_all_for_user(user_id)
+
+    for token in (first.raw_token, second.raw_token):
+        try:
+            service.current_user(token)
+        except InvalidSessionError:
+            pass
+        else:
+            raise AssertionError("every active session must be revoked")
+    assert all(session["revokedAt"] == now for session in database["sessions"].documents)
