@@ -127,7 +127,10 @@ class MongoOperationsRepository:
             existing = self._receipt(command_name, idempotency_key, session=session)
             if existing is not None:
                 return result_type.from_document(existing["result"])
-            transaction_now = self._clock.now(session)
+            # `now` is MongoDB server time captured once before the transaction.
+            # Reusing it avoids the forbidden `hello` command inside a transaction
+            # and gives retryable callbacks one stable timestamp.
+            transaction_now = now
             result = operation(session, transaction_now)
             self._command_results.insert_one(
                 {
@@ -237,6 +240,7 @@ class MongoOperationsRepository:
         )
         if closed.matched_count != 1:
             raise OperationsStateError("feedback cycle changed concurrently")
+        self._cancel_cycle_reminder(cycle["_id"], now, session)
 
         cycle_id = ObjectId()
         self._feedbacks.insert_one(
@@ -386,6 +390,14 @@ class MongoOperationsRepository:
             )
             if attempts < 5:
                 raise OperationsStateError("no-answer disqualification requires five attempts")
+        elif command.disqualification_reason == "outside_sp":
+            if str(lead.get("state", "")).strip().upper() == "SP":
+                raise OperationsStateError("outside SP reason requires a lead outside SP")
+        elif command.disqualification_reason == "no_cnpj":
+            company = self._companies.find_one({"_id": lead["companyId"]}, session=session)
+            document = "" if company is None else str(company.get("documentNormalized", ""))
+            if len(document) == 14:
+                raise OperationsStateError("company already has CNPJ")
 
         outcome_event_id = ObjectId()
         qualification_status, conversion_status = self._statuses(command.outcome, lead)
@@ -411,6 +423,7 @@ class MongoOperationsRepository:
                 )
                 if closed.matched_count != 1:
                     raise OperationsStateError("feedback cycle changed concurrently")
+                self._cancel_cycle_reminder(cycle["_id"], now, session)
 
         sale_id: ObjectId | None = None
         company_before = None
@@ -591,6 +604,17 @@ class MongoOperationsRepository:
                 "payload": {"leadId": lead_id, "cycleId": cycle_id},
                 "createdAt": now,
             },
+            session=session,
+        )
+
+    def _cancel_cycle_reminder(self, cycle_id: Any, now: datetime, session: Any) -> None:
+        self._notification_outbox.update_one(
+            {
+                "cycleId": cycle_id,
+                "eventType": "lead.feedback_due_soon",
+                "status": "scheduled",
+            },
+            {"$set": {"status": "cancelled", "cancelledAt": now}},
             session=session,
         )
 

@@ -15,9 +15,12 @@ from pymongo.errors import DuplicateKeyError
 from gerec_api.automation.workbook_adapter import WorkbookAdapter
 from gerec_api.config import Settings
 from gerec_api.domain.leads import LeadService
+from gerec_api.domain.business_time import BusinessClock, MongoHolidayRepository
+from gerec_api.domain.queue import QueueService
 from gerec_api.domain.normalization import NormalizedSourceRow, normalize_source_row
 from gerec_api.infrastructure.mongo.client import MongoClientFactory
 from gerec_api.infrastructure.mongo.lead_repository import LeadRepository
+from gerec_api.infrastructure.mongo.queue_repository import QueueRepository
 from gerec_api.infrastructure.mongo.collections import MongoCollections
 
 
@@ -134,8 +137,15 @@ class MongoSyncLeaseRepository(SyncLeaseRepository):
 class SyncJob:
     """Keep ingestion in the existing domain service; never assign leads directly."""
 
-    def __init__(self, lead_service: LeadService, *, leases: SyncLeaseRepository | None = None) -> None:
+    def __init__(
+        self,
+        lead_service: LeadService,
+        *,
+        queue_service: QueueService | Any | None = None,
+        leases: SyncLeaseRepository | None = None,
+    ) -> None:
         self._lead_service = lead_service
+        self._queue_service = queue_service
         self._leases = leases
 
     def run(self, source: Any, run_id: str) -> SyncResult:
@@ -148,6 +158,7 @@ class SyncJob:
             return SyncResult(snapshot_id, 0, 0, 0, 0, 0, 0, 0, skipped=True)
         counts = {"created": 0, "updated": 0, "ignored": 0, "pending": 0}
         read_rows = 0
+        distributed_leads: set[str] = set()
         try:
             for raw_row in self._rows(source):
                 self._heartbeat(lease)
@@ -157,6 +168,17 @@ class SyncJob:
                 read_rows += 1
                 if result.status in counts:
                     counts[result.status] += 1
+                if (
+                    self._queue_service is not None
+                    and result.assignment_status == "ready"
+                    and result.lead_id is not None
+                    and result.lead_id not in distributed_leads
+                ):
+                    self._queue_service.distribute_ready(
+                        result.lead_id,
+                        f"sync:{snapshot_id}:distribute:{result.lead_id}",
+                    )
+                    distributed_leads.add(result.lead_id)
             self._heartbeat(lease)
             archive = self._lead_service.archive_missing(snapshot_id)
         except Exception:
@@ -196,4 +218,13 @@ def run_sync(source: Any, run_id: str) -> SyncResult:
     """Railway entry point; credentials stay in the Python process environment."""
     settings = Settings.from_env()
     database = MongoClientFactory.create(settings)
-    return SyncJob(LeadService(LeadRepository(database)), leases=MongoSyncLeaseRepository(database)).run(source, run_id)
+    business_clock = BusinessClock(
+        MongoHolidayRepository(database[MongoCollections.HOLIDAYS])
+    )
+    return SyncJob(
+        LeadService(LeadRepository(database)),
+        queue_service=QueueService(
+            QueueRepository(database, business_clock=business_clock), actor_id="google-sheets-sync"
+        ),
+        leases=MongoSyncLeaseRepository(database),
+    ).run(source, run_id)

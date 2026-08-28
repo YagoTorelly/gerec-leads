@@ -20,6 +20,7 @@ from gerec_api.infrastructure.mongo.collections import MongoCollections
 
 
 NORMAL_COMMAND = "queue.distribute_normal"
+READY_COMMAND = "queue.distribute_ready"
 RECURRING_COMMAND = "queue.assign_recurring"
 TEMPORARY_COMMAND = "queue.assign_temporarily"
 TRANSFER_COMMAND = "queue.transfer_owner"
@@ -69,6 +70,16 @@ class QueueRepository:
                 if attempt < 99:
                     sleep(0.01)
         raise QueueStateError(str(pending_error))
+
+    def distribute_ready(
+        self, lead_id: Any, command_id: str, *, actor_id: Any
+    ) -> AssignmentResult:
+        return self._execute(
+            READY_COMMAND,
+            command_id,
+            AssignmentResult,
+            lambda session: self._distribute_ready(lead_id, command_id, actor_id, session),
+        )
 
     def assign_recurring(
         self, lead_id: Any, command_id: str, *, actor_id: Any
@@ -268,6 +279,19 @@ class QueueRepository:
             now,
             session,
         )
+
+    def _distribute_ready(
+        self,
+        lead_id: Any,
+        command_id: str,
+        actor_id: Any,
+        session: Any,
+    ) -> AssignmentResult:
+        lead = self._available_lead(lead_id, session)
+        company = self._companies.find_one({"_id": lead["companyId"]}, session=session)
+        if company is not None and company.get("ownerId") is not None:
+            return self._assign_recurring(lead_id, command_id, actor_id, session)
+        return self._distribute_normal(lead_id, command_id, actor_id, session)
 
     def _assign_recurring(
         self,

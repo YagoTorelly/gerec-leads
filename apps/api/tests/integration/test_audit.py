@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 
 import pytest
+from bson import ObjectId
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -64,6 +65,32 @@ def test_dashboard_reads_are_paginated_and_expose_audit_ready_ids():
     assert payload["leads"]["pageSize"] == 50
 
 
+def test_dashboard_serializes_nested_bson_identifiers() -> None:
+    """Breaks if a real Mongo document reaches FastAPI with a nested ObjectId."""
+    database = Database()
+    seller_id = ObjectId()
+    company_id = ObjectId()
+    database["leads"] = Collection(
+        [
+            {
+                "_id": ObjectId(),
+                "assigneeId": seller_id,
+                "companyId": company_id,
+                "metadata": {"relatedIds": [ObjectId()]},
+            }
+        ]
+    )
+
+    payload = DashboardService(database).for_user(
+        CurrentUser(str(seller_id), "seller@example.test", "seller")
+    )
+
+    item = payload["leads"]["items"][0]
+    assert item["assigneeId"] == str(seller_id)
+    assert item["companyId"] == str(company_id)
+    assert isinstance(item["metadata"]["relatedIds"][0], str)
+
+
 def test_dashboard_page_two_skips_first_page():
     database = Database()
     database["leads"] = Collection([{"_id": f"lead-{i}", "assigneeId": "seller-1"} for i in range(3)])
@@ -101,6 +128,36 @@ def test_admin_route_returns_403_for_seller():
     )
     response = TestClient(app).get("/api/admin/users")
     assert response.status_code == 403
+
+
+def test_admin_route_returns_2xx_with_real_nested_bson_documents() -> None:
+    """Breaks if admin pagination only stringifies the top-level `_id`."""
+    database = Database()
+    user_id = ObjectId()
+    database["users"] = Collection(
+        [
+            {
+                "_id": user_id,
+                "emailNormalized": "admin@example.test",
+                "managerId": ObjectId(),
+                "preferences": {"campaignIds": [ObjectId()]},
+            }
+        ]
+    )
+    app = FastAPI()
+    app.state.database = database
+    app.include_router(admin_router)
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        str(user_id), "admin@example.test", "admin"
+    )
+
+    response = TestClient(app).get("/api/admin/users")
+
+    assert response.status_code == 200
+    body = response.json()["items"][0]
+    assert body["id"] == str(user_id)
+    assert isinstance(body["managerId"], str)
+    assert isinstance(body["preferences"]["campaignIds"][0], str)
 
 
 def test_seller_scopes_history_queue_and_balance_to_session_identity():

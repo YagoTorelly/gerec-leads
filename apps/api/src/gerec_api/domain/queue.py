@@ -134,6 +134,10 @@ class TransferResult:
 
 
 class QueuePersistence(Protocol):
+    def distribute_ready(
+        self, lead_id: Any, command_id: str, *, actor_id: Any
+    ) -> AssignmentResult: ...
+
     def distribute_normal(
         self, lead_id: Any, command_id: str, *, actor_id: Any
     ) -> AssignmentResult: ...
@@ -177,6 +181,14 @@ class QueueService:
 
     def distribute_normal(self, lead_id: Any, command_id: str) -> AssignmentResult:
         return self._persistence.distribute_normal(
+            lead_id,
+            _required(command_id, "command id"),
+            actor_id=self._actor_id,
+        )
+
+    def distribute_ready(self, lead_id: Any, command_id: str) -> AssignmentResult:
+        """Assign a ready lead using recurring ownership or the global queue."""
+        return self._persistence.distribute_ready(
             lead_id,
             _required(command_id, "command id"),
             actor_id=self._actor_id,

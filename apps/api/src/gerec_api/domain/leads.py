@@ -14,6 +14,7 @@ class ImportResult:
     source_record_id: str
     lead_id: str | None
     pending_reasons: tuple[str, ...] = ()
+    assignment_status: str | None = None
 
     def to_document(self) -> dict[str, Any]:
         return {
@@ -21,6 +22,7 @@ class ImportResult:
             "sourceRecordId": self.source_record_id,
             "leadId": self.lead_id,
             "pendingReasons": list(self.pending_reasons),
+            "assignmentStatus": self.assignment_status,
         }
 
     @classmethod
@@ -30,6 +32,11 @@ class ImportResult:
             source_record_id=str(value["sourceRecordId"]),
             lead_id=str(value["leadId"]) if value.get("leadId") is not None else None,
             pending_reasons=tuple(str(item) for item in value.get("pendingReasons", [])),
+            assignment_status=(
+                str(value["assignmentStatus"])
+                if value.get("assignmentStatus") is not None
+                else None
+            ),
         )
 
 

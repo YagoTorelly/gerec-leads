@@ -90,12 +90,18 @@ class LeadRepository:
         if identical:
             source_id = existing_source["_id"]
             lead_id = existing_source.get("leadId")
+            lead = (
+                self._leads.find_one({"_id": lead_id}, session=session)
+                if lead_id is not None
+                else None
+            )
             self._mark_source_seen(source_id, row.source_snapshot_id, now, session)
             result = ImportResult(
                 status="ignored",
                 source_record_id=str(source_id),
                 lead_id=str(lead_id) if lead_id is not None else None,
                 pending_reasons=tuple(existing_source.get("pendingReasons", [])),
+                assignment_status=(lead.get("assignmentStatus") if lead is not None else None),
             )
         else:
             pending_reasons = list(row.data_issues)
@@ -130,6 +136,7 @@ class LeadRepository:
                 source_record_id=str(source_id),
                 lead_id=str(lead_id) if lead_id is not None else None,
                 pending_reasons=tuple(pending_reasons),
+                assignment_status=(lead.get("assignmentStatus") if lead_id is not None else None),
             )
 
         self._command_results.insert_one(
@@ -214,7 +221,7 @@ class LeadRepository:
             "archivedAt": None,
         }
         lead = self._leads.find_one(query, session=session)
-        fields = {
+        source_fields = {
             "sourceEnteredAt": row.source_entered_at,
             "contactName": row.contact_name,
             "phoneNormalized": row.phone_normalized,
@@ -222,19 +229,23 @@ class LeadRepository:
             "state": row.state,
             "adExternalId": row.ad_external_id,
             "adName": row.ad_name,
-            "assignmentStatus": "ready" if campaign["status"] == "approved" else "pending_campaign",
             "updatedAt": now,
         }
         if lead is None:
             document = {
                 **query,
-                **fields,
+                **source_fields,
+                "assignmentStatus": "ready" if campaign["status"] == "approved" else "pending_campaign",
                 "qualificationStatus": "pending",
                 "conversionStatus": "active",
                 "createdAt": now,
             }
             result = self._leads.insert_one(document, session=session)
             return {"_id": result.inserted_id, **document}, True
+        operational_fields: dict[str, Any] = {}
+        if lead.get("assignmentStatus") == "pending_campaign" and campaign["status"] == "approved":
+            operational_fields["assignmentStatus"] = "ready"
+        fields = {**source_fields, **operational_fields}
         self._leads.update_one({"_id": lead["_id"]}, {"$set": fields}, session=session)
         return {**lead, **fields}, False
 

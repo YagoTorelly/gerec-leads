@@ -200,6 +200,45 @@ def test_changed_informational_source_field_updates_the_source_record() -> None:
     assert stored["payload"]["lead_status"] == "CONTACTED"
 
 
+def test_reimport_updates_source_fields_without_resetting_assigned_or_final_lead_state() -> None:
+    """Breaks if a spreadsheet refresh reopens distribution or a completed sale."""
+    database = FakeDatabase()
+    database["campaigns"].insert_one(
+        {
+            "identityKey": "external:campaign-a",
+            "externalId": "campaign-a",
+            "sourceName": "Campaign campaign-a",
+            "status": "approved",
+        }
+    )
+    service = LeadService(LeadRepository(database))
+    row = _complete_row("source-final")
+    service.import_row(row, "command-initial")
+    lead = database["leads"].documents[0]
+    lead.update(
+        {
+            "assignmentStatus": "assigned",
+            "assigneeId": ObjectId(),
+            "qualificationStatus": "qualified",
+            "conversionStatus": "won",
+            "outcomeEventId": ObjectId(),
+            "wonAt": row.source_entered_at,
+        }
+    )
+
+    changed = normalize_source_row({**row.source_payload, "full_name": "Maria Atualizada"})
+    result = service.import_row(changed, "command-refresh")
+
+    stored = database["leads"].documents[0]
+    assert stored["contactName"] == "Maria Atualizada"
+    assert result.assignment_status == "assigned"
+    assert stored["assignmentStatus"] == "assigned"
+    assert stored["qualificationStatus"] == "qualified"
+    assert stored["conversionStatus"] == "won"
+    assert "outcomeEventId" in stored
+    assert "wonAt" in stored
+
+
 def test_valid_source_becoming_pending_detaches_and_archives_its_only_lead() -> None:
     """Breaks if a newly invalid source leaves its previous lead active and distributable."""
     database = FakeDatabase()

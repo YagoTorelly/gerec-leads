@@ -5,14 +5,15 @@ from typing import Any
 
 
 class MongoClock:
-    """Read MongoDB's server clock, preserving the transaction session when present."""
+    """Read MongoDB's server clock before starting a transaction."""
 
     def __init__(self, database: Any) -> None:
         self._database = database
 
     def now(self, session: Any | None = None) -> datetime:
-        options = {} if session is None else {"session": session}
-        local_time = self._database.command({"hello": 1}, **options)["localTime"]
+        if session is not None:
+            raise RuntimeError("MongoClock must be read before starting a transaction")
+        local_time = self._database.command({"hello": 1})["localTime"]
         if local_time.tzinfo is None:
             return local_time.replace(tzinfo=UTC)
         return local_time.astimezone(UTC)

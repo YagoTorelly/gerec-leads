@@ -39,7 +39,7 @@ class RecordingLeadService:
 
     def import_row(self, row: Any, key: str) -> ImportResult:
         self.imports.setdefault(key, row)
-        return ImportResult("created", row.source_lead_id, None)
+        return ImportResult("created", row.source_lead_id, row.source_lead_id, (), "ready")
 
     def archive_missing(self, snapshot_id: str) -> ArchiveResult:
         if snapshot_id not in self.archives:
@@ -64,6 +64,29 @@ def test_sync_job_replays_a_complete_snapshot_with_stable_per_row_keys() -> None
     }
     assert {row.source_snapshot_id for row in service.imports.values()} == {"run-20260827-1000"}
     assert service.archives == ["run-20260827-1000"]
+
+
+class RecordingQueueService:
+    def __init__(self) -> None:
+        self.commands: list[tuple[str, str]] = []
+
+    def distribute_ready(self, lead_id: str, command_id: str) -> None:
+        self.commands.append((lead_id, command_id))
+
+
+def test_sync_job_distributes_each_ready_lead_through_queue_service() -> None:
+    """Breaks if synchronization leaves ready leads idle or assigns outside QueueService."""
+    service = RecordingLeadService()
+    queue = RecordingQueueService()
+
+    SyncJob(service, queue_service=queue).run(
+        [_row("source-a"), _row("source-b")], "run-20260827-1000"
+    )
+
+    assert queue.commands == [
+        ("source-a", "sync:run-20260827-1000:distribute:source-a"),
+        ("source-b", "sync:run-20260827-1000:distribute:source-b"),
+    ]
 
 
 class InMemoryOutboxRepository:
@@ -146,6 +169,10 @@ def test_railway_deployment_contract_documents_api_worker_cron_and_server_only_s
 
     assert config["$schema"] == "https://railway.com/railway.schema.json"
     assert config["build"]["buildCommand"] == "pip install ./apps/api"
+    assert config["deploy"]["startCommand"] == (
+        "uvicorn gerec_api.main:create_app --factory --host 0.0.0.0 --port $PORT"
+    )
+    assert config["deploy"]["healthcheckPath"] == "/health"
     assert "uvicorn gerec_api.main:create_app" in guide
     assert "python -m gerec_api.automation.outbox_worker" in guide
     assert "python -m gerec_api.automation.scheduler" in guide

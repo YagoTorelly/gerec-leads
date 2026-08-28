@@ -8,6 +8,7 @@ from gerec_api.auth.dependencies import get_current_user
 from gerec_api.auth.permissions import PermissionDenied, PermissionService
 from gerec_api.auth.sessions import CurrentUser
 from gerec_api.infrastructure.mongo.collections import MongoCollections
+from gerec_api.infrastructure.mongo.serialization import serialize_bson
 
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -39,7 +40,7 @@ def _page(request: Request, current_user: CurrentUser, collection_name: str, que
             item["id"] = str(item.pop("_id"))
         for field in SENSITIVE_FIELDS:
             item.pop(field, None)
-        items.append(item)
+        items.append(serialize_bson(item))
     total = collection.count_documents(query) if hasattr(collection, "count_documents") else len(items)
     return {"items": items, "page": page, "pageSize": limit, "total": total}
 

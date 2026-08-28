@@ -313,6 +313,37 @@ def test_ac23_outside_sp_remains_active_until_explicit_manual_outcome() -> None:
     assert database["leads"].find_one({"_id": lead_id})["qualificationStatus"] == "disqualified"
 
 
+def test_disqualification_reasons_must_match_the_lead_evidence() -> None:
+    """Breaks if a seller can select an inapplicable canonical reason."""
+    database = FakeDatabase()
+    lead_id, company_id, seller_id, _ = _seed_assigned_lead(database, state="SP")
+    database["companies"].update_one(
+        {"_id": company_id}, {"$set": {"documentNormalized": "04252011000110"}}
+    )
+    service = _service(database, seller_id)
+
+    with pytest.raises(OperationsStateError, match="outside SP"):
+        service.register_outcome(
+            OutcomeCommand(
+                lead_id,
+                "disqualified",
+                "Motivo incompatÃ­vel com o cadastro",
+                "invalid-outside-sp",
+                "outside_sp",
+            )
+        )
+    with pytest.raises(OperationsStateError, match="already has CNPJ"):
+        service.register_outcome(
+            OutcomeCommand(
+                lead_id,
+                "disqualified",
+                "Motivo incompatÃ­vel com o cadastro",
+                "invalid-no-cnpj",
+                "no_cnpj",
+            )
+        )
+
+
 def test_ac24_ac28_won_is_idempotent_marks_client_and_preserves_owner() -> None:
     """Breaks if replay creates two sales/events or temporary work changes company ownership."""
     database = FakeDatabase()
@@ -335,6 +366,27 @@ def test_ac24_ac28_won_is_idempotent_marks_client_and_preserves_owner() -> None:
     outcome_audit = database["audit_log"].documents[-1]
     assert outcome_audit["before"]["company"]["clientSince"] is None
     assert outcome_audit["after"]["company"]["clientSince"] == NOW
+
+
+def test_terminal_outcome_cancels_the_open_cycle_scheduled_reminder() -> None:
+    """Breaks if a closed lead still sends its four-hour SLA reminder."""
+    database = FakeDatabase()
+    lead_id, _, seller_id, cycle_id = _seed_assigned_lead(database)
+    database["notification_outbox"].insert_one(
+        {
+            "eventType": "lead.feedback_due_soon",
+            "cycleId": cycle_id,
+            "status": "scheduled",
+        }
+    )
+
+    _service(database, seller_id).register_outcome(
+        OutcomeCommand(lead_id, "won", "Venda confirmada", "won-cancels-reminder")
+    )
+
+    reminder = database["notification_outbox"].find_one({"cycleId": cycle_id})
+    assert reminder["status"] == "cancelled"
+    assert reminder["cancelledAt"] == NOW
 
 
 def test_ac30_administrative_note_does_not_change_deadline_or_close_cycle() -> None:
@@ -383,12 +435,12 @@ def test_won_rolls_back_lead_company_cycle_and_event_when_sale_insert_fails() ->
     assert database["command_results"].documents == []
 
 
-def test_public_feedback_uses_the_database_clock_inside_the_transaction() -> None:
-    """Breaks if process-clock time leaks into the persisted SLA or is read outside session."""
+def test_public_feedback_reuses_the_server_timestamp_without_a_command_in_transaction() -> None:
+    """Breaks if a transaction executes MongoDB `hello` or changes time between retries."""
     database = FakeDatabase()
     lead_id, _, seller_id, _ = _seed_assigned_lead(database)
     transaction_clock = SessionClock(NOW)
-    process_clock = FixedClock()
+    process_clock = SessionClock(NOW)
     repository = MongoOperationsRepository(
         database,
         clock=transaction_clock,
@@ -405,8 +457,8 @@ def test_public_feedback_uses_the_database_clock_inside_the_transaction() -> Non
     )
 
     assert result.due_at == datetime(2026, 9, 7, 14, 0, tzinfo=SAO_PAULO)
-    assert transaction_clock.sessions
-    assert all(session is not None for session in transaction_clock.sessions)
+    assert process_clock.sessions == [None]
+    assert transaction_clock.sessions == []
 
 
 def test_operations_routes_bind_authenticated_actor_without_exposing_mongodb() -> None:

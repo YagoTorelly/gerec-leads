@@ -12,6 +12,7 @@ from gerec_api.domain.leads import LeadService
 from gerec_api.domain.operations import OperationsService
 from gerec_api.domain.queue import QueueService
 from gerec_api.infrastructure.mongo.client import MongoClientFactory
+from gerec_api.infrastructure.mongo import bootstrap
 from gerec_api.infrastructure.mongo.clock import MongoClock
 from gerec_api.infrastructure.mongo.collections import MongoCollections
 from gerec_api.infrastructure.mongo.lead_repository import LeadRepository
@@ -36,10 +37,13 @@ def create_app(
 ) -> FastAPI:
     """Create the HTTP app with a lazily connected MongoDB handle and auth service."""
     settings = settings or Settings.from_env()
-    if database is None:
+    owns_database = database is None
+    if owns_database:
         database = MongoClientFactory.create(settings)
+        bootstrap.ensure_schema(database)
     app = FastAPI(title="Gerenciador de Leads WTG API")
     app.state.settings = settings
+    app.state.schema_ready = True
     app.state.database = database
     app.state.auth_service = auth_service if auth_service is not None else AuthService(database)
     app.state.dashboard_service = DashboardService(database)

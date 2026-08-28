@@ -8,6 +8,7 @@ from bson import ObjectId
 
 from gerec_api.auth.sessions import CurrentUser
 from gerec_api.infrastructure.mongo.collections import MongoCollections
+from gerec_api.infrastructure.mongo.serialization import serialize_bson
 
 
 class PermissionDenied(PermissionError):
@@ -130,4 +131,4 @@ def _public_document(document: Mapping[str, Any]) -> dict[str, Any]:
     result = dict(document)
     if "_id" in result:
         result["id"] = str(result.pop("_id"))
-    return result
+    return serialize_bson(result)
