@@ -10,8 +10,6 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$logDirectory = Join-Path $ProjectRoot ".local\logs"
-$null = New-Item -ItemType Directory -Force -Path $logDirectory
 
 if ([string]::IsNullOrWhiteSpace($MongoUri)) { throw "Define MONGODB_URI or pass -MongoUri." }
 if ([string]::IsNullOrWhiteSpace($MongoDatabase)) { throw "Define MONGODB_DATABASE or pass -MongoDatabase." }
@@ -22,12 +20,33 @@ $powershell = (Get-Command powershell.exe).Source
 & (Join-Path $PSScriptRoot "start-mongodb.ps1") -ProjectRoot $ProjectRoot
 & (Join-Path $PSScriptRoot "mongodb-bootstrap.ps1") -MongoUri $MongoUri -MongoDatabase $MongoDatabase
 
-$apiLog = Join-Path $logDirectory "api.log"
-$apiArguments = "-NoProfile -ExecutionPolicy Bypass -File `"$PSScriptRoot\start-api.ps1`" -ProjectRoot `"$ProjectRoot`" -MongoUri `"$MongoUri`" -MongoDatabase `"$MongoDatabase`" -AppSecret `"$AppSecret`" -Port $ApiPort"
-Start-Process -FilePath $powershell -ArgumentList $apiArguments -WorkingDirectory $ProjectRoot -WindowStyle Hidden -RedirectStandardOutput $apiLog -RedirectStandardError $apiLog
+function Start-LocalProcess {
+  param(
+    [string]$ScriptPath,
+    [string]$Arguments,
+    [hashtable]$Environment
+  )
 
-$webLog = Join-Path $logDirectory "web.log"
-$webArguments = "-NoProfile -ExecutionPolicy Bypass -File `"$PSScriptRoot\start-web.ps1`" -ProjectRoot `"$ProjectRoot`" -ApiUrl `"$ApiUrl`" -Port $WebPort"
-Start-Process -FilePath $powershell -ArgumentList $webArguments -WorkingDirectory $ProjectRoot -WindowStyle Hidden -RedirectStandardOutput $webLog -RedirectStandardError $webLog
+  $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+  $startInfo.FileName = $powershell
+  $startInfo.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" -ProjectRoot `"$ProjectRoot`" $Arguments"
+  $startInfo.WorkingDirectory = $ProjectRoot
+  $startInfo.UseShellExecute = $false
+  $startInfo.CreateNoWindow = $true
+  foreach ($entry in $Environment.GetEnumerator()) {
+    $startInfo.EnvironmentVariables[$entry.Key] = $entry.Value
+  }
 
-Write-Output "MongoDB, API and web started. Logs: $logDirectory"
+  $process = [System.Diagnostics.Process]::Start($startInfo)
+  if ($null -eq $process) { throw "Failed to start $ScriptPath." }
+}
+
+$backendEnvironment = @{
+  MONGODB_URI = $MongoUri
+  MONGODB_DATABASE = $MongoDatabase
+  APP_SECRET = $AppSecret
+}
+Start-LocalProcess -ScriptPath (Join-Path $PSScriptRoot "start-api.ps1") -Arguments "-Port $ApiPort" -Environment $backendEnvironment
+Start-LocalProcess -ScriptPath (Join-Path $PSScriptRoot "start-web.ps1") -Arguments "-ApiUrl `"$ApiUrl`" -Port $WebPort" -Environment @{ NEXT_PUBLIC_API_URL = $ApiUrl }
+
+Write-Output "MongoDB, API and web started in background processes."

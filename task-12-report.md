@@ -7,6 +7,7 @@
 - Criado `apps/api/.env.example` com somente `MONGODB_URI`, `MONGODB_DATABASE` e `APP_SECRET`. O exemplo web e a documentação operacional mantêm somente `NEXT_PUBLIC_API_URL` no cliente.
 - Atualizados README, tarefa de inicialização, instruções de agente e evidências operacionais. Menções restantes a Supabase/PostgreSQL são registros históricos classificados no SPEC, roadmap, decisões ou relatórios de tarefas anteriores.
 - Adicionado teste estrutural que exige os novos scripts e impede a volta dos diretórios e dependências removidos.
+- O launcher local inicia API e web com `ProcessStartInfo` e ambiente isolado por processo; URI MongoDB e segredo de aplicação não aparecem nos argumentos de processos filhos. Os redirecionamentos conflitantes foram removidos.
 
 ## Verificação
 
@@ -19,6 +20,12 @@ node --test tooling/tests/workspace-structure.test.mjs
 
 PowerShell parser para os oito scripts operacionais
 passed
+
+node --test tooling/tests/local-stack-launcher.test.mjs
+1 passed
+
+scripts/start-local-stack.ps1 sem variáveis obrigatórias
+falha controlada antes de iniciar Docker ou processos filhos
 
 python -m pytest apps/api/tests -q
 95 passed, 5 skipped

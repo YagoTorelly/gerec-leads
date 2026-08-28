@@ -19,12 +19,17 @@ python -m pip install -e ".[dev]"
 cd ../..
 ```
 
-Defina variáveis somente no processo do backend ou worker. Use `apps/api/.env.example` como referência; os valores abaixo são placeholders locais, não credenciais reais:
+Defina as variáveis server-side somente no processo do backend ou worker. Use `apps/api/.env.example` como referência; os valores abaixo são placeholders locais, não credenciais reais:
 
 ```powershell
 $env:MONGODB_URI = "mongodb://127.0.0.1:27017/?replicaSet=rs0"
 $env:MONGODB_DATABASE = "gerec_leads"
 $env:APP_SECRET = "replace-with-a-local-secret"
+```
+
+Defina a variável pública somente no processo web:
+
+```powershell
 $env:NEXT_PUBLIC_API_URL = "http://127.0.0.1:8000"
 ```
 

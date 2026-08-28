@@ -22,6 +22,7 @@
     "start:local": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-local-stack.ps1",
     "test:ci-contract": "node --test tooling/tests/ci-contract.test.mjs",
     "test:structure": "node --test tooling/tests/workspace-structure.test.mjs",
+    "test:launcher": "node --test tooling/tests/local-stack-launcher.test.mjs",
     "test:e2e": "node tooling/playwright/run-e2e.mjs",
     "test:contracts": "node --test tests/contracts/*.test.mjs",
     "test:e2e:install": "playwright install chromium",
@@ -30,7 +31,7 @@
     "test": "npm --workspace @wtg/web run test",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "check": "npm run format:check && npm run lint && npm run typecheck && npm run test && npm run test:structure && npm run test:playwright-tooling && npm run test:ci-contract && npm run build"
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm run test && npm run test:structure && npm run test:launcher && npm run test:playwright-tooling && npm run test:ci-contract && npm run build"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",
