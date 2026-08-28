@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from bson import ObjectId
 from pymongo import MongoClient
-from pymongo.errors import PyMongoError, ServerSelectionTimeoutError
+from pymongo.errors import ServerSelectionTimeoutError
 
 from gerec_api.infrastructure.mongo.bootstrap import ensure_schema
 from gerec_api.infrastructure.mongo.migrations.runner import run_migrations
@@ -31,9 +31,11 @@ def mongo_db():
         tz_aware=True,
     )
     try:
-        client.admin.command("ping")
-    except (PyMongoError, ServerSelectionTimeoutError) as error:
+        hello = client.admin.command("hello")
+    except ServerSelectionTimeoutError as error:
         pytest.skip(f"MongoDB replica set indisponível: {error}")
+    if not hello.get("setName"):
+        pytest.skip("MongoDB local não está configurado como replica set")
 
     database = client[f"gerec_operational_migration_test_{uuid4().hex}"]
     try:
@@ -132,6 +134,10 @@ def test_operational_migration_materializes_projections_without_losing_history(m
     assert mongo_db["feedback_cycles"].find_one({"_id": cycle_id})["closedAt"] is not None
 
     assert len(list(mongo_db["lead_treatments"].find({"leadId": lead_id}))) == 1
+    treatment = mongo_db["lead_treatments"].find_one({"leadId": lead_id})
+    assert treatment["commercialStatus"] == "undefined"
+    assert treatment["isDisqualified"] is False
+    assert treatment["legacyStatusUnavailable"] is True
     assert mongo_db["schema_migrations"].count_documents({"_id": "20260828_operacao_comercial"}) == 1
     for name, expected in history_before.items():
         assert list(mongo_db[name].find()) == expected
@@ -189,3 +195,25 @@ def test_operational_migration_recalculates_open_legacy_cycle_in_business_hours(
     assert lead["feedbackReminderAt"] == datetime(2026, 9, 2, 10, 0, tzinfo=SAO_PAULO)
     assert cycle["dueAt"] == lead["feedbackDueAt"]
     assert cycle["reminderAt"] == lead["feedbackReminderAt"]
+
+
+def test_operational_migration_rebuilds_duplicate_legacy_queue_positions_deterministically(mongo_db) -> None:
+    """Breaks if the position index is created before legacy queue positions are normalized."""
+    first_seller_id = ObjectId()
+    second_seller_id = ObjectId()
+    mongo_db["seller_queue"].insert_many(
+        [
+            {"sellerId": second_seller_id, "position": 7, "createdAt": datetime(2026, 8, 28, 10, 0, tzinfo=SAO_PAULO)},
+            {"sellerId": first_seller_id, "position": 7, "createdAt": datetime(2026, 8, 28, 9, 0, tzinfo=SAO_PAULO)},
+        ]
+    )
+
+    ensure_schema(mongo_db)
+
+    first_run = list(mongo_db["seller_queue"].find({}, {"_id": 0, "sellerId": 1, "position": 1}).sort("position", 1))
+    assert first_run == [
+        {"sellerId": first_seller_id, "position": 1},
+        {"sellerId": second_seller_id, "position": 2},
+    ]
+    ensure_schema(mongo_db)
+    assert list(mongo_db["seller_queue"].find({}, {"_id": 0, "sellerId": 1, "position": 1}).sort("position", 1)) == first_run

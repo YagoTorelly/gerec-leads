@@ -48,3 +48,34 @@ Os skips exigem MongoDB real em replica set, indisponível neste ambiente; a cob
 
 - A execução contra replica set real não foi possível localmente; a suíte confirmou importação, contratos e regressões sem falhas, mas a prova do `with_transaction` deve rodar no ambiente com MongoDB configurado.
 - A migração não possui rollback destrutivo por projeto: ela preserva os eventos e sessões originais e somente adiciona projeções, tratativas derivadas, índices e o recibo versionado. A recuperação operacional é restaurar backup anterior e remover apenas os artefatos introduzidos conforme procedimento de banco aprovado.
+
+## Correção do review — round 1/5
+
+### RED
+
+O novo teste unitário do runner falhou na coleta antes da implementação porque `ReplicaSetRequiredError` não existia. O contrato esperado exige `hello` com `setName` e proíbe gravar tanto a migração quanto seu recibo fora de transação.
+
+### Ajustes aplicados
+
+- O runner agora exige `hello.setName` e lança diagnóstico explícito quando o MongoDB não é replica set; não existe mais fallback não transacional.
+- A migração e seu recibo sempre compartilham `session.with_transaction`; os testes cobrem execução, replay e rollback de uma falha intermediária.
+- O fixture operacional consulta `hello`, pula somente por indisponibilidade de conexão local ou ausência comprovada de `setName`, e deixa falhas de autenticação/configuração emergirem.
+- O bootstrap executa a migração antes dos índices. A migração normaliza determinística e sequencialmente as posições legadas da fila, permitindo que índices únicos sejam construídos após o backfill e nas reexecuções.
+- Cada feedback legado sem situação própria passa a gerar uma tratativa com `commercialStatus="undefined"`, `isDisqualified=false` e `legacyStatusUnavailable=true`; a projeção final do lead continua derivada dos outcomes legados.
+
+### Verificação da correção
+
+```text
+python -m pytest apps/api/tests/unit/test_migration_runner.py apps/api/tests/integration/test_operational_migration.py apps/api/tests/integration/test_indexes.py -q
+16 passed, 7 skipped
+
+python -m pytest apps/api/tests -q
+117 passed, 8 skipped
+
+git diff --check
+exit 0
+```
+
+### Commit da correção
+
+`fix(gerec-leads): endurece migração operacional`

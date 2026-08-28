@@ -19,6 +19,7 @@ def apply(database: Any, *, session: Any | None = None) -> None:
     business_clock = BusinessClock(
         MongoHolidayRepository(database[MongoCollections.HOLIDAYS])
     )
+    _rebuild_queue_positions(database, session)
     for lead in database[MongoCollections.LEADS].find({}, **options):
         _migrate_lead(database, lead, business_clock, session)
 
@@ -43,8 +44,6 @@ def _migrate_lead(
         database,
         lead_id,
         feedbacks,
-        commercial_status,
-        is_disqualified,
         session,
     )
     update: dict[str, Any] = {
@@ -85,14 +84,15 @@ def _copy_legacy_feedbacks_as_treatments(
     database: Any,
     lead_id: Any,
     feedbacks: list[dict[str, Any]],
-    commercial_status: str,
-    is_disqualified: bool,
     session: Any | None,
 ) -> None:
     options = _session_options(session)
     treatments = database[MongoCollections.LEAD_TREATMENTS]
     for feedback in feedbacks:
         legacy_id = feedback["_id"]
+        treatment_status, treatment_disqualification, status_unavailable = _legacy_treatment_status(
+            feedback
+        )
         treatments.update_one(
             {"leadId": lead_id, "idempotencyKey": f"legacy-feedback:{legacy_id}"},
             {
@@ -100,8 +100,9 @@ def _copy_legacy_feedbacks_as_treatments(
                     "leadId": lead_id,
                     "sellerId": feedback.get("sellerId"),
                     "comment": str(feedback["comment"]).strip(),
-                    "commercialStatus": commercial_status,
-                    "isDisqualified": is_disqualified,
+                    "commercialStatus": treatment_status,
+                    "isDisqualified": treatment_disqualification,
+                    "legacyStatusUnavailable": status_unavailable,
                     "createdAt": feedback.get("createdAt") or _EPOCH,
                     "idempotencyKey": f"legacy-feedback:{legacy_id}",
                     "legacyFeedbackId": legacy_id,
@@ -110,6 +111,35 @@ def _copy_legacy_feedbacks_as_treatments(
             upsert=True,
             **options,
         )
+
+
+def _legacy_treatment_status(feedback: dict[str, Any]) -> tuple[str, bool, bool]:
+    status = feedback.get("commercialStatus")
+    if status in _COMMERCIAL_STATUSES:
+        return str(status), bool(feedback.get("isDisqualified")), False
+    return "undefined", False, True
+
+
+def _rebuild_queue_positions(database: Any, session: Any | None) -> None:
+    options = _session_options(session)
+    entries = list(database[MongoCollections.SELLER_QUEUE].find({}, **options))
+    entries.sort(key=_queue_position_sort_key)
+    for position, entry in enumerate(entries, start=1):
+        database[MongoCollections.SELLER_QUEUE].update_one(
+            {"_id": entry["_id"]}, {"$set": {"position": position}}, **options
+        )
+
+
+def _queue_position_sort_key(entry: dict[str, Any]) -> tuple[int, int, datetime, str]:
+    position = entry.get("position")
+    valid_position = isinstance(position, int) and not isinstance(position, bool) and position > 0
+    created_at = entry.get("createdAt")
+    return (
+        0 if valid_position else 1,
+        int(position) if valid_position else 0,
+        created_at if isinstance(created_at, datetime) else _EPOCH,
+        str(entry["_id"]),
+    )
 
 
 def _recalculate_open_cycles(

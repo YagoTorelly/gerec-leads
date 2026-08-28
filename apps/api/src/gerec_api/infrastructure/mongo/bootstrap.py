@@ -113,10 +113,10 @@ def ensure_schema(db: Database) -> None:
         else:
             _ensure_collection_validator(db, name, validator)
 
+    run_migrations(db)
+
     for index in INDEXES:
         index.apply(collection(db, index.collection_name))
-
-    run_migrations(db)
 
 
 def _ensure_collection_validator(db: Database, name: str, validator: dict[str, Any]) -> None:

@@ -20,6 +20,10 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
 )
 
 
+class ReplicaSetRequiredError(RuntimeError):
+    """Raised when a migration cannot be protected by a MongoDB transaction."""
+
+
 def run_migrations(database: Any) -> list[str]:
     """Apply each pending migration once, preserving historical documents on replay."""
     applied: list[str] = []
@@ -40,21 +44,23 @@ def _apply_once(database: Any, version: str, migration: Callable[..., None]) -> 
         migrations.insert_one({"_id": version}, **_session_options(session))
         return True
 
+    _require_replica_set(database)
     try:
-        if _transactions_available(database):
-            with database.client.start_session() as session:
-                return session.with_transaction(operation)
-        return operation(None)
+        with database.client.start_session() as session:
+            return session.with_transaction(operation)
     except DuplicateKeyError:
         if database[MongoCollections.SCHEMA_MIGRATIONS].find_one({"_id": version}) is not None:
             return False
         raise
 
 
-def _transactions_available(database: Any) -> bool:
-    """Use a transaction on replica sets while retaining a safe local bootstrap path."""
+def _require_replica_set(database: Any) -> None:
+    """Reject standalone MongoDB before a migration can mutate data without a transaction."""
     hello = database.client.admin.command("hello")
-    return bool(hello.get("setName") or hello.get("msg") == "isdbgrid")
+    if not hello.get("setName"):
+        raise ReplicaSetRequiredError(
+            "MongoDB replica set is required to apply schema migrations transactionally"
+        )
 
 
 def _session_options(session: Any | None) -> dict[str, Any]:
