@@ -32,6 +32,16 @@ SCHEMA_VALIDATORS: Final[dict[str, dict[str, Any]]] = {
             },
         }
     },
+    MongoCollections.SKIP_BALANCES: {
+        "$jsonSchema": {
+            "bsonType": "object",
+            "required": ["sellerId", "balance"],
+            "properties": {
+                "sellerId": {"bsonType": "objectId"},
+                "balance": {"bsonType": "int", "minimum": 0},
+            },
+        }
+    },
     MongoCollections.LEADS: {
         "$jsonSchema": {
             "bsonType": "object",

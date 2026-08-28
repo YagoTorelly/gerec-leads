@@ -7,10 +7,13 @@ from fastapi import FastAPI
 from gerec_api.auth.sessions import AuthService
 from gerec_api.config import Settings
 from gerec_api.domain.leads import LeadService
+from gerec_api.domain.queue import QueueService
 from gerec_api.infrastructure.mongo.client import MongoClientFactory
 from gerec_api.infrastructure.mongo.lead_repository import LeadRepository
+from gerec_api.infrastructure.mongo.queue_repository import QueueRepository
 from gerec_api.routes.auth import router as auth_router
 from gerec_api.routes.leads import router as leads_router
+from gerec_api.routes.queue import router as queue_router
 
 
 def create_app(
@@ -28,6 +31,7 @@ def create_app(
     app.state.database = database
     app.state.auth_service = auth_service if auth_service is not None else AuthService(database)
     app.state.lead_service = LeadService(LeadRepository(database))
+    app.state.queue_service = QueueService(QueueRepository(database))
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -35,4 +39,5 @@ def create_app(
 
     app.include_router(auth_router)
     app.include_router(leads_router)
+    app.include_router(queue_router)
     return app

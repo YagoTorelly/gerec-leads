@@ -122,6 +122,19 @@ INDEXES: Final[tuple[MongoIndex, ...]] = (
         unique=True,
     ),
     MongoIndex(
+        MongoCollections.ASSIGNMENTS,
+        (("leadId", ASCENDING),),
+        "assignments_current_lead_unique",
+        unique=True,
+        partial_filter={"current": True},
+    ),
+    MongoIndex(
+        MongoCollections.SKIP_BALANCES,
+        (("sellerId", ASCENDING),),
+        "skip_balances_seller_unique",
+        unique=True,
+    ),
+    MongoIndex(
         MongoCollections.COMMAND_RESULTS,
         (("idempotencyKey", ASCENDING),),
         "command_results_idempotency_key_unique",
