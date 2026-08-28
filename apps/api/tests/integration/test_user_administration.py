@@ -112,6 +112,19 @@ def _apply_update(document: dict[str, Any], update: dict[str, Any], *, inserted:
         document[key] = document.get(key, 0) + amount
 
 
+def _contains_sensitive_key(value: Any) -> bool:
+    if isinstance(value, dict):
+        return any(
+            str(key).casefold()
+            in {"password", "passwordhash", "token", "tokenhash", "secret", "appsecret"}
+            or _contains_sensitive_key(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, (list, tuple)):
+        return any(_contains_sensitive_key(item) for item in value)
+    return False
+
+
 def _settings() -> Settings:
     return Settings(
         MONGODB_URI="mongodb://localhost:27017/?replicaSet=rs0",
@@ -292,3 +305,42 @@ def test_password_reset_revokes_every_existing_session_and_invalidates_old_passw
     else:
         raise AssertionError("previous password must not authenticate after reset")
     assert auth.login("yago@wtgseguros.com.br", "nova senha").user.id == str(admin_id)
+
+
+def test_admin_accepts_unbounded_nonempty_passwords_without_auditing_secrets() -> None:
+    """Breaks if HTTP imposes an unapproved password limit or audit stores credentials."""
+    database = FakeDatabase()
+    admin_id = _seed_admin(database)
+    client = _client(database)
+    initial_password = "senha-inicial-" + ("a" * 2_000)
+    replacement_password = "senha-nova-" + ("b" * 2_000)
+
+    created = client.post(
+        "/api/admin/users",
+        json={
+            "fullName": "Senha Longa",
+            "email": "senha-longa@example.test",
+            "role": "admin",
+            "password": initial_password,
+        },
+    )
+    reset = client.patch(
+        f"/api/admin/users/{admin_id}/password",
+        json={"password": replacement_password},
+    )
+
+    assert created.status_code == 201
+    assert reset.status_code == 200
+    audited = [
+        item
+        for item in database["audit_log"].documents
+        if item["action"] in {"user.created", "user.password_reset"}
+    ]
+    assert {item["action"] for item in audited} == {"user.created", "user.password_reset"}
+    for item in audited:
+        rendered = repr(item).casefold()
+        assert initial_password not in rendered
+        assert replacement_password not in rendered
+        assert "passwordhash" not in rendered
+        assert not _contains_sensitive_key(item["before"])
+        assert not _contains_sensitive_key(item["after"])

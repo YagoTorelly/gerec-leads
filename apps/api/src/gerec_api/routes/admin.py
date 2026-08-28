@@ -36,7 +36,7 @@ class CreateUserRequest(BaseModel):
     full_name: str = Field(alias="fullName", min_length=1, max_length=200)
     email: str = Field(min_length=1, max_length=320)
     role: str
-    password: str = Field(min_length=1, max_length=1024)
+    password: str
 
 
 class AvailabilityRequest(BaseModel):
@@ -44,7 +44,7 @@ class AvailabilityRequest(BaseModel):
 
 
 class PasswordResetRequest(BaseModel):
-    password: str = Field(min_length=1, max_length=1024)
+    password: str
 
 
 class ManagedUserResponse(BaseModel):
