@@ -85,15 +85,17 @@ class InMemoryOutboxRepository:
                 break
         return claimed
 
-    def mark_sent(self, event: OutboxEvent, now: datetime) -> None:
+    def mark_sent(self, event: OutboxEvent, now: datetime) -> bool:
         self.sent.add(event.event_id)
+        return True
 
-    def mark_retry(self, event: OutboxEvent, error: Exception, now: datetime, max_attempts: int) -> None:
+    def mark_retry(self, event: OutboxEvent, error: Exception, now: datetime, max_attempts: int) -> bool:
         if event.attempts >= max_attempts:
             self.dead_letters.append(event.event_id)
         else:
             self.events[event.event_id] = replace(event, status="retry")
             self.retries.append(event.event_id)
+        return True
 
 
 def test_outbox_worker_retries_once_and_never_delivers_an_event_twice() -> None:

@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import logging
 import os
+import json
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from time import sleep
 from typing import Any, Protocol
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+from uuid import uuid4
 
 from pymongo import ReturnDocument
 
@@ -28,6 +32,7 @@ class OutboxEvent:
     payload: dict[str, Any]
     attempts: int = 0
     status: str = "pending"
+    claim_token: str | None = None
 
     @classmethod
     def from_document(cls, document: dict[str, Any]) -> "OutboxEvent":
@@ -38,17 +43,18 @@ class OutboxEvent:
             payload=dict(document.get("payload", {})),
             attempts=int(document.get("attempts", 0)),
             status=str(document.get("status", "pending")),
+            claim_token=str(document["claimToken"]) if document.get("claimToken") else None,
         )
 
 
 class OutboxRepository(Protocol):
     def claim(self, batch_size: int, now: datetime, max_attempts: int) -> Iterable[OutboxEvent]: ...
 
-    def mark_sent(self, event: OutboxEvent, now: datetime) -> None: ...
+    def mark_sent(self, event: OutboxEvent, now: datetime) -> bool: ...
 
     def mark_retry(
         self, event: OutboxEvent, error: Exception, now: datetime, max_attempts: int
-    ) -> None: ...
+    ) -> bool: ...
 
 
 class MongoOutboxRepository:
@@ -62,6 +68,7 @@ class MongoOutboxRepository:
     def claim(self, batch_size: int, now: datetime, max_attempts: int) -> list[OutboxEvent]:
         claimed: list[OutboxEvent] = []
         for _ in range(batch_size):
+            claim_token = uuid4().hex
             document = self._outbox.find_one_and_update(
                 {
                     "attempts": {"$lt": max_attempts},
@@ -72,7 +79,11 @@ class MongoOutboxRepository:
                     ],
                 },
                 {
-                    "$set": {"status": "processing", "lockedUntil": now + self._lock_for},
+                    "$set": {
+                        "status": "processing",
+                        "lockedUntil": now + self._lock_for,
+                        "claimToken": claim_token,
+                    },
                     "$inc": {"attempts": 1},
                 },
                 sort=[("createdAt", 1), ("_id", 1)],
@@ -83,31 +94,38 @@ class MongoOutboxRepository:
             claimed.append(OutboxEvent.from_document(document))
         return claimed
 
-    def mark_sent(self, event: OutboxEvent, now: datetime) -> None:
-        self._outbox.update_one(
-            {"_id": event.event_id, "status": "processing"},
+    def mark_sent(self, event: OutboxEvent, now: datetime) -> bool:
+        if not event.claim_token:
+            return False
+        result = self._outbox.update_one(
+            {"_id": event.event_id, "status": "processing", "claimToken": event.claim_token},
             {
                 "$set": {"status": "sent", "sentAt": now},
-                "$unset": {"lockedUntil": ""},
+                "$unset": {"lockedUntil": "", "claimToken": ""},
             },
         )
+        return result.matched_count == 1
 
     def mark_retry(
         self, event: OutboxEvent, error: Exception, now: datetime, max_attempts: int
-    ) -> None:
+    ) -> bool:
+        if not event.claim_token:
+            return False
         message = str(error)[:500]
         terminal = event.attempts >= max_attempts
-        self._outbox.update_one(
-            {"_id": event.event_id, "status": "processing"},
+        result = self._outbox.update_one(
+            {"_id": event.event_id, "status": "processing", "claimToken": event.claim_token},
             {
                 "$set": {
                     "status": "dead_letter" if terminal else "retry",
                     "lastError": message,
                     "lastFailedAt": now,
                 },
-                "$unset": {"lockedUntil": ""},
+                "$unset": {"lockedUntil": "", "claimToken": ""},
             },
         )
+        if result.matched_count != 1:
+            return False
         if terminal:
             self._incidents.update_one(
                 {"outboxEventId": event.event_id},
@@ -122,6 +140,7 @@ class MongoOutboxRepository:
                 },
                 upsert=True,
             )
+        return True
 
 
 class OutboxWorker:
@@ -152,20 +171,46 @@ class OutboxWorker:
                 LOGGER.warning("outbox delivery failed: event=%s type=%s", event.event_id, event.event_type)
                 self._repository.mark_retry(event, error, timestamp, self._max_attempts)
                 continue
-            self._repository.mark_sent(event, timestamp)
-            delivered += 1
+            if self._repository.mark_sent(event, timestamp):
+                delivered += 1
+            else:
+                LOGGER.warning("outbox acknowledgement fenced: event=%s", event.event_id)
         return delivered
 
 
-def _unconfigured_delivery(event: OutboxEvent) -> None:
-    raise RuntimeError("notification delivery adapter is not configured")
+class WebhookDeliveryAdapter:
+    """Provider-neutral Railway delivery hook; provider receives idempotency key."""
+
+    def __init__(self, url: str, token: str | None, *, open_request: Callable[..., Any] = urlopen) -> None:
+        if not url:
+            raise ValueError("OUTBOX_DELIVERY_WEBHOOK_URL must be configured in Railway")
+        self._url = url
+        self._token = token
+        self._open_request = open_request
+
+    @classmethod
+    def from_env(cls, *, open_request: Callable[..., Any] = urlopen) -> "WebhookDeliveryAdapter":
+        return cls(os.environ.get("OUTBOX_DELIVERY_WEBHOOK_URL", ""), os.environ.get("OUTBOX_DELIVERY_TOKEN"), open_request=open_request)
+
+    def deliver(self, event: OutboxEvent) -> None:
+        headers = {"Content-Type": "application/json", "Idempotency-Key": event.idempotency_key}
+        if self._token:
+            headers["Authorization"] = f"Bearer {self._token}"
+        body = json.dumps({"eventType": event.event_type, "idempotencyKey": event.idempotency_key, "payload": event.payload}).encode("utf-8")
+        request = Request(self._url, data=body, headers=headers, method="POST")
+        try:
+            with self._open_request(request, timeout=10):
+                return
+        except (HTTPError, URLError) as error:
+            raise RuntimeError(f"notification provider failed: {error}") from error
 
 
 def process_outbox(batch_size: int) -> int:
     """Railway entry point. A deployment injects its delivery adapter at composition time."""
     settings = Settings.from_env()
     database = MongoClientFactory.create(settings)
-    return OutboxWorker(MongoOutboxRepository(database), _unconfigured_delivery).process(batch_size)
+    delivery = WebhookDeliveryAdapter.from_env()
+    return OutboxWorker(MongoOutboxRepository(database), delivery.deliver).process(batch_size)
 
 
 def run_forever(*, batch_size: int = 100, poll_seconds: float = 5) -> None:

@@ -6,12 +6,12 @@ import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import Any, Protocol
 
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
+from gerec_api.automation.google_sheets_adapter import GoogleSheetsAdapter
 from gerec_api.automation.sync_job import run_sync
 from gerec_api.config import Settings
 from gerec_api.infrastructure.mongo.client import MongoClientFactory
@@ -131,10 +131,9 @@ class Scheduler:
 
 
 def _configured_sync(run_id: str) -> None:
-    source_path = os.environ.get("GOOGLE_SHEETS_WORKBOOK_PATH")
-    if not source_path:
-        raise RuntimeError("GOOGLE_SHEETS_WORKBOOK_PATH must be configured in Railway")
-    run_sync(Path(source_path), run_id)
+    result = run_sync(GoogleSheetsAdapter.from_env(), run_id)
+    if result.skipped:
+        raise RuntimeError("source synchronization lease is already held")
 
 
 def run_due_jobs(now: datetime) -> JobResult:
@@ -144,5 +143,10 @@ def run_due_jobs(now: datetime) -> JobResult:
     return Scheduler(MongoJobLockRepository(database), _configured_sync).run_due_jobs(now)
 
 
+def scheduler_exit_code(result: JobResult) -> int:
+    """Make a failed cron execution visible to Railway for retry/alerting."""
+    return 1 if result.failed else 0
+
+
 if __name__ == "__main__":
-    run_due_jobs(datetime.now(UTC))
+    raise SystemExit(scheduler_exit_code(run_due_jobs(datetime.now(UTC))))
