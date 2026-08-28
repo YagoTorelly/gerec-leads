@@ -263,8 +263,8 @@ class OperationsService:
         )
 
     def register_outcome(self, command: OutcomeCommand) -> OutcomeResult:
-        if self._actor_role not in {"seller", "admin"}:
-            raise ValueError("commercial outcomes require an authenticated actor")
+        if self._actor_role != "seller":
+            raise ValueError("commercial outcomes require a seller actor")
         if command.outcome not in OUTCOMES:
             raise ValueError("outcome is invalid")
         reason = command.disqualification_reason

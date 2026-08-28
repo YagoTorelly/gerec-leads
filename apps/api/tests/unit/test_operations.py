@@ -143,6 +143,14 @@ def test_ac22_no_conversion_remains_a_qualified_outcome() -> None:
     assert result.outcome == "qualified_closed_no_conversion"
 
 
+def test_admin_cannot_change_commercial_status() -> None:
+    """Only the assigned seller may manually change the commercial status."""
+    with pytest.raises(ValueError, match="seller"):
+        _service().with_actor("admin-1", "admin").register_outcome(
+            OutcomeCommand("lead-1", "won", "Seguro pago pelo cliente", "admin-outcome")
+        )
+
+
 def test_qualified_outcome_requires_explicit_real_response_confirmation() -> None:
     """Breaks if qualification can be recorded without confirming a real contact response."""
     with pytest.raises(ValueError, match="response"):

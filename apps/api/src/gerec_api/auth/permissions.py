@@ -130,6 +130,7 @@ class DashboardService:
                 result["campaignName"] = _campaign_name(campaign, lead.get("campaignId"))
         elif collection_name == MongoCollections.LEADS:
             result["email"] = result.get("email") or result.get("emailNormalized")
+            result["commercialStatus"] = _commercial_status(result)
             company = self._find_by_id(MongoCollections.COMPANIES, result.get("companyId"))
             campaign = self._find_by_id(MongoCollections.CAMPAIGNS, result.get("campaignId"))
             result["companyName"] = _display_name(company, result.get("companyId"))
@@ -174,6 +175,16 @@ def _page_number(value: int) -> int:
     if value < 1:
         raise ValueError("page must be at least 1")
     return value
+
+
+def _commercial_status(document: Mapping[str, Any]) -> str:
+    if document.get("conversionStatus") == "won":
+        return "won"
+    if document.get("conversionStatus") == "disqualified":
+        return "disqualified"
+    if document.get("qualificationStatus") in {"qualified", "in_negotiation", "negotiation"}:
+        return "negotiation"
+    return "undefined"
 
 
 def _page_limit(value: int) -> int:

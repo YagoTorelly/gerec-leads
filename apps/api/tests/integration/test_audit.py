@@ -179,3 +179,4 @@ def test_seller_scopes_history_queue_and_balance_to_session_identity():
     assert PermissionService.scope_query(seller, "history") == {"sellerId": {"$in": ["seller-a"]}}
     assert PermissionService.scope_query(seller, "queue") == {"sellerId": {"$in": ["seller-a"]}}
     assert PermissionService.scope_query(seller, "skip_balance") == {"sellerId": {"$in": ["seller-a"]}}
+
