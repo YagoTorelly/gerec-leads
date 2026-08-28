@@ -27,6 +27,7 @@ Transformar as telas atuais, que exibem dados parciais e controles sem ação, e
 - Todo comentário exige texto com no mínimo seis caracteres úteis e a seleção explícita de uma situação primária: `Indefinido`, `Negociação` ou `Ganho`.
 - `Desqualificado` é um marcador adicional, não substitui a situação primária. Portanto, `Ganho + Desqualificado` é válido e conta tanto como ganho quanto como desqualificado nas métricas solicitadas.
 - Marcar `Desqualificado` exige o comentário da mesma submissão. Não há lista obrigatória de motivos nesta etapa.
+- Marcar `Desqualificado` encerra imediatamente o ciclo de SLA daquele lead, independentemente da situação primária. Ele deixa de exigir feedback periódico e não pode bloquear o vendedor por atraso. Uma tratativa posterior pode atualizar a situação primária, inclusive para `Ganho`, preservando o marcador e o histórico; ela não reabre o SLA automaticamente.
 - Cada submissão gera evento imutável, preservando autor, data/hora, texto, situação primária e marcador. O lead materializa apenas o estado atual e o contador de comentários para leitura rápida.
 - O histórico mostra cada tratativa; o contador aparece na tabela de leads e na visão do vendedor.
 
@@ -88,7 +89,7 @@ Após a revisão deste documento, registrar uma decisão de governança com esta
 | Regra anterior | Nova regra | Impacto |
 | --- | --- | --- |
 | O relógio de SLA contava continuamente em dia útil, sem janela comercial. | Conta somente 09:00–18:00 em dias úteis elegíveis. | Recalcular prazos abertos e lembretes; adicionar testes de borda da janela. |
-| `desqualificado` era terminal e exclusivo; administrador podia revertê-lo. | É marcador adicional a `Indefinido`, `Negociação` ou `Ganho`; vendedor o registra junto de comentário. | Separar situação primária e marcador; métricas podem contar ambos. |
+| `desqualificado` era terminal e exclusivo; administrador podia revertê-lo. | É marcador adicional a `Indefinido`, `Negociação` ou `Ganho`; vendedor o registra junto de comentário e encerra o SLA. | Separar situação primária e marcador; métricas podem contar ambos e ciclos abertos precisam ser encerrados. |
 | Administrador podia registrar notas/corrigir resultado conforme SPEC atual. | Nesta operação, administrador consulta status e comentários, sem editar tratativa. | Bloquear comandos administrativos de status/comentário e testar autorização. |
 | Senha inicial era aleatória. | Administrador informa senha ao criar e ao redefinir usuário. | Validar senha, manter hash e revogar sessões na redefinição. |
 
@@ -99,7 +100,7 @@ Nenhum dado histórico será apagado. Registros antigos recebem projeção compa
 1. Cálculo de 24 h e lembrete de 4 h cobre início antes/na/dentro/depois da janela, fins de semana e feriados, com relógio controlado.
 2. Um lead vencido bloqueia vendedor automaticamente; regularização de todos os atrasos o libera sem recuperar turno; pausa manual permanece independente.
 3. Vendedor não vê nem altera lead de outro vendedor; administrador lê tudo, mas recebe erro ao tentar criar comentário ou mudar situação.
-4. Comentário com menos de seis caracteres falha; todo comentário persiste situação primária; desqualificação sem comentário falha; `Ganho + Desqualificado` atualiza as duas métricas.
+4. Comentário com menos de seis caracteres falha; todo comentário persiste situação primária; desqualificação sem comentário falha; `Ganho + Desqualificado` atualiza as duas métricas; desqualificação encerra o SLA e não bloqueia o vendedor.
 5. Criar vendedor coloca-o ao final da fila; pausar/ativar preserva leads; redefinição de senha invalida sessão anterior; senha não aparece em resposta ou log.
 6. Paginação anterior/próxima funciona nas quatro telas administrativas e não exibe controles falsamente interativos.
 7. E2E em 1440 × 900 valida administrador e vendedor, com captura visual das ações reais e verificação de que não há IDs técnicos como rótulo principal.
