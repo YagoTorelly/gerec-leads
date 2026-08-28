@@ -60,6 +60,24 @@ def test_ac29_concurrent_leads_have_unique_assignments_and_sequential_cursor(mon
     mongo_queue_db[MongoCollections.QUEUE_STATE].insert_one(
         {"_id": "global", "nextSellerId": sellers[0], "version": 0, "updatedAt": now}
     )
+    blocked_company_id = mongo_queue_db[MongoCollections.COMPANIES].insert_one(
+        {"ownerId": sellers[0]}
+    ).inserted_id
+    blocked_lead_id = mongo_queue_db[MongoCollections.LEADS].insert_one(
+        {
+            "companyId": blocked_company_id,
+            "campaignId": ObjectId(),
+            "archivedAt": None,
+            "assignmentStatus": "assigned",
+            "assigneeId": sellers[0],
+            "currentAssignmentId": ObjectId(),
+            "sourceEnteredAt": now - timedelta(seconds=1),
+            "sourceLeadId": "overdue-seller-zero",
+        }
+    ).inserted_id
+    mongo_queue_db[MongoCollections.FEEDBACK_CYCLES].insert_one(
+        {"leadId": blocked_lead_id, "dueAt": now - timedelta(seconds=1), "closedAt": None}
+    )
     campaign_id = ObjectId()
     leads = []
     for offset in range(2):
@@ -94,7 +112,7 @@ def test_ac29_concurrent_leads_have_unique_assignments_and_sequential_cursor(mon
     balances = list(mongo_queue_db[MongoCollections.SKIP_BALANCES].find({}))
     assert len(assignments) == 2
     assert {assignment["leadId"] for assignment in assignments} == set(leads)
-    assert {result.seller_id for result in results} == {str(sellers[0]), str(sellers[1])}
-    assert state["nextSellerId"] == sellers[2]
+    assert {result.seller_id for result in results} == {str(sellers[1]), str(sellers[2])}
+    assert state["nextSellerId"] == sellers[3]
     assert state["version"] == 2
     assert all(balance["balance"] >= 0 for balance in balances)

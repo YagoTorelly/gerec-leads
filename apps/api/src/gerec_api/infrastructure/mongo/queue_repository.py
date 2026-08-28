@@ -12,6 +12,7 @@ from pymongo.errors import DuplicateKeyError
 from gerec_api.domain.business_time import BusinessClock
 from gerec_api.domain.queue import (
     AssignmentResult,
+    QueueSnapshot,
     QueueRules,
     SellerState,
     TransferResult,
@@ -70,6 +71,14 @@ class QueueRepository:
                 if attempt < 99:
                     sleep(0.01)
         raise QueueStateError(str(pending_error))
+
+    def snapshot(self) -> QueueSnapshot:
+        queue_state = self._queue_state.find_one({"_id": QUEUE_STATE_ID})
+        if queue_state is None:
+            return QueueSnapshot(cursor_seller_id=None, entries=[])
+        return QueueRules.snapshot(
+            self._seller_states(self._now(), None), queue_state["nextSellerId"]
+        )
 
     def distribute_ready(
         self, lead_id: Any, command_id: str, *, actor_id: Any
@@ -571,6 +580,7 @@ class QueueRepository:
                 paused=bool(item.get("paused", False)),
                 has_overdue_feedback=self._seller_has_overdue(item["sellerId"], now, session),
                 skip_balance=self._balance(item["sellerId"], session),
+                position=int(item["position"]),
             )
             for item in queue_documents
         ]
@@ -586,17 +596,22 @@ class QueueRepository:
         )
 
     def _seller_has_overdue(self, seller_id: Any, now: datetime, session: Any) -> bool:
-        return (
-            self._leads.find_one(
-                {
-                    "assigneeId": seller_id,
-                    "assignmentStatus": "assigned",
-                    "feedbackDueAt": {"$lt": now},
-                },
-                session=session,
-            )
-            is not None
-        )
+        for cycle in self._feedback_cycles.find(
+            {"closedAt": None, "dueAt": {"$lt": now}}, session=session
+        ):
+            if (
+                self._leads.find_one(
+                    {
+                        "_id": cycle["leadId"],
+                        "assigneeId": seller_id,
+                        "archivedAt": None,
+                    },
+                    session=session,
+                )
+                is not None
+            ):
+                return True
+        return False
 
     def _balance(self, seller_id: Any, session: Any) -> int:
         document = self._skip_balances.find_one({"sellerId": seller_id}, session=session)

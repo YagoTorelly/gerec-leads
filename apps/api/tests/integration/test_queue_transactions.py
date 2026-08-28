@@ -145,6 +145,23 @@ def _seed_lead(database: FakeDatabase, *, company_id=None, entered_offset=0):
     return lead_id, company_id
 
 
+def _open_overdue_cycle(database: FakeDatabase, lead_id: ObjectId) -> ObjectId:
+    cycle_id = ObjectId()
+    database["feedback_cycles"].insert_one(
+        {
+            "_id": cycle_id,
+            "leadId": lead_id,
+            "dueAt": NOW - timedelta(seconds=1),
+            "closedAt": None,
+        }
+    )
+    return cycle_id
+
+
+def _availability(snapshot, seller_id: ObjectId):
+    return next(entry.availability for entry in snapshot.entries if entry.seller_id == seller_id)
+
+
 def _service(database: FakeDatabase, *, actor_id: Any = "system") -> QueueService:
     return QueueService(
         QueueRepository(
@@ -210,6 +227,7 @@ def test_ac02_ac04_blocked_seller_loses_turn_and_one_overdue_lead_is_enough() ->
             }
         },
     )
+    _open_overdue_cycle(database, overdue_lead)
     incoming, _ = _seed_lead(database)
 
     result = _service(database).distribute_normal(incoming, "blocked-renato")
@@ -218,16 +236,95 @@ def test_ac02_ac04_blocked_seller_loses_turn_and_one_overdue_lead_is_enough() ->
     assert database["queue_state"].documents[0]["nextSellerId"] not in (renato, sandra)
 
 
+def test_snapshot_derives_open_cycle_blocking_and_orders_from_next_eligible_seller() -> None:
+    """Breaks if stale lead fields block a seller or a queue read ignores its real cursor."""
+    database = FakeDatabase()
+    renato, sandra, jessica, nelma = _seed_queue(database)
+    overdue_lead, _ = _seed_lead(database, entered_offset=-1)
+    database["leads"].update_one(
+        {"_id": overdue_lead},
+        {
+            "$set": {
+                "assignmentStatus": "assigned",
+                "assigneeId": sandra,
+                "feedbackDueAt": NOW - timedelta(seconds=1),
+            }
+        },
+    )
+    _open_overdue_cycle(database, overdue_lead)
+    database["seller_queue"].update_one({"sellerId": renato}, {"$set": {"paused": True}})
+
+    snapshot = QueueRepository(database, now=lambda: NOW).snapshot()
+
+    assert snapshot.cursor_seller_id == renato
+    assert [entry.seller_id for entry in snapshot.entries] == [jessica, nelma, renato, sandra]
+    assert [entry.availability.status for entry in snapshot.entries] == [
+        "active",
+        "active",
+        "paused",
+        "blocked_overdue",
+    ]
+
+
+def test_regularizing_every_overdue_cycle_removes_only_the_automatic_block() -> None:
+    """Breaks if a closed SLA still blocks or regularization silently clears a pause."""
+    database = FakeDatabase()
+    renato, *_ = _seed_queue(database)
+    overdue_lead, _ = _seed_lead(database, entered_offset=-1)
+    database["leads"].update_one(
+        {"_id": overdue_lead},
+        {
+            "$set": {
+                "assignmentStatus": "assigned",
+                "assigneeId": renato,
+                "feedbackDueAt": NOW - timedelta(seconds=1),
+                "isDisqualified": True,
+            }
+        },
+    )
+
+    stale_only = QueueRepository(database, now=lambda: NOW).snapshot()
+    assert stale_only.entries[0].availability.status == "active"
+
+    cycle_id = _open_overdue_cycle(database, overdue_lead)
+    blocked = QueueRepository(database, now=lambda: NOW).snapshot()
+    assert _availability(blocked, renato).status == "blocked_overdue"
+
+    database["feedback_cycles"].update_one({"_id": cycle_id}, {"$set": {"closedAt": NOW}})
+    regularized = QueueRepository(database, now=lambda: NOW).snapshot()
+    assert _availability(regularized, renato).status == "active"
+
+    database["seller_queue"].update_one({"sellerId": renato}, {"$set": {"paused": True}})
+    paused_after_regularization = QueueRepository(database, now=lambda: NOW).snapshot()
+    assert _availability(paused_after_regularization, renato).status == "paused"
+
+
+def test_pause_preserves_existing_lead_and_consumes_its_natural_turn() -> None:
+    """Breaks if pausing transfers a lead or leaves the paused seller eligible for rotation."""
+    database = FakeDatabase()
+    renato, sandra, *_ = _seed_queue(database)
+    assigned_lead, _ = _seed_lead(database)
+    next_lead, _ = _seed_lead(database, entered_offset=1)
+    service = _service(database)
+
+    assignment = service.distribute_normal(assigned_lead, "assign-renato")
+    database["seller_queue"].update_one({"sellerId": renato}, {"$set": {"paused": True}})
+    next_assignment = service.distribute_normal(next_lead, "skip-paused-renato")
+
+    assert assignment.seller_id == str(renato)
+    assert database["leads"].find_one({"_id": assigned_lead})["assigneeId"] == renato
+    assert next_assignment.seller_id == str(sandra)
+
+
 def test_ac05_ac06_all_blocked_parks_and_regularization_releases_ready_fifo() -> None:
     """Breaks if ready/parked leads are dropped or a newer normal lead jumps the FIFO."""
     database = FakeDatabase()
     sellers = _seed_queue(database)
     oldest, _ = _seed_lead(database, entered_offset=0)
     newest, _ = _seed_lead(database, entered_offset=1)
-    blockers = {}
+    blocker_cycles = {}
     for seller_id in sellers:
         blocked, _ = _seed_lead(database, entered_offset=-10)
-        blockers[seller_id] = blocked
         database["leads"].update_one(
             {"_id": blocked},
             {
@@ -238,6 +335,7 @@ def test_ac05_ac06_all_blocked_parks_and_regularization_releases_ready_fifo() ->
                 }
             },
         )
+        blocker_cycles[seller_id] = _open_overdue_cycle(database, blocked)
     service = _service(database)
 
     with pytest.raises(QueueStateError, match="FIFO"):
@@ -246,9 +344,9 @@ def test_ac05_ac06_all_blocked_parks_and_regularization_releases_ready_fifo() ->
     with pytest.raises(QueueStateError, match="FIFO"):
         service.distribute_normal(newest, "jump-parked-fifo")
 
-    database["leads"].update_one(
-        {"_id": blockers[sellers[1]]},
-        {"$set": {"feedbackDueAt": NOW + timedelta(hours=1)}},
+    database["feedback_cycles"].update_one(
+        {"_id": blocker_cycles[sellers[1]]},
+        {"$set": {"closedAt": NOW}},
     )
     released_oldest = service.distribute_normal(oldest, "release-oldest")
     released_newest = service.distribute_normal(newest, "release-newest")
@@ -297,6 +395,7 @@ def test_ac09_ac10_ac11_blocked_owner_waits_and_temporary_assignment_preserves_o
             }
         },
     )
+    _open_overdue_cycle(database, overdue)
     service = _service(database)
 
     waiting = service.assign_recurring(recurring, "blocked-owner")

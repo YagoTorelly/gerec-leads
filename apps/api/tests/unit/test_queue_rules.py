@@ -66,6 +66,43 @@ def test_ac04_ac05_one_overdue_lead_blocks_and_all_unavailable_parks() -> None:
     assert decision.consumed_credit_seller_ids == ()
 
 
+def test_availability_prioritizes_manual_pause_over_automatic_overdue_block() -> None:
+    """Breaks if an overdue deadline can hide a manual pause in the queue projection."""
+    paused_and_overdue = _seller(paused=True, overdue=True)
+    blocked_only = _seller(overdue=True)
+    active = _seller()
+
+    assert QueueRules.availability(paused_and_overdue).status == "paused"
+    assert QueueRules.availability(paused_and_overdue).reason is not None
+    assert QueueRules.availability(blocked_only).status == "blocked_overdue"
+    assert QueueRules.availability(active).status == "active"
+    assert QueueRules.availability(active).reason is None
+
+
+def test_snapshot_starts_with_next_eligible_seller_and_keeps_unavailable_entries() -> None:
+    """Breaks if the displayed queue starts from storage order instead of the real cursor."""
+    renato = _seller(paused=True)
+    sandra = _seller(overdue=True)
+    jessica = _seller()
+    nelma = _seller()
+
+    snapshot = QueueRules.snapshot([renato, sandra, jessica, nelma], renato.seller_id)
+
+    assert snapshot.cursor_seller_id == renato.seller_id
+    assert [entry.seller_id for entry in snapshot.entries] == [
+        jessica.seller_id,
+        nelma.seller_id,
+        renato.seller_id,
+        sandra.seller_id,
+    ]
+    assert [entry.availability.status for entry in snapshot.entries] == [
+        "active",
+        "active",
+        "paused",
+        "blocked_overdue",
+    ]
+
+
 def test_ac08_credits_cross_rotations_and_are_consumed_exactly_once() -> None:
     """Breaks if directed credits disappear, are skipped, or make a balance negative."""
     renato = _seller(credits=3)
@@ -103,7 +140,7 @@ def test_only_operational_seller_with_credit_consumes_it_then_receives_the_lead(
 
     assert decision.seller_id == renato.seller_id
     assert decision.consumed_credit_seller_ids == (renato.seller_id, renato.seller_id)
-    assert decision.next_seller_id == others[0].seller_id
+    assert decision.next_seller_id == renato.seller_id
 
 
 def test_current_assignment_has_a_partial_unique_database_guard() -> None:

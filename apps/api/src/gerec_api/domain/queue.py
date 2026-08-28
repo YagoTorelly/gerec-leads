@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Mapping, Protocol, Sequence
+from typing import Any, Literal, Mapping, Protocol, Sequence
+
+from bson import ObjectId
 
 
 @dataclass(frozen=True)
@@ -13,6 +15,27 @@ class SellerState:
     paused: bool
     has_overdue_feedback: bool
     skip_balance: int
+    position: int = 0
+
+
+@dataclass(frozen=True)
+class SellerAvailability:
+    status: Literal["active", "paused", "blocked_overdue"]
+    reason: str | None
+
+
+@dataclass(frozen=True)
+class QueueEntry:
+    seller_id: Any
+    position: int
+    availability: SellerAvailability
+    skip_balance: int
+
+
+@dataclass(frozen=True)
+class QueueSnapshot:
+    cursor_seller_id: ObjectId | None
+    entries: list[QueueEntry]
 
 
 @dataclass(frozen=True)
@@ -25,20 +48,52 @@ class QueueDecision:
 
 class QueueRules:
     @staticmethod
+    def availability(seller: SellerState) -> SellerAvailability:
+        if seller.paused:
+            return SellerAvailability("paused", "Pausa manual ativa.")
+        if not seller.active:
+            return SellerAvailability("paused", "Vendedor inativo.")
+        if seller.has_overdue_feedback:
+            return SellerAvailability("blocked_overdue", "Possui ciclo de SLA vencido.")
+        return SellerAvailability("active", None)
+
+    @classmethod
+    def snapshot(cls, sellers: Sequence[SellerState], next_seller_id: Any) -> QueueSnapshot:
+        if not sellers:
+            return QueueSnapshot(cursor_seller_id=None, entries=[])
+        ordered = cls._circular_from_cursor(sellers, next_seller_id)
+        first_eligible = next(
+            (
+                index
+                for index, seller in enumerate(ordered)
+                if cls.availability(seller).status == "active"
+            ),
+            0,
+        )
+        ordered = [*ordered[first_eligible:], *ordered[:first_eligible]]
+        return QueueSnapshot(
+            cursor_seller_id=next_seller_id,
+            entries=[
+                QueueEntry(
+                    seller_id=seller.seller_id,
+                    position=seller.position,
+                    availability=cls.availability(seller),
+                    skip_balance=seller.skip_balance,
+                )
+                for seller in ordered
+            ],
+        )
+
+    @staticmethod
     def select_normal(sellers: Sequence[SellerState], next_seller_id: Any) -> QueueDecision:
         if not sellers:
             raise ValueError("seller queue cannot be empty")
-        try:
-            cursor = next(
-                index for index, seller in enumerate(sellers) if seller.seller_id == next_seller_id
-            )
-        except StopIteration as error:
-            raise ValueError("queue cursor does not reference a seller") from error
+        cursor = QueueRules._cursor_index(sellers, next_seller_id)
 
         operational = [
             seller
             for seller in sellers
-            if seller.active and not seller.paused and not seller.has_overdue_feedback
+            if QueueRules.availability(seller).status == "active"
         ]
         if not operational:
             return QueueDecision(seller_id=None, next_seller_id=next_seller_id)
@@ -52,7 +107,7 @@ class QueueRules:
         while True:
             seller = sellers[cursor]
             cursor = (cursor + 1) % len(sellers)
-            if not seller.active or seller.paused or seller.has_overdue_feedback:
+            if QueueRules.availability(seller).status != "active":
                 unavailable.append(seller.seller_id)
                 continue
             if balances[seller.seller_id] > 0:
@@ -61,10 +116,34 @@ class QueueRules:
                 continue
             return QueueDecision(
                 seller_id=seller.seller_id,
-                next_seller_id=sellers[cursor].seller_id,
+                next_seller_id=QueueRules._next_eligible_seller_id(sellers, cursor),
                 consumed_credit_seller_ids=tuple(consumed),
                 unavailable_seller_ids=tuple(unavailable),
             )
+
+    @staticmethod
+    def _cursor_index(sellers: Sequence[SellerState], seller_id: Any) -> int:
+        try:
+            return next(
+                index for index, seller in enumerate(sellers) if seller.seller_id == seller_id
+            )
+        except StopIteration as error:
+            raise ValueError("queue cursor does not reference a seller") from error
+
+    @classmethod
+    def _circular_from_cursor(
+        cls, sellers: Sequence[SellerState], next_seller_id: Any
+    ) -> list[SellerState]:
+        cursor = cls._cursor_index(sellers, next_seller_id)
+        return [*sellers[cursor:], *sellers[:cursor]]
+
+    @classmethod
+    def _next_eligible_seller_id(cls, sellers: Sequence[SellerState], start_index: int) -> Any:
+        for offset in range(len(sellers)):
+            seller = sellers[(start_index + offset) % len(sellers)]
+            if cls.availability(seller).status == "active":
+                return seller.seller_id
+        raise ValueError("queue does not have an eligible seller")
 
 
 @dataclass(frozen=True)
