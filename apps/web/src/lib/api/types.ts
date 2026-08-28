@@ -8,6 +8,6 @@ export type ApiDashboard = {
   user: ApiUser;
   leads: Page<Record<string, unknown>>;
   history: Page<Record<string, unknown>>;
-  queue: Page<Record<string, unknown>>;
+  queue: Page<Record<string, unknown>> & { nextSellerName?: string };
   skipBalance: Record<string, unknown> | null;
 };

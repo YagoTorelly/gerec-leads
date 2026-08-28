@@ -78,6 +78,9 @@ class DashboardService:
             MongoCollections.SELLER_QUEUE,
             PermissionService.scope_query(current, "queue"), page, page_size,
         )
+        state = self._database[MongoCollections.QUEUE_STATE].find_one({"_id": "global"})
+        next_seller = self._find_by_id(MongoCollections.USERS, (state or {}).get("nextSellerId"))
+        queue["nextSellerName"] = _display_name(next_seller)
         balance = self._first(
             MongoCollections.SKIP_BALANCES,
             PermissionService.scope_query(current, "skip_balance"),

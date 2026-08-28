@@ -18,7 +18,7 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
       <div className="metric"><span>Leads exibidos</span><strong>{data.leads.items.length}</strong></div>
       <div className="metric amber"><span>Posições na fila</span><strong>{data.queue.total}</strong></div>
       <div className="metric"><span>Atribuições</span><strong>{data.history.total}</strong></div>
-      <div className="metric"><span>Primeira posição</span><strong className="metric-text">{String(data.queue.items[0]?.sellerName ?? "Não identificado")}</strong></div>
+      <div className="metric"><span>Próximo vendedor</span><strong className="metric-text">{String(data.queue.nextSellerName ?? "Não identificado")}</strong></div>
     </section>
     <div className="panel-stack">
       <section className="panel-card"><div className="panel-head"><div><p className="eyebrow">Distribuição</p><h2>Fila comercial</h2></div><a className="inline-link" href="/fila">Ver fila</a></div><div className="queue-grid">{data.queue.items.map((item, index) => <div className="queue-item" key={String(item.id ?? index)}><div className="queue-item-head"><span className="queue-position">#{String(item.position ?? index + 1)}</span><span className={`queue-state ${item.paused ? "paused" : "ready"}`}>{item.paused ? "Pausado" : "Ativo"}</span></div><strong>{String(item.sellerName ?? "Não identificado")}</strong><small>{item.paused ? "Fora da distribuição" : "Recebe novos leads"}</small></div>)}</div></section>
