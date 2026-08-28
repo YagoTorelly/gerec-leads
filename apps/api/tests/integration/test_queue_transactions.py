@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pytest
 from bson import ObjectId
@@ -14,12 +15,18 @@ from fastapi.testclient import TestClient
 from gerec_api.auth.dependencies import get_current_user
 from gerec_api.auth.sessions import CurrentUser
 from gerec_api.config import Settings
+from gerec_api.domain.business_time import BusinessClock
 from gerec_api.domain.queue import QueueService
 from gerec_api.infrastructure.mongo.queue_repository import QueueRepository, QueueStateError
 from gerec_api.main import create_app
 
 
 NOW = datetime(2026, 8, 27, 15, tzinfo=UTC)
+
+
+class NoHolidays:
+    def is_holiday(self, day: date) -> bool:
+        return False
 
 
 class FakeSession:
@@ -139,7 +146,14 @@ def _seed_lead(database: FakeDatabase, *, company_id=None, entered_offset=0):
 
 
 def _service(database: FakeDatabase, *, actor_id: Any = "system") -> QueueService:
-    return QueueService(QueueRepository(database, now=lambda: NOW), actor_id=actor_id)
+    return QueueService(
+        QueueRepository(
+            database,
+            now=lambda: NOW,
+            business_clock=BusinessClock(NoHolidays()),
+        ),
+        actor_id=actor_id,
+    )
 
 
 def test_ac01_normal_rotation_is_atomic_and_first_assignment_defines_owner() -> None:
@@ -155,6 +169,13 @@ def test_ac01_normal_rotation_is_atomic_and_first_assignment_defines_owner() -> 
     assert database["queue_state"].documents[0]["nextSellerId"] == sellers[0]
     assert database["queue_state"].documents[0]["version"] == 4
     assert len(database["assignments"].documents) == 4
+    assert len(database["feedback_cycles"].documents) == 4
+    assert all(item["closedAt"] is None for item in database["feedback_cycles"].documents)
+    assert all(
+        database["leads"].find_one({"_id": lead_id})["feedbackDueAt"]
+        == datetime(2026, 8, 28, 12, tzinfo=ZoneInfo("America/Sao_Paulo"))
+        for lead_id in leads
+    )
     assert len(database["audit_log"].documents) == 4
     assert len(database["notification_outbox"].documents) == 4
     for lead_id in leads:

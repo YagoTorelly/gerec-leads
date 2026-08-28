@@ -116,6 +116,19 @@ INDEXES: Final[tuple[MongoIndex, ...]] = (
         partial_filter={"reversedAt": None},
     ),
     MongoIndex(
+        MongoCollections.CONTACT_ATTEMPTS,
+        (("leadId", ASCENDING), ("businessDate", ASCENDING)),
+        "contact_attempts_lead_business_date_unique",
+        unique=True,
+    ),
+    MongoIndex(
+        MongoCollections.FEEDBACK_CYCLES,
+        (("leadId", ASCENDING),),
+        "feedback_cycles_open_lead_unique",
+        unique=True,
+        partial_filter={"closedAt": None},
+    ),
+    MongoIndex(
         MongoCollections.SESSIONS,
         (("tokenHash", ASCENDING),),
         "sessions_token_hash_unique",

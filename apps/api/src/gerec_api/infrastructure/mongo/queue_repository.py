@@ -6,8 +6,10 @@ from datetime import UTC, datetime
 from time import sleep
 from typing import Any, Callable, TypeVar
 
+from bson import ObjectId
 from pymongo.errors import DuplicateKeyError
 
+from gerec_api.domain.business_time import BusinessClock
 from gerec_api.domain.queue import (
     AssignmentResult,
     QueueRules,
@@ -37,9 +39,16 @@ class _FifoPredecessorPending(QueueStateError):
 class QueueRepository:
     """Commit every queue side effect in one retryable MongoDB transaction."""
 
-    def __init__(self, database: Any, *, now: Callable[[], datetime] | None = None) -> None:
+    def __init__(
+        self,
+        database: Any,
+        *,
+        now: Callable[[], datetime] | None = None,
+        business_clock: BusinessClock | None = None,
+    ) -> None:
         self._database = database
         self._now = now or (lambda: datetime.now(UTC))
+        self._business_clock = business_clock
 
     def distribute_normal(
         self, lead_id: Any, command_id: str, *, actor_id: Any
@@ -420,19 +429,40 @@ class QueueRepository:
             "commandId": command_id,
         }
         assignment_id = self._assignments.insert_one(assignment, session=session).inserted_id
+        lead_update = {
+            "assignmentStatus": "assigned",
+            "assigneeId": seller_id,
+            "currentAssignmentId": assignment_id,
+            "assignmentType": assignment_type,
+            "parkReason": None,
+            "assignedAt": now,
+            "updatedAt": now,
+        }
+        if self._business_clock is not None:
+            cycle_id = ObjectId()
+            reminder_at = self._business_clock.add_business_hours(now, 20)
+            due_at = self._business_clock.add_business_hours(now, 24)
+            self._feedback_cycles.insert_one(
+                {
+                    "_id": cycle_id,
+                    "leadId": lead["_id"],
+                    "startAt": now,
+                    "reminderAt": reminder_at,
+                    "dueAt": due_at,
+                    "closedAt": None,
+                },
+                session=session,
+            )
+            lead_update.update(
+                {
+                    "feedbackCycleId": cycle_id,
+                    "feedbackReminderAt": reminder_at,
+                    "feedbackDueAt": due_at,
+                }
+            )
         updated = self._leads.update_one(
             {"_id": lead["_id"], "currentAssignmentId": None},
-            {
-                "$set": {
-                    "assignmentStatus": "assigned",
-                    "assigneeId": seller_id,
-                    "currentAssignmentId": assignment_id,
-                    "assignmentType": assignment_type,
-                    "parkReason": None,
-                    "assignedAt": now,
-                    "updatedAt": now,
-                }
-            },
+            {"$set": lead_update},
             session=session,
         )
         if updated.matched_count != 1:
@@ -674,6 +704,10 @@ class QueueRepository:
     @property
     def _assignments(self):
         return self._database[MongoCollections.ASSIGNMENTS]
+
+    @property
+    def _feedback_cycles(self):
+        return self._database[MongoCollections.FEEDBACK_CYCLES]
 
     @property
     def _audit_log(self):

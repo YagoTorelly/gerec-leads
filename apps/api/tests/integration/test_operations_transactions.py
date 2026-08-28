@@ -1,0 +1,379 @@
+"""Integrated transaction coverage for feedback, attempts and outcomes."""
+
+from copy import deepcopy
+from datetime import date, datetime, timedelta
+from types import SimpleNamespace
+from typing import Any
+from zoneinfo import ZoneInfo
+
+import pytest
+from bson import ObjectId
+from fastapi.testclient import TestClient
+
+from gerec_api.auth.dependencies import get_current_user
+from gerec_api.auth.sessions import CurrentUser
+from gerec_api.config import Settings
+from gerec_api.domain.business_time import BusinessClock
+from gerec_api.domain.operations import AttemptCommand, FeedbackCommand, OperationsService, OutcomeCommand
+from gerec_api.infrastructure.mongo.operations_repository import (
+    MongoOperationsRepository,
+    OperationsStateError,
+)
+from gerec_api.main import create_app
+
+
+SAO_PAULO = ZoneInfo("America/Sao_Paulo")
+NOW = datetime(2026, 9, 4, 14, 0, tzinfo=SAO_PAULO)
+
+
+class NoHolidays:
+    def is_holiday(self, day: date) -> bool:
+        return False
+
+
+class FixedClock:
+    def now(self) -> datetime:
+        return NOW
+
+
+class FakeSession:
+    def __init__(self, database: "FakeDatabase") -> None:
+        self._database = database
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        return None
+
+    def with_transaction(self, callback):
+        snapshot = {name: deepcopy(collection.documents) for name, collection in self._database.items()}
+        try:
+            return callback(self)
+        except Exception:
+            for name, documents in snapshot.items():
+                self._database[name].documents = documents
+            raise
+
+
+class FakeClient:
+    def __init__(self, database: "FakeDatabase") -> None:
+        self._database = database
+
+    def start_session(self) -> FakeSession:
+        return FakeSession(self._database)
+
+
+class FakeCollection:
+    def __init__(self) -> None:
+        self.documents: list[dict[str, Any]] = []
+        self.fail_next_insert = False
+
+    def find_one(self, query: dict[str, Any], **_: Any):
+        return next((document for document in self.documents if _matches(document, query)), None)
+
+    def count_documents(self, query: dict[str, Any], **_: Any) -> int:
+        return sum(_matches(document, query) for document in self.documents)
+
+    def insert_one(self, document: dict[str, Any], **_: Any):
+        if self.fail_next_insert:
+            self.fail_next_insert = False
+            raise RuntimeError("injected insert failure")
+        stored = deepcopy(document)
+        stored.setdefault("_id", ObjectId())
+        self.documents.append(stored)
+        return SimpleNamespace(inserted_id=stored["_id"])
+
+    def update_one(self, query: dict[str, Any], update: dict[str, Any], **_: Any):
+        document = self.find_one(query)
+        if document is None:
+            return SimpleNamespace(matched_count=0, modified_count=0)
+        before = deepcopy(document)
+        document.update(deepcopy(update.get("$set", {})))
+        for key, amount in update.get("$inc", {}).items():
+            document[key] = document.get(key, 0) + amount
+        return SimpleNamespace(matched_count=1, modified_count=int(document != before))
+
+
+class FakeDatabase(dict):
+    def __init__(self) -> None:
+        super().__init__()
+        self.client = FakeClient(self)
+
+    def __getitem__(self, name: str) -> FakeCollection:
+        if name not in self:
+            self[name] = FakeCollection()
+        return super().__getitem__(name)
+
+
+def _matches(document: dict[str, Any], query: dict[str, Any]) -> bool:
+    for key, expected in query.items():
+        actual = document.get(key)
+        if isinstance(expected, dict):
+            if "$in" in expected and actual not in expected["$in"]:
+                return False
+            if "$ne" in expected and actual == expected["$ne"]:
+                return False
+            if "$gte" in expected and actual < expected["$gte"]:
+                return False
+        elif actual != expected:
+            return False
+    return True
+
+
+def _seed_assigned_lead(database: FakeDatabase, *, state: str = "SP"):
+    seller_id = ObjectId()
+    company_id = ObjectId()
+    lead_id = ObjectId()
+    cycle_id = ObjectId()
+    database["companies"].insert_one(
+        {"_id": company_id, "ownerId": seller_id, "clientSince": None}
+    )
+    database["leads"].insert_one(
+        {
+            "_id": lead_id,
+            "companyId": company_id,
+            "assigneeId": seller_id,
+            "assignmentStatus": "assigned",
+            "qualificationStatus": "pending",
+            "conversionStatus": "active",
+            "feedbackDueAt": NOW - timedelta(hours=1),
+            "feedbackCycleId": cycle_id,
+            "state": state,
+            "archivedAt": None,
+        }
+    )
+    database["feedback_cycles"].insert_one(
+        {
+            "_id": cycle_id,
+            "leadId": lead_id,
+            "startAt": NOW - timedelta(days=2),
+            "reminderAt": NOW - timedelta(hours=5),
+            "dueAt": NOW - timedelta(hours=1),
+            "closedAt": None,
+        }
+    )
+    return lead_id, company_id, seller_id, cycle_id
+
+
+def _service(database: FakeDatabase, seller_id: Any, *, role: str = "seller") -> OperationsService:
+    repository = MongoOperationsRepository(database)
+    return OperationsService(
+        repository,
+        business_clock=BusinessClock(NoHolidays()),
+        clock=FixedClock(),
+    ).with_actor(seller_id, role)
+
+
+def test_ac20_feedback_closes_previous_cycle_and_opens_the_next_atomically() -> None:
+    """Breaks if a valid feedback leaves two open cycles or misses its operational event."""
+    database = FakeDatabase()
+    lead_id, _, seller_id, previous_cycle_id = _seed_assigned_lead(database)
+
+    result = _service(database, seller_id).register_feedback(
+        FeedbackCommand(lead_id, "Cliente pediu retorno", True, "feedback-cycle")
+    )
+
+    previous = database["feedback_cycles"].find_one({"_id": previous_cycle_id})
+    lead = database["leads"].find_one({"_id": lead_id})
+    assert previous["closedAt"] == NOW
+    assert result.cycle_id != str(previous_cycle_id)
+    assert lead["feedbackDueAt"] == result.due_at
+    assert len(database["feedbacks"].documents) == 1
+    assert [event["eventType"] for event in database["notification_outbox"].documents] == [
+        "lead.feedback_recorded"
+    ]
+
+
+def test_ac21_five_distinct_attempts_enable_but_do_not_apply_manual_disqualification() -> None:
+    """Breaks if duplicate dates count, six attempts pass, or the fifth auto-disqualifies."""
+    database = FakeDatabase()
+    lead_id, _, seller_id, _ = _seed_assigned_lead(database)
+    service = _service(database, seller_id)
+    weekdays = [date(2026, 8, 31) + timedelta(days=index) for index in range(5)]
+
+    results = [
+        service.register_attempt(
+            AttemptCommand(lead_id, "Contato sem resposta", f"attempt-{index}", business_day)
+        )
+        for index, business_day in enumerate(weekdays)
+    ]
+
+    assert [result.sequence for result in results] == [1, 2, 3, 4, 5]
+    assert results[-1].may_disqualify_no_answer is True
+    assert database["leads"].find_one({"_id": lead_id})["qualificationStatus"] == "pending"
+    with pytest.raises(OperationsStateError, match="same business date"):
+        service.register_attempt(
+            AttemptCommand(lead_id, "Nova tentativa", "attempt-duplicate", weekdays[-1])
+        )
+    with pytest.raises(OperationsStateError, match="limit"):
+        service.register_attempt(
+            AttemptCommand(lead_id, "Sexta tentativa", "attempt-six", date(2026, 8, 28))
+        )
+
+
+def test_ac21_no_answer_disqualification_is_manual_and_requires_five_attempts() -> None:
+    """Breaks if no-answer can be selected early or is applied without an outcome command."""
+    database = FakeDatabase()
+    lead_id, _, seller_id, cycle_id = _seed_assigned_lead(database)
+    service = _service(database, seller_id)
+    command = OutcomeCommand(
+        lead_id,
+        "disqualified",
+        "Não respondeu aos contatos",
+        "manual-disqualification",
+        "no_answer_after_5_attempts",
+    )
+
+    with pytest.raises(OperationsStateError, match="five"):
+        service.register_outcome(command)
+    for index in range(5):
+        business_day = date(2026, 8, 31) + timedelta(days=index)
+        service.register_attempt(
+            AttemptCommand(lead_id, "Contato sem resposta", f"manual-attempt-{index}", business_day)
+        )
+    result = service.register_outcome(command)
+
+    assert result.outcome == "disqualified"
+    assert database["leads"].find_one({"_id": lead_id})["qualificationStatus"] == "disqualified"
+    assert database["feedback_cycles"].find_one({"_id": cycle_id})["closedAt"] == NOW
+
+
+def test_ac22_closed_without_conversion_stays_qualified_and_closes_sla() -> None:
+    """Breaks if a refused proposal is counted as disqualified or keeps the SLA open."""
+    database = FakeDatabase()
+    lead_id, _, seller_id, cycle_id = _seed_assigned_lead(database)
+
+    _service(database, seller_id).register_outcome(
+        OutcomeCommand(
+            lead_id,
+            "qualified_closed_no_conversion",
+            "Cliente recusou a proposta",
+            "closed-no-conversion",
+        )
+    )
+
+    lead = database["leads"].find_one({"_id": lead_id})
+    assert lead["qualificationStatus"] == "qualified"
+    assert lead["conversionStatus"] == "closed_no_conversion"
+    assert database["feedback_cycles"].find_one({"_id": cycle_id})["closedAt"] == NOW
+
+
+def test_ac23_outside_sp_remains_active_until_explicit_manual_outcome() -> None:
+    """Breaks if an RJ source field automatically changes operational lead state."""
+    database = FakeDatabase()
+    lead_id, _, seller_id, _ = _seed_assigned_lead(database, state="RJ")
+    assert database["leads"].find_one({"_id": lead_id})["qualificationStatus"] == "pending"
+
+    _service(database, seller_id).register_outcome(
+        OutcomeCommand(
+            lead_id,
+            "disqualified",
+            "Empresa fora do estado atendido",
+            "manual-outside-sp",
+            "outside_sp",
+        )
+    )
+
+    assert database["leads"].find_one({"_id": lead_id})["qualificationStatus"] == "disqualified"
+
+
+def test_ac24_ac28_won_is_idempotent_marks_client_and_preserves_owner() -> None:
+    """Breaks if replay creates two sales/events or temporary work changes company ownership."""
+    database = FakeDatabase()
+    lead_id, company_id, owner_id, cycle_id = _seed_assigned_lead(database)
+    temporary_seller = ObjectId()
+    database["leads"].update_one({"_id": lead_id}, {"$set": {"assigneeId": temporary_seller}})
+    service = _service(database, temporary_seller)
+    command = OutcomeCommand(lead_id, "won", "Venda confirmada", "won-idempotent")
+
+    first = service.register_outcome(command)
+    replay = service.register_outcome(command)
+
+    assert replay == first
+    assert len(database["sales"].documents) == 1
+    assert len(database["qualification_events"].documents) == 1
+    assert database["companies"].find_one({"_id": company_id})["ownerId"] == owner_id
+    assert database["companies"].find_one({"_id": company_id})["clientSince"] == NOW
+    assert database["sales"].documents[0]["creditedSellerId"] == temporary_seller
+    assert database["feedback_cycles"].find_one({"_id": cycle_id})["closedAt"] == NOW
+
+
+def test_ac30_administrative_note_does_not_change_deadline_or_close_cycle() -> None:
+    """Breaks if an administrator can regularize a seller through a note."""
+    database = FakeDatabase()
+    lead_id, _, _, cycle_id = _seed_assigned_lead(database)
+    admin_id = ObjectId()
+    before_due = database["leads"].find_one({"_id": lead_id})["feedbackDueAt"]
+
+    result = _service(database, admin_id, role="admin").register_feedback(
+        FeedbackCommand(
+            lead_id,
+            "Nota administrativa",
+            False,
+            "admin-note",
+            administrative_note=True,
+        )
+    )
+
+    assert result.status == "administrative_note"
+    assert database["leads"].find_one({"_id": lead_id})["feedbackDueAt"] == before_due
+    assert database["feedback_cycles"].find_one({"_id": cycle_id})["closedAt"] is None
+    assert database["feedbacks"].documents[0]["kind"] == "administrative_note"
+
+
+def test_won_rolls_back_lead_company_cycle_and_event_when_sale_insert_fails() -> None:
+    """Breaks if a partial won outcome can commit before its unique sale exists."""
+    database = FakeDatabase()
+    lead_id, company_id, seller_id, cycle_id = _seed_assigned_lead(database)
+    database["sales"].fail_next_insert = True
+
+    with pytest.raises(RuntimeError, match="injected"):
+        _service(database, seller_id).register_outcome(
+            OutcomeCommand(lead_id, "won", "Venda confirmada", "won-failure")
+        )
+
+    assert database["leads"].find_one({"_id": lead_id})["conversionStatus"] == "active"
+    assert database["companies"].find_one({"_id": company_id})["clientSince"] is None
+    assert database["feedback_cycles"].find_one({"_id": cycle_id})["closedAt"] is None
+    assert database["qualification_events"].documents == []
+    assert database["command_results"].documents == []
+
+
+def test_operations_routes_bind_authenticated_actor_without_exposing_mongodb() -> None:
+    """Breaks if HTTP handlers bypass the operational command seam or lose actor identity."""
+    database = FakeDatabase()
+    lead_id, _, seller_id, _ = _seed_assigned_lead(database)
+    settings = Settings(
+        MONGODB_URI="mongodb://localhost:27017/?replicaSet=rs0",
+        MONGODB_DATABASE="gerec_leads",
+        APP_SECRET="operations-route-secret",
+    )
+    app = create_app(settings=settings, database=database)
+    app.state.operations_service = _service(database, seller_id)
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        id=str(seller_id), email="seller@example.test", role="seller"
+    )
+    client = TestClient(app)
+
+    feedback = client.post(
+        f"/api/leads/{lead_id}/feedbacks",
+        json={
+            "comment": "Cliente pediu retorno",
+            "contact_started": True,
+            "idempotency_key": "route-feedback",
+        },
+    )
+    attempt = client.post(
+        f"/api/leads/{lead_id}/attempts",
+        json={
+            "comment": "Contato sem resposta",
+            "business_date": "2026-09-04",
+            "idempotency_key": "route-attempt",
+        },
+    )
+
+    assert feedback.status_code == 200
+    assert attempt.status_code == 200
+    assert "mongodb" not in (feedback.text + attempt.text).casefold()
+    assert all(item["actorId"] == seller_id for item in database["audit_log"].documents)
