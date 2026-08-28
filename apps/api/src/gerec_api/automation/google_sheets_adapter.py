@@ -25,6 +25,7 @@ class GoogleSheetsAdapter:
         range_name: str,
         access_token: str,
         *,
+        skip_source_ids: set[str] | None = None,
         fetch: Callable[[str], dict[str, Any]] | None = None,
     ) -> None:
         if not spreadsheet_id or not range_name or not access_token:
@@ -33,11 +34,13 @@ class GoogleSheetsAdapter:
         self._range_name = range_name
         self._access_token = access_token
         self._fetch = fetch or self._fetch_json
+        self._skip_source_ids = skip_source_ids or set()
 
     @classmethod
     def from_env(cls) -> "GoogleSheetsAdapter":
         service_account_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
         access_token = os.environ.get("GOOGLE_SHEETS_ACCESS_TOKEN", "")
+        skip_ids = {item.strip() for item in os.environ.get("GOOGLE_SHEETS_SKIP_SOURCE_LEAD_IDS", "").split(",") if item.strip()}
         if service_account_json:
             credentials = service_account.Credentials.from_service_account_info(
                 json.loads(service_account_json),
@@ -49,6 +52,7 @@ class GoogleSheetsAdapter:
             os.environ.get("GOOGLE_SHEETS_SPREADSHEET_ID", ""),
             os.environ.get("GOOGLE_SHEETS_RANGE", "Leads!A:Q"),
             access_token,
+            skip_source_ids=skip_ids,
         )
 
     def read(self) -> Iterable[NormalizedSourceRow]:
@@ -60,6 +64,8 @@ class GoogleSheetsAdapter:
         for source_values in values[1:]:
             row = [*source_values, *([None] * (len(EXPECTED_HEADERS) - len(source_values)))]
             row = row[: len(EXPECTED_HEADERS)]
+            if str(row[0]).strip() in self._skip_source_ids:
+                continue
             if any(value is not None and str(value).strip() for value in row):
                 yield normalize_source_row(
                     dict(zip(EXPECTED_HEADERS, row, strict=True)),
