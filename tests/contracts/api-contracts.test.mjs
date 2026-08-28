@@ -55,11 +55,11 @@ async function request(path, init) {
   return { response, body: await response.json() };
 }
 
-async function login() {
+async function login(email = "admin.contract@test") {
   const result = await request("/auth/login", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ email: "admin.contract@test", password: testPassword }),
+    body: JSON.stringify({ email, password: testPassword }),
   });
   const token = result.response.headers.get("set-cookie")?.match(/gerec_session=([^;]+)/)?.[1];
   assert.ok(token);
@@ -122,7 +122,7 @@ test("contrato valida erros e limites de leads, queue, operations e admin", asyn
   assert.equal(admin.response.status, 200);
   assert.equal(admin.body.page, 1);
   assert.equal(admin.body.pageSize, 50);
-  assert.equal(admin.body.total, 1);
+  assert.equal(admin.body.total, 3);
   assert.deepEqual(admin.body.items[0], {
     id: "000000000000000000000001",
     emailNormalized: "admin.contract@test",
@@ -131,4 +131,78 @@ test("contrato valida erros e limites de leads, queue, operations e admin", asyn
     createdAt: "2026-08-28T00:00:00Z",
   });
   assert.equal("passwordHash" in admin.body.items[0], false);
+});
+
+test("contrato de tratativa separa comentários comerciais das tentativas", async () => {
+  const leadId = "000000000000000000000010";
+  const owner = await login("seller.contract@test");
+  const admin = await login();
+  const otherSeller = await login("other.contract@test");
+  const payload = {
+    comment: "Cliente pediu uma proposta comercial",
+    commercialStatus: "negotiation",
+    isDisqualified: false,
+    idempotencyKey: "contract-treatment-replay",
+  };
+
+  const created = await request(`/api/leads/${leadId}/treatments`, {
+    method: "POST",
+    headers: { "content-type": "application/json", Cookie: owner.cookie },
+    body: JSON.stringify(payload),
+  });
+  const replay = await request(`/api/leads/${leadId}/treatments`, {
+    method: "POST",
+    headers: { "content-type": "application/json", Cookie: owner.cookie },
+    body: JSON.stringify(payload),
+  });
+  const shortComment = await request(`/api/leads/${leadId}/treatments`, {
+    method: "POST",
+    headers: { "content-type": "application/json", Cookie: owner.cookie },
+    body: JSON.stringify({ ...payload, comment: "curto", idempotencyKey: "short-comment" }),
+  });
+  const invalidStatus = await request(`/api/leads/${leadId}/treatments`, {
+    method: "POST",
+    headers: { "content-type": "application/json", Cookie: owner.cookie },
+    body: JSON.stringify({ ...payload, commercialStatus: "closed", idempotencyKey: "invalid-status" }),
+  });
+  const forbiddenAdmin = await request(`/api/leads/${leadId}/treatments`, {
+    method: "POST",
+    headers: { "content-type": "application/json", Cookie: admin.cookie },
+    body: JSON.stringify({ ...payload, idempotencyKey: "admin-forbidden" }),
+  });
+  const forbiddenOtherSeller = await request(`/api/leads/${leadId}/treatments`, {
+    method: "POST",
+    headers: { "content-type": "application/json", Cookie: otherSeller.cookie },
+    body: JSON.stringify({ ...payload, idempotencyKey: "seller-forbidden" }),
+  });
+  const conflict = await request(`/api/leads/${leadId}/treatments`, {
+    method: "POST",
+    headers: { "content-type": "application/json", Cookie: owner.cookie },
+    body: JSON.stringify({ ...payload, idempotencyKey: "contract-conflict" }),
+  });
+  const attemptWithTreatmentShape = await request(`/api/leads/${leadId}/attempts`, {
+    method: "POST",
+    headers: { "content-type": "application/json", Cookie: owner.cookie },
+    body: JSON.stringify(payload),
+  });
+  const removedAdministrativeNote = await request(`/api/admin/leads/${leadId}/notes`, {
+    method: "POST",
+    headers: { "content-type": "application/json", Cookie: admin.cookie },
+    body: JSON.stringify({ comment: payload.comment, idempotency_key: "removed-note" }),
+  });
+
+  assert.equal(created.response.status, 201);
+  assert.equal(created.body.commercialStatus, "negotiation");
+  assert.equal(created.body.isDisqualified, false);
+  assert.deepEqual(replay.body, created.body);
+  assert.equal(replay.response.status, 201);
+  assert.equal(shortComment.response.status, 422);
+  assert.equal(invalidStatus.response.status, 422);
+  assert.deepEqual(forbiddenAdmin.body, { detail: "Forbidden" });
+  assert.equal(forbiddenAdmin.response.status, 403);
+  assert.deepEqual(forbiddenOtherSeller.body, { detail: "Forbidden" });
+  assert.equal(forbiddenOtherSeller.response.status, 403);
+  assert.equal(conflict.response.status, 409);
+  assert.equal(attemptWithTreatmentShape.response.status, 422);
+  assert.equal(removedAdministrativeNote.response.status, 404);
 });

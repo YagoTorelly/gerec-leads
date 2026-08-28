@@ -1,7 +1,7 @@
-"""HTTP boundaries for seller operations and administrative notes."""
+"""HTTP boundaries for seller operational commands."""
 
 from datetime import date
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from bson import ObjectId
 from bson.errors import InvalidId
@@ -15,6 +15,7 @@ from gerec_api.domain.operations import (
     FeedbackCommand,
     OperationsService,
     OutcomeCommand,
+    TreatmentCommand,
 )
 from gerec_api.infrastructure.mongo.operations_repository import OperationsStateError
 
@@ -42,9 +43,13 @@ class OutcomeRequest(BaseModel):
     response_confirmed: bool = False
 
 
-class AdministrativeNoteRequest(BaseModel):
-    comment: str = Field(min_length=1, max_length=2_000)
-    idempotency_key: str = Field(min_length=1, max_length=200)
+class TreatmentRequest(BaseModel):
+    comment: str = Field(min_length=6, max_length=2_000)
+    commercial_status: Literal["undefined", "negotiation", "won"] = Field(
+        alias="commercialStatus"
+    )
+    is_disqualified: bool = Field(alias="isDisqualified")
+    idempotency_key: str = Field(alias="idempotencyKey", min_length=1, max_length=200)
 
 
 def get_operations_service(request: Request) -> OperationsService:
@@ -55,12 +60,6 @@ def get_operations_service(request: Request) -> OperationsService:
             detail="Operations service unavailable",
         )
     return service
-
-
-def require_admin(current_user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
-    if current_user.role != "admin":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
-    return current_user
 
 
 @router.post("/api/leads/{lead_id}/feedbacks")
@@ -101,6 +100,34 @@ def register_attempt(
     )
 
 
+@router.post(
+    "/api/leads/{lead_id}/treatments",
+    status_code=status.HTTP_201_CREATED,
+)
+def register_treatment(
+    lead_id: str,
+    payload: TreatmentRequest,
+    service: OperationsService = Depends(get_operations_service),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Record the current seller's immutable commercial treatment only."""
+    if current_user.role != "seller":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    return _run_treatment(
+        lambda: service.with_actor(
+            _object_id(current_user.id), current_user.role
+        ).register_treatment(
+            TreatmentCommand(
+                _object_id(lead_id),
+                payload.comment,
+                payload.commercial_status,
+                payload.is_disqualified,
+                payload.idempotency_key,
+            )
+        )
+    )
+
+
 @router.post("/api/leads/{lead_id}/outcome")
 def register_outcome(
     lead_id: str,
@@ -122,26 +149,6 @@ def register_outcome(
     )
 
 
-@router.post("/api/admin/leads/{lead_id}/notes")
-def register_administrative_note(
-    lead_id: str,
-    payload: AdministrativeNoteRequest,
-    service: OperationsService = Depends(get_operations_service),
-    current_user: CurrentUser = Depends(require_admin),
-) -> dict[str, Any]:
-    return _run(
-        lambda: service.with_actor(_object_id(current_user.id), current_user.role).register_feedback(
-            FeedbackCommand(
-                _object_id(lead_id),
-                payload.comment,
-                False,
-                payload.idempotency_key,
-                administrative_note=True,
-            )
-        )
-    )
-
-
 def _object_id(value: str) -> ObjectId:
     try:
         return ObjectId(value)
@@ -155,6 +162,19 @@ def _object_id(value: str) -> ObjectId:
 def _run(operation: Callable[[], Any]) -> dict[str, Any]:
     try:
         return operation().to_document()
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)
+        ) from error
+    except OperationsStateError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+
+
+def _run_treatment(operation: Callable[[], Any]) -> dict[str, Any]:
+    try:
+        return operation().to_document()
+    except PermissionError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden") from error
     except ValueError as error:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)

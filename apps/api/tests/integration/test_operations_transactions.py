@@ -508,6 +508,56 @@ def test_operations_routes_bind_authenticated_actor_without_exposing_mongodb() -
     assert all(item["actorId"] == seller_id for item in database["audit_log"].documents)
 
 
+def test_treatment_route_accepts_only_the_current_seller_and_preserves_replay() -> None:
+    """Breaks if the HTTP boundary bypasses the treatment command or maps permission as conflict."""
+    database = FakeDatabase()
+    lead_id, _, seller_id, _ = _seed_assigned_lead(database)
+    settings = Settings(
+        MONGODB_URI="mongodb://localhost:27017/?replicaSet=rs0",
+        MONGODB_DATABASE="gerec_leads",
+        APP_SECRET="operations-route-secret",
+    )
+    app = create_app(settings=settings, database=database)
+    app.state.operations_service = _service(database, seller_id)
+    client = TestClient(app)
+    payload = {
+        "comment": "Cliente pediu uma proposta comercial",
+        "commercialStatus": "negotiation",
+        "isDisqualified": False,
+        "idempotencyKey": "route-treatment",
+    }
+
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        id=str(seller_id), email="seller@example.test", role="seller"
+    )
+    first = client.post(f"/api/leads/{lead_id}/treatments", json=payload)
+    replay = client.post(f"/api/leads/{lead_id}/treatments", json=payload)
+
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        id=str(ObjectId()), email="other@example.test", role="seller"
+    )
+    other_seller = client.post(
+        f"/api/leads/{lead_id}/treatments",
+        json={**payload, "idempotencyKey": "other-seller-treatment"},
+    )
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        id=str(seller_id), email="admin@example.test", role="admin"
+    )
+    admin = client.post(
+        f"/api/leads/{lead_id}/treatments",
+        json={**payload, "idempotencyKey": "admin-treatment"},
+    )
+
+    assert first.status_code == 201
+    assert replay.status_code == 201
+    assert replay.json() == first.json()
+    assert first.json()["commercialStatus"] == "negotiation"
+    assert other_seller.status_code == 403
+    assert other_seller.json() == {"detail": "Forbidden"}
+    assert admin.status_code == 403
+    assert admin.json() == {"detail": "Forbidden"}
+
+
 def test_treatment_requires_the_current_seller_and_rejects_admin() -> None:
     """Breaks if a seller from another lead or an admin can create a treatment."""
     database = FakeDatabase()

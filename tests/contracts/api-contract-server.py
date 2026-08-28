@@ -13,7 +13,59 @@ from bson import ObjectId
 
 from gerec_api.auth.passwords import hash_password
 from gerec_api.config import Settings
+from gerec_api.domain.operations import OperationsService, TreatmentCommand, TreatmentResult
+from gerec_api.infrastructure.mongo.operations_repository import OperationsStateError
 from gerec_api.main import create_app
+
+
+OWNER_ID = ObjectId("000000000000000000000002")
+OTHER_SELLER_ID = ObjectId("000000000000000000000003")
+LEAD_ID = ObjectId("000000000000000000000010")
+
+
+class ContractOperationsService(OperationsService):
+    """Minimal service double that makes the HTTP treatment contract executable."""
+
+    def __init__(
+        self,
+        *,
+        actor_id: ObjectId | None = None,
+        actor_role: str | None = None,
+        results: dict[str, TreatmentResult] | None = None,
+    ) -> None:
+        self._actor_id = actor_id
+        self._actor_role = actor_role
+        self._results = results if results is not None else {}
+
+    def with_actor(self, actor_id: ObjectId, actor_role: str) -> "ContractOperationsService":
+        return ContractOperationsService(
+            actor_id=actor_id,
+            actor_role=actor_role,
+            results=self._results,
+        )
+
+    def register_treatment(self, command: TreatmentCommand) -> TreatmentResult:
+        if self._actor_role != "seller" or self._actor_id != OWNER_ID:
+            raise PermissionError("seller is not the current lead assignee")
+        if command.lead_id != LEAD_ID:
+            raise PermissionError("seller is not the current lead assignee")
+        if command.idempotency_key == "contract-conflict":
+            raise OperationsStateError("operation conflicted with a concurrent command")
+        result = self._results.get(command.idempotency_key)
+        if result is not None:
+            return result
+        result = TreatmentResult(
+            lead_id=str(command.lead_id),
+            treatment_id="000000000000000000000099",
+            status="recorded",
+            commercial_status=command.commercial_status,
+            is_disqualified=command.is_disqualified,
+            comment_count=1,
+            reminder_at=None,
+            due_at=None,
+        )
+        self._results[command.idempotency_key] = result
+        return result
 
 
 class Cursor:
@@ -82,22 +134,30 @@ def _matches(document: dict[str, Any], query: dict[str, Any]) -> bool:
 def app():
     database = Database()
     user_id = ObjectId("000000000000000000000001")
-    database["users"].insert_one(
-        {
-            "_id": user_id,
-            "emailNormalized": "admin.contract@test",
-            "passwordHash": hash_password(os.environ["CONTRACT_TEST_PASSWORD"]),
-            "role": "admin",
-            "active": True,
-            "createdAt": datetime(2026, 8, 28, tzinfo=UTC),
-        }
-    )
+    password_hash = hash_password(os.environ["CONTRACT_TEST_PASSWORD"])
+    for account_id, email, role in (
+        (user_id, "admin.contract@test", "admin"),
+        (OWNER_ID, "seller.contract@test", "seller"),
+        (OTHER_SELLER_ID, "other.contract@test", "seller"),
+    ):
+        database["users"].insert_one(
+            {
+                "_id": account_id,
+                "emailNormalized": email,
+                "passwordHash": password_hash,
+                "role": role,
+                "active": True,
+                "createdAt": datetime(2026, 8, 28, tzinfo=UTC),
+            }
+        )
     settings = Settings(
         MONGODB_URI="mongodb://127.0.0.1:27017/?replicaSet=rs0",
         MONGODB_DATABASE="gerec_contracts",
         APP_SECRET=os.environ["CONTRACT_TEST_APP_SECRET"],
     )
-    return create_app(settings=settings, database=database)
+    result = create_app(settings=settings, database=database)
+    result.state.operations_service = ContractOperationsService()
+    return result
 
 
 if __name__ == "__main__":

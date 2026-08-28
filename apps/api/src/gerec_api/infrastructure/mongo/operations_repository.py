@@ -37,6 +37,10 @@ class OperationsStateError(RuntimeError):
     """Raised when an operations command would violate a domain invariant."""
 
 
+class OperationsPermissionError(OperationsStateError, PermissionError):
+    """Raised when an authenticated actor is outside a command's allowed scope."""
+
+
 class MongoOperationsRepository:
     """Commit each operational command and all its effects in one Mongo transaction."""
 
@@ -650,7 +654,7 @@ class MongoOperationsRepository:
     @staticmethod
     def _require_current_seller(lead: dict[str, Any], actor_id: Any, actor_role: str) -> None:
         if actor_role != "seller" or lead.get("assigneeId") != actor_id:
-            raise OperationsStateError("seller is not the current lead assignee")
+            raise OperationsPermissionError("seller is not the current lead assignee")
         if lead.get("assignmentStatus") != "assigned":
             raise OperationsStateError("lead is not currently assigned")
 
