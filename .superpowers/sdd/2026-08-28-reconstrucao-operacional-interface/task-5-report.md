@@ -50,3 +50,28 @@ Resultado: `132 passed, 8 skipped`; sem erros de whitespace. Os skips requerem M
 ## Pendências preservadas
 
 - `apps/api/.env.example` removido e `tools/google-sheets-diagnostic/` não rastreado: alterações preexistentes, alheias à Task 5.
+
+## Correção — rodada 1/5
+
+- O snapshot passou a usar a própria seleção normal em modo somente leitura. Assim, crédito de pulo também é considerado na primeira entrada apresentada: com Renato no cursor e um crédito, Sandra aparece e recebe a distribuição normal.
+- Um ciclo aberto inconsistente ligado a lead com `isDisqualified` (ou status legado de desqualificação) não bloqueia o vendedor; somente ciclos pertencentes a SLA ainda ativo participam da derivação.
+- Recorrência e atribuição temporária agora consultam o mesmo adaptador de disponibilidade da rotação, removendo as condições duplicadas de usuário, pausa e atraso.
+
+### TDD da correção
+
+```text
+python -m pytest apps/api/tests/unit/test_queue_rules.py apps/api/tests/integration/test_queue_transactions.py apps/api/tests/integration/test_queue_concurrency.py -q
+```
+
+RED: `3 failed, 22 passed, 1 skipped`.
+
+GREEN: `25 passed, 1 skipped`.
+
+Verificação abrangente após a correção:
+
+```text
+python -m pytest apps/api/tests -q
+git diff --check
+```
+
+Resultado: `134 passed, 8 skipped`; sem erros de whitespace.

@@ -14,6 +14,7 @@ from gerec_api.domain.queue import (
     AssignmentResult,
     QueueSnapshot,
     QueueRules,
+    SellerAvailability,
     SellerState,
     TransferResult,
 )
@@ -315,7 +316,7 @@ class QueueRepository:
         owner_id = None if company is None else company.get("ownerId")
         if owner_id is None:
             raise QueueStateError("recurring company does not have an owner")
-        if not self._seller_operational(owner_id, now, session):
+        if self._seller_availability(owner_id, now, session).status != "active":
             self._leads.update_one(
                 {"_id": lead_id, "currentAssignmentId": None},
                 {
@@ -379,7 +380,7 @@ class QueueRepository:
             raise QueueStateError("temporary assignment requires a previous owner")
         if owner_id == seller_id:
             raise QueueStateError("temporary seller must differ from the company owner")
-        if not self._seller_operational(seller_id, now, session):
+        if self._seller_availability(seller_id, now, session).status != "active":
             raise QueueStateError("temporary seller is not operational")
         self._credit(seller_id, command_id, actor_id, now, session)
         return self._assign_effective(
@@ -569,49 +570,49 @@ class QueueRepository:
             key=lambda value: value["position"],
         )
         return [
-            SellerState(
-                seller_id=item["sellerId"],
-                active=(
-                    self._users.find_one(
-                        {"_id": item["sellerId"], "active": True}, session=session
-                    )
-                    is not None
-                ),
-                paused=bool(item.get("paused", False)),
-                has_overdue_feedback=self._seller_has_overdue(item["sellerId"], now, session),
-                skip_balance=self._balance(item["sellerId"], session),
-                position=int(item["position"]),
-            )
+            self._seller_state(item, now, session)
             for item in queue_documents
         ]
 
-    def _seller_operational(self, seller_id: Any, now: datetime, session: Any) -> bool:
-        user = self._users.find_one({"_id": seller_id, "active": True}, session=session)
-        queue = self._seller_queue.find_one({"sellerId": seller_id}, session=session)
-        return bool(
-            user is not None
-            and queue is not None
-            and not queue.get("paused", False)
-            and not self._seller_has_overdue(seller_id, now, session)
+    def _seller_state(self, queue: dict[str, Any], now: datetime, session: Any) -> SellerState:
+        seller_id = queue["sellerId"]
+        return SellerState(
+            seller_id=seller_id,
+            active=self._users.find_one({"_id": seller_id, "active": True}, session=session)
+            is not None,
+            paused=bool(queue.get("paused", False)),
+            has_overdue_feedback=self._seller_has_overdue(seller_id, now, session),
+            skip_balance=self._balance(seller_id, session),
+            position=int(queue["position"]),
         )
+
+    def _seller_availability(
+        self, seller_id: Any, now: datetime, session: Any
+    ) -> SellerAvailability:
+        queue = self._seller_queue.find_one({"sellerId": seller_id}, session=session)
+        if queue is None:
+            return SellerAvailability("paused", "Vendedor não participa da fila.")
+        return QueueRules.availability(self._seller_state(queue, now, session))
 
     def _seller_has_overdue(self, seller_id: Any, now: datetime, session: Any) -> bool:
         for cycle in self._feedback_cycles.find(
             {"closedAt": None, "dueAt": {"$lt": now}}, session=session
         ):
-            if (
-                self._leads.find_one(
-                    {
-                        "_id": cycle["leadId"],
-                        "assigneeId": seller_id,
-                        "archivedAt": None,
-                    },
-                    session=session,
-                )
-                is not None
-            ):
+            lead = self._leads.find_one(
+                {"_id": cycle["leadId"], "assigneeId": seller_id, "archivedAt": None},
+                session=session,
+            )
+            if lead is not None and not self._lead_sla_closed(lead):
                 return True
         return False
+
+    @staticmethod
+    def _lead_sla_closed(lead: dict[str, Any]) -> bool:
+        return bool(
+            lead.get("isDisqualified")
+            or lead.get("qualificationStatus") == "disqualified"
+            or lead.get("conversionStatus") == "disqualified"
+        )
 
     def _balance(self, seller_id: Any, session: Any) -> int:
         document = self._skip_balances.find_one({"sellerId": seller_id}, session=session)

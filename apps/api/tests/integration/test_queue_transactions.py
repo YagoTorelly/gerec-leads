@@ -266,8 +266,8 @@ def test_snapshot_derives_open_cycle_blocking_and_orders_from_next_eligible_sell
     ]
 
 
-def test_regularizing_every_overdue_cycle_removes_only_the_automatic_block() -> None:
-    """Breaks if a closed SLA still blocks or regularization silently clears a pause."""
+def test_disqualified_open_cycle_does_not_block_and_regularization_keeps_manual_pause() -> None:
+    """Breaks if a disqualified lead can block or regularization silently clears a pause."""
     database = FakeDatabase()
     renato, *_ = _seed_queue(database)
     overdue_lead, _ = _seed_lead(database, entered_offset=-1)
@@ -283,20 +283,44 @@ def test_regularizing_every_overdue_cycle_removes_only_the_automatic_block() -> 
         },
     )
 
+    disqualified_open_cycle = _open_overdue_cycle(database, overdue_lead)
     stale_only = QueueRepository(database, now=lambda: NOW).snapshot()
-    assert stale_only.entries[0].availability.status == "active"
+    assert _availability(stale_only, renato).status == "active"
 
-    cycle_id = _open_overdue_cycle(database, overdue_lead)
+    active_overdue_lead, _ = _seed_lead(database)
+    database["leads"].update_one(
+        {"_id": active_overdue_lead},
+        {"$set": {"assignmentStatus": "assigned", "assigneeId": renato}},
+    )
+    cycle_id = _open_overdue_cycle(database, active_overdue_lead)
     blocked = QueueRepository(database, now=lambda: NOW).snapshot()
     assert _availability(blocked, renato).status == "blocked_overdue"
 
     database["feedback_cycles"].update_one({"_id": cycle_id}, {"$set": {"closedAt": NOW}})
+    database["feedback_cycles"].update_one(
+        {"_id": disqualified_open_cycle}, {"$set": {"closedAt": NOW}}
+    )
     regularized = QueueRepository(database, now=lambda: NOW).snapshot()
     assert _availability(regularized, renato).status == "active"
 
     database["seller_queue"].update_one({"sellerId": renato}, {"$set": {"paused": True}})
     paused_after_regularization = QueueRepository(database, now=lambda: NOW).snapshot()
     assert _availability(paused_after_regularization, renato).status == "paused"
+
+
+def test_snapshot_and_distribution_follow_skip_credit_selection() -> None:
+    """Breaks if the displayed next seller differs from the normal rotation after a credit."""
+    database = FakeDatabase()
+    renato, sandra, *_ = _seed_queue(database)
+    database["skip_balances"].update_one({"sellerId": renato}, {"$set": {"balance": 1}})
+    lead_id, _ = _seed_lead(database)
+    service = _service(database)
+
+    snapshot = QueueRepository(database, now=lambda: NOW).snapshot()
+    assignment = service.distribute_normal(lead_id, "skip-credit-snapshot")
+
+    assert snapshot.entries[0].seller_id == sandra
+    assert assignment.seller_id == str(sandra)
 
 
 def test_pause_preserves_existing_lead_and_consumes_its_natural_turn() -> None:

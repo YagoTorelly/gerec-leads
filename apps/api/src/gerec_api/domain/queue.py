@@ -61,16 +61,9 @@ class QueueRules:
     def snapshot(cls, sellers: Sequence[SellerState], next_seller_id: Any) -> QueueSnapshot:
         if not sellers:
             return QueueSnapshot(cursor_seller_id=None, entries=[])
-        ordered = cls._circular_from_cursor(sellers, next_seller_id)
-        first_eligible = next(
-            (
-                index
-                for index, seller in enumerate(ordered)
-                if cls.availability(seller).status == "active"
-            ),
-            0,
-        )
-        ordered = [*ordered[first_eligible:], *ordered[:first_eligible]]
+        decision = cls.select_normal(sellers, next_seller_id)
+        start_seller_id = decision.seller_id or next_seller_id
+        ordered = cls._circular_from_cursor(sellers, start_seller_id)
         return QueueSnapshot(
             cursor_seller_id=next_seller_id,
             entries=[

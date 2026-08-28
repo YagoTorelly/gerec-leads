@@ -103,6 +103,21 @@ def test_snapshot_starts_with_next_eligible_seller_and_keeps_unavailable_entries
     ]
 
 
+def test_snapshot_starts_after_cursor_seller_with_a_skip_credit() -> None:
+    """Breaks if the snapshot ignores the same skip-credit selection as distribution."""
+    renato = _seller(credits=1)
+    sandra, jessica, nelma = [_seller() for _ in range(3)]
+
+    snapshot = QueueRules.snapshot([renato, sandra, jessica, nelma], renato.seller_id)
+
+    assert [entry.seller_id for entry in snapshot.entries] == [
+        sandra.seller_id,
+        jessica.seller_id,
+        nelma.seller_id,
+        renato.seller_id,
+    ]
+
+
 def test_ac08_credits_cross_rotations_and_are_consumed_exactly_once() -> None:
     """Breaks if directed credits disappear, are skipped, or make a balance negative."""
     renato = _seller(credits=3)
