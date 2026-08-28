@@ -61,7 +61,10 @@ class GoogleSheetsAdapter:
             row = [*source_values, *([None] * (len(EXPECTED_HEADERS) - len(source_values)))]
             row = row[: len(EXPECTED_HEADERS)]
             if any(value is not None and str(value).strip() for value in row):
-                yield normalize_source_row(dict(zip(EXPECTED_HEADERS, row, strict=True)))
+                yield normalize_source_row(
+                    dict(zip(EXPECTED_HEADERS, row, strict=True)),
+                    required_fields={"contact_name", "phone", "email"},
+                )
 
     @property
     def _url(self) -> str:

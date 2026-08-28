@@ -186,7 +186,16 @@ class LeadRepository:
         now: datetime,
         session: Any,
     ) -> dict[str, Any]:
-        assert row.document_normalized is not None
+        if row.document_normalized is None:
+            identity = f"source:{row.source_lead_id}"
+            company = self._companies.find_one({"sourceIdentity": identity}, session=session)
+            fields = {"name": row.company_name or row.contact_name, "state": row.state, "updatedAt": now}
+            if company is None:
+                document = {"sourceIdentity": identity, **fields, "ownerId": None, "clientSince": None, "createdAt": now}
+                result = self._companies.insert_one(document, session=session)
+                return {"_id": result.inserted_id, **document}
+            self._companies.update_one({"_id": company["_id"]}, {"$set": fields}, session=session)
+            return {**company, **fields}
         company = self._companies.find_one(
             {"documentNormalized": row.document_normalized},
             session=session,

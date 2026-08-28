@@ -46,7 +46,9 @@ class NormalizedSourceRow:
     row_hash: str
 
 
-def normalize_source_row(row: Mapping[str, Any]) -> NormalizedSourceRow:
+def normalize_source_row(
+    row: Mapping[str, Any], *, required_fields: set[str] | None = None
+) -> NormalizedSourceRow:
     """Normalize one source row without making commercial decisions or inventing identity."""
     source_lead_id = _text(_first(row, "source_lead_id", "sourceLeadId", "id"))
     if source_lead_id is None:
@@ -67,6 +69,9 @@ def normalize_source_row(row: Mapping[str, Any]) -> NormalizedSourceRow:
     email_normalized = normalize_email(_first(row, "email", "email_normalized", "emailNormalized"))
     source_snapshot_id = _text(_first(row, "source_snapshot_id", "sourceSnapshotId"))
 
+    required_fields = required_fields or {
+        "source_entered_at", "document", "state", "contact_name", "phone", "email"
+    }
     issues: list[str] = []
     for field, value in (
         ("source_entered_at", source_entered_at),
@@ -76,7 +81,7 @@ def normalize_source_row(row: Mapping[str, Any]) -> NormalizedSourceRow:
         ("phone", phone_normalized),
         ("email", email_normalized),
     ):
-        if value is None:
+        if value is None and field in required_fields:
             issues.append(field)
     if campaign_external_id is None and campaign_name is None:
         issues.append("campaign")
