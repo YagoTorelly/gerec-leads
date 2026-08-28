@@ -1,34 +1,14 @@
 import { redirect } from "next/navigation";
-
 import { AppShell } from "../../components/app-shell";
-import { UserManagement } from "../../components/user-management";
-import { getSessionContext } from "../../lib/auth/get-session-context";
-import { getDashboardData } from "../../lib/dashboard/queries";
+import { ResourceTable } from "../../components/resource-table";
+import { apiFetch } from "../../lib/api/client";
+import type { Page } from "../../lib/api/types";
+import { getSessionContext, SESSION_COOKIE } from "../../lib/auth/session";
 
 export const dynamic = "force-dynamic";
-
-export default async function UsersPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ notice?: string }>;
-}) {
-  const session = await getSessionContext({ onMissingSession: () => redirect("/login") });
-  if (session.profile.role !== "admin") {
-    redirect("/dashboard");
-  }
-
-  const data = await getDashboardData(session.profile, session.accessToken);
-  const resolvedSearchParams = await searchParams;
-  const notice = resolvedSearchParams.notice ? decodeURIComponent(resolvedSearchParams.notice) : undefined;
-
-  return (
-    <AppShell
-      profile={session.profile}
-      activePath="/usuarios"
-      eyebrow="Administração local"
-      heading="Usuários e posições da fila"
-    >
-      <UserManagement data={data} notice={notice} />
-    </AppShell>
-  );
+export default async function UsersPage() {
+  const session = await getSessionContext();
+  if (session.status !== "authenticated" || session.profile.role !== "admin") redirect("/dashboard");
+  const users = await apiFetch<Page<Record<string, unknown>>>("/api/admin/users?page=1&limit=50", { cache: "no-store", headers: { Cookie: `${SESSION_COOKIE}=${session.sessionToken}` } });
+  return <AppShell profile={session.profile} activePath="/usuarios" eyebrow="Administração" heading="Usuários"><ResourceTable title="Usuários" items={users.items} /></AppShell>;
 }

@@ -1,63 +1,27 @@
 import { cookies } from "next/headers";
 
-import { supabaseAuthRequest, supabaseRestSelect } from "../supabase/rest";
-import type { SessionProfile } from "../dashboard/types";
+import { apiFetch, ApiRequestError } from "../api/client";
+import type { ApiUser } from "../api/types";
 
-export const ACCESS_TOKEN_COOKIE = "wtg_access_token";
-export const REFRESH_TOKEN_COOKIE = "wtg_refresh_token";
-
-type SupabaseUser = {
-  id: string;
-  email?: string;
-};
-
-type ProfileRecord = {
-  user_id: string;
-  full_name: string;
-  email: string;
-  role: SessionProfile["role"];
-};
-
+export const SESSION_COOKIE = "gerec_session";
+export type SessionProfile = ApiUser & { userId: string; fullName: string };
 export type SessionContext =
-  | { status: "authenticated"; accessToken: string; profile: SessionProfile }
-  | { status: "missing"; message: string }
-  | { status: "unavailable"; message: string };
+  | { status: "authenticated"; sessionToken: string; profile: SessionProfile }
+  | { status: "missing" | "unavailable"; message: string };
 
 export async function getSessionContext(): Promise<SessionContext> {
-  const cookieStore = await cookies();
-  const accessToken = cookieStore.get(ACCESS_TOKEN_COOKIE)?.value;
-  if (!accessToken) {
-    return { status: "missing", message: "Entre com uma conta local para acessar o dashboard." };
-  }
-
+  const token = (await cookies()).get(SESSION_COOKIE)?.value;
+  if (!token) return { status: "missing", message: "Entre para acessar o sistema." };
   try {
-    const user = await supabaseAuthRequest<SupabaseUser>("/auth/v1/user", {
-      method: "GET",
-      headers: { Authorization: `Bearer ${accessToken}` },
+    const user = await apiFetch<ApiUser>("/auth/me", {
+      cache: "no-store",
+      headers: { Cookie: `${SESSION_COOKIE}=${token}` },
     });
-    const profiles = await supabaseRestSelect<ProfileRecord>(
-      `profiles?user_id=eq.${user.id}&select=user_id,full_name,email,role&limit=1`,
-      accessToken,
-    );
-    const profile = profiles[0];
-    if (!profile) {
-      return { status: "unavailable", message: "Usuario autenticado sem perfil ativo no sistema." };
-    }
-
-    return {
-      status: "authenticated",
-      accessToken,
-      profile: {
-        userId: profile.user_id,
-        fullName: profile.full_name,
-        email: profile.email,
-        role: profile.role,
-      },
-    };
+    return { status: "authenticated", sessionToken: token, profile: { ...user, userId: user.id, fullName: user.email } };
   } catch (error) {
-    return {
-      status: "unavailable",
-      message: error instanceof Error ? error.message : "Supabase local indisponivel.",
-    };
+    if (error instanceof ApiRequestError && error.status === 401) {
+      return { status: "missing", message: "Sua sessão expirou. Entre novamente." };
+    }
+    return { status: "unavailable", message: error instanceof Error ? error.message : "API indisponível." };
   }
 }

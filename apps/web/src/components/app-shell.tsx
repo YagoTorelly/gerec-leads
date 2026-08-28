@@ -1,5 +1,5 @@
 import { signOutAction } from "../lib/auth/actions";
-import type { SessionProfile } from "../lib/dashboard/types";
+import type { SessionProfile } from "../lib/auth/session";
 
 export function AppShell({
   profile,
@@ -35,7 +35,7 @@ export function AppShell({
           ) : null}
         </nav>
         <div className="sidebar-foot">
-          <span className="status-dot" /> Supabase local
+          <span className="status-dot" /> API Python
         </div>
       </aside>
       <main className="workspace">
