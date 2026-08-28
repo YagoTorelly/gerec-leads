@@ -121,6 +121,7 @@ class DashboardService:
                 result["companyName"] = _display_name(company, lead.get("companyId"))
                 result["campaignName"] = _campaign_name(campaign, lead.get("campaignId"))
         elif collection_name == MongoCollections.LEADS:
+            result["email"] = result.get("email") or result.get("emailNormalized")
             company = self._find_by_id(MongoCollections.COMPANIES, result.get("companyId"))
             campaign = self._find_by_id(MongoCollections.CAMPAIGNS, result.get("campaignId"))
             result["companyName"] = _display_name(company, result.get("companyId"))

@@ -93,7 +93,7 @@ def test_dashboard_serializes_nested_bson_identifiers() -> None:
 
 def test_dashboard_enriches_operational_rows_with_human_labels() -> None:
     database = Database()
-    database["leads"] = Collection([{"_id": "lead-1", "assigneeId": "seller-1", "companyId": "company-1", "campaignId": "campaign-1", "contactName": "Ana"}])
+    database["leads"] = Collection([{"_id": "lead-1", "assigneeId": "seller-1", "companyId": "company-1", "campaignId": "campaign-1", "contactName": "Ana", "emailNormalized": "ana@example.test"}])
     database["users"] = Collection([{"_id": "seller-1", "fullName": "Renato"}])
     database["companies"] = Collection([{"_id": "company-1", "name": "Empresa Ana"}])
     database["campaigns"] = Collection([{"_id": "campaign-1", "displayName": "Campanha WTG"}])
@@ -102,6 +102,7 @@ def test_dashboard_enriches_operational_rows_with_human_labels() -> None:
     assert item["sellerName"] == "Renato"
     assert item["companyName"] == "Empresa Ana"
     assert item["campaignName"] == "Campanha WTG"
+    assert item["email"] == "ana@example.test"
 
 
 def test_dashboard_page_two_skips_first_page():
