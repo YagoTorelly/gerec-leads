@@ -5,6 +5,7 @@ from typing import Any
 from fastapi import FastAPI
 
 from gerec_api.auth.sessions import AuthService
+from gerec_api.auth.permissions import DashboardService
 from gerec_api.config import Settings
 from gerec_api.domain.business_time import BusinessClock, MongoHolidayRepository
 from gerec_api.domain.leads import LeadService
@@ -20,6 +21,8 @@ from gerec_api.routes.auth import router as auth_router
 from gerec_api.routes.leads import router as leads_router
 from gerec_api.routes.operations import router as operations_router
 from gerec_api.routes.queue import router as queue_router
+from gerec_api.routes.dashboard import router as dashboard_router
+from gerec_api.routes.admin import router as admin_router
 
 
 def create_app(
@@ -36,6 +39,7 @@ def create_app(
     app.state.settings = settings
     app.state.database = database
     app.state.auth_service = auth_service if auth_service is not None else AuthService(database)
+    app.state.dashboard_service = DashboardService(database)
     app.state.lead_service = LeadService(LeadRepository(database))
     business_clock = BusinessClock(
         MongoHolidayRepository(database[MongoCollections.HOLIDAYS])
@@ -62,4 +66,6 @@ def create_app(
     app.include_router(leads_router)
     app.include_router(queue_router)
     app.include_router(operations_router)
+    app.include_router(dashboard_router)
+    app.include_router(admin_router)
     return app
