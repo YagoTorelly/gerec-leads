@@ -206,6 +206,12 @@ def test_ac20_feedback_closes_previous_cycle_and_opens_the_next_atomically() -> 
     reminder = events[1]
     assert reminder["scheduledFor"] == result.reminder_at
     assert reminder["idempotencyKey"] == f"{lead_id}:{result.cycle_id}:feedback_due_soon"
+    audit = database["audit_log"].documents[-1]
+    assert audit["before"]["lead"]["feedbackDueAt"] == NOW - timedelta(hours=1)
+    assert audit["after"]["lead"]["feedbackDueAt"] == result.due_at
+    assert audit["before"]["cycle"]["closedAt"] is None
+    assert audit["after"]["cycle"]["closedAt"] is None
+    assert audit["correlationId"] == "feedback-cycle"
 
 
 def test_ac21_five_distinct_attempts_enable_but_do_not_apply_manual_disqualification() -> None:

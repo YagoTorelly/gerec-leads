@@ -8,15 +8,25 @@
 - Comandos críticos existentes de fila/operações continuam usando os serviços de domínio e gravando auditoria transacional com ator, ação, entidade, before/after, timestamp e correlation ID.
 - Sessões antigas de usuários desativados já são rejeitadas por `AuthService.current_user`.
 
+## Correções do round 1
+
+- Leads de seller usam apenas `assigneeId`; histórico permanece em consulta própria.
+- Dashboard e administração aceitam `page`/`limit`, calculam `skip` e validam limites.
+- Toda leitura administrativa recebe `CurrentUser` e filtro explícito; filtro ausente é rejeitado.
+- Auditoria operacional captura snapshots `before`/`after` de lead, ciclo e empresa dentro da transação.
+- Fakes e testes cobrem paginação página 2 e isolamento seller A/B.
+
 ## Testes
 
 ```text
 pytest -q
-80 passed, 5 skipped in 17.15s
+82 passed, 5 skipped in 18.27s
 ```
 
 Os 5 skips dependem de MongoDB em replica set local.
 
 ## Commit
 
-`feat(gerec-leads): aplica autorização e auditoria no backend`
+Commit inicial: `743c068 feat(gerec-leads): aplica autorização e auditoria no backend`
+
+Commit de correção: `fix(gerec-leads): fecha escopos, paginação e snapshots de auditoria`

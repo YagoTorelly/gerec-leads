@@ -45,8 +45,10 @@ class PermissionService:
         if current.role == "admin":
             return {}
         ids = _identity_values(current.id)
-        if resource in {"leads", "companies"}:
-            return {"$or": [{"assigneeId": {"$in": ids}}, {"historicalSellerIds": {"$in": ids}}]}
+        if resource == "leads":
+            return {"assigneeId": {"$in": ids}}
+        if resource == "companies":
+            return {"ownerId": {"$in": ids}}
         if resource == "history":
             return {"sellerId": {"$in": ids}}
         if resource in {"queue", "skip_balance"}:
@@ -62,16 +64,18 @@ class DashboardService:
         self._database = database
         self._page_size = max(1, min(page_size, 200))
 
-    def for_user(self, user: CurrentUser | None) -> dict[str, Any]:
+    def for_user(self, user: CurrentUser | None, *, page: int = 1, limit: int | None = None) -> dict[str, Any]:
         current = PermissionService.require_current_user(user)
-        leads = self._page(MongoCollections.LEADS, PermissionService.scope_query(current, "leads"))
+        page = _page_number(page)
+        page_size = _page_limit(limit or self._page_size)
+        leads = self._page(MongoCollections.LEADS, PermissionService.scope_query(current, "leads"), page, page_size)
         history = self._page(
             MongoCollections.ASSIGNMENTS,
-            PermissionService.scope_query(current, "history"),
+            PermissionService.scope_query(current, "history"), page, page_size,
         )
         queue = self._page(
             MongoCollections.SELLER_QUEUE,
-            PermissionService.scope_query(current, "queue"),
+            PermissionService.scope_query(current, "queue"), page, page_size,
         )
         balance = self._first(
             MongoCollections.SKIP_BALANCES,
@@ -85,18 +89,18 @@ class DashboardService:
             "skipBalance": balance,
         }
 
-    def _page(self, collection_name: str, query: Mapping[str, Any]) -> dict[str, Any]:
+    def _page(self, collection_name: str, query: Mapping[str, Any], page: int, page_size: int) -> dict[str, Any]:
         collection = self._database[collection_name]
         cursor = collection.find(dict(query))
         if hasattr(cursor, "sort"):
             cursor = cursor.sort("createdAt", -1)
         if hasattr(cursor, "skip"):
-            cursor = cursor.skip(0)
+            cursor = cursor.skip((page - 1) * page_size)
         if hasattr(cursor, "limit"):
-            cursor = cursor.limit(self._page_size)
+            cursor = cursor.limit(page_size)
         items = [_public_document(item) for item in cursor]
         total = collection.count_documents(dict(query)) if hasattr(collection, "count_documents") else len(items)
-        return {"items": items, "page": 1, "pageSize": self._page_size, "total": total}
+        return {"items": items, "page": page, "pageSize": page_size, "total": total}
 
     def _first(self, collection_name: str, query: Mapping[str, Any]) -> dict[str, Any] | None:
         item = self._database[collection_name].find_one(dict(query))
@@ -108,6 +112,18 @@ def _identity_values(value: str) -> list[Any]:
     if ObjectId.is_valid(value):
         values.append(ObjectId(value))
     return values
+
+
+def _page_number(value: int) -> int:
+    if value < 1:
+        raise ValueError("page must be at least 1")
+    return value
+
+
+def _page_limit(value: int) -> int:
+    if value < 1 or value > 200:
+        raise ValueError("limit must be between 1 and 200")
+    return value
 
 
 def _public_document(document: Mapping[str, Any]) -> dict[str, Any]:

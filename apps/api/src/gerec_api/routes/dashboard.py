@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from gerec_api.auth.dependencies import get_current_user
 from gerec_api.auth.permissions import DashboardService, PermissionDenied
@@ -23,8 +23,10 @@ def get_dashboard_service(request: Request) -> DashboardService:
 def dashboard(
     current_user: CurrentUser = Depends(get_current_user),
     service: DashboardService = Depends(get_dashboard_service),
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=200),
 ) -> dict[str, Any]:
     try:
-        return service.for_user(current_user)
+        return service.for_user(current_user, page=page, limit=limit)
     except PermissionDenied as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden") from error

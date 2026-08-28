@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import date, datetime
 from typing import Any, Callable, TypeVar
 
@@ -174,6 +175,7 @@ class MongoOperationsRepository:
         session: Any,
     ) -> FeedbackResult:
         lead = self._lead(command.lead_id, session)
+        lead_before = deepcopy(lead)
         feedback_id = ObjectId()
         if command.administrative_note:
             if actor_role != "admin":
@@ -195,6 +197,7 @@ class MongoOperationsRepository:
                     "lead.administrative_note_added",
                     command.lead_id,
                     command.idempotency_key,
+                    {},
                     {"feedbackId": feedback_id},
                     now,
                 ),
@@ -213,6 +216,7 @@ class MongoOperationsRepository:
         cycle = self._feedback_cycles.find_one(
             {"leadId": command.lead_id, "closedAt": None}, session=session
         )
+        cycle_before = deepcopy(cycle)
         if cycle is None:
             raise OperationsStateError("active lead does not have an open feedback cycle")
         closed = self._feedback_cycles.update_one(
@@ -266,7 +270,8 @@ class MongoOperationsRepository:
             command.lead_id,
             actor_id,
             command.idempotency_key,
-            {"feedbackId": feedback_id, "cycleId": cycle_id, "dueAt": due_at},
+            {"lead": lead_before, "cycle": cycle_before},
+            {"lead": self._leads.find_one({"_id": command.lead_id}, session=session), "cycle": self._feedback_cycles.find_one({"_id": cycle_id}, session=session)},
             now,
             session,
         )
@@ -299,6 +304,7 @@ class MongoOperationsRepository:
         session: Any,
     ) -> AttemptResult:
         lead = self._lead(command.lead_id, session)
+        lead_before = deepcopy(lead)
         self._require_current_seller(lead, actor_id, actor_role)
         self._require_active(lead)
         date_key = business_date.isoformat()
@@ -333,7 +339,8 @@ class MongoOperationsRepository:
                 "lead.contact_attempt_recorded",
                 command.lead_id,
                 command.idempotency_key,
-                {"attempts": sequence, "businessDate": date_key},
+                {"lead": lead_before},
+                {"lead": self._leads.find_one({"_id": command.lead_id}, session=session), "attempt": {"attempts": sequence, "businessDate": date_key}},
                 now,
             ),
             session=session,
@@ -356,6 +363,7 @@ class MongoOperationsRepository:
         session: Any,
     ) -> OutcomeResult:
         lead = self._lead(command.lead_id, session)
+        lead_before = deepcopy(lead)
         if actor_role == "seller":
             self._require_current_seller(lead, actor_id, actor_role)
         elif actor_role != "admin":
@@ -383,6 +391,7 @@ class MongoOperationsRepository:
             cycle = self._feedback_cycles.find_one(
                 {"leadId": command.lead_id, "closedAt": None}, session=session
             )
+            cycle_before = deepcopy(cycle)
             if cycle is not None:
                 closed = self._feedback_cycles.update_one(
                     {"_id": cycle["_id"], "closedAt": None},
@@ -393,10 +402,12 @@ class MongoOperationsRepository:
                     raise OperationsStateError("feedback cycle changed concurrently")
 
         sale_id: ObjectId | None = None
+        company_before = None
         if command.outcome == "won":
             company = self._companies.find_one({"_id": lead["companyId"]}, session=session)
             if company is None:
                 raise OperationsStateError("lead company does not exist")
+            company_before = deepcopy(company)
             sale_id = ObjectId()
             self._companies.update_one(
                 {"_id": lead["companyId"], "clientSince": None},
@@ -438,7 +449,8 @@ class MongoOperationsRepository:
             command.lead_id,
             actor_id,
             command.idempotency_key,
-            {"outcomeEventId": outcome_event_id, "saleId": sale_id},
+            {"lead": lead_before, "cycle": cycle_before if terminal else None, "company": company_before},
+            {"lead": self._leads.find_one({"_id": command.lead_id}, session=session), "cycle": (self._feedback_cycles.find_one({"_id": cycle["_id"]}, session=session) if terminal and cycle is not None else None), "company": (self._companies.find_one({"_id": lead["companyId"]}, session=session) if company_before is not None else None), "outcomeEventId": outcome_event_id, "saleId": sale_id},
             now,
             session,
         )
@@ -495,6 +507,7 @@ class MongoOperationsRepository:
         action: str,
         lead_id: Any,
         command_id: str,
+        before: dict[str, Any],
         after: dict[str, Any],
         now: datetime,
     ) -> dict[str, Any]:
@@ -503,7 +516,7 @@ class MongoOperationsRepository:
             "action": action,
             "entityType": "lead",
             "entityId": lead_id,
-            "before": None,
+            "before": before,
             "after": after,
             "createdAt": now,
             "correlationId": command_id,
@@ -515,12 +528,13 @@ class MongoOperationsRepository:
         lead_id: Any,
         actor_id: Any,
         command_id: str,
+        before: dict[str, Any],
         after: dict[str, Any],
         now: datetime,
         session: Any,
     ) -> None:
         self._audit_log.insert_one(
-            self._audit_document(actor_id, event_type, lead_id, command_id, after, now),
+            self._audit_document(actor_id, event_type, lead_id, command_id, before, after, now),
             session=session,
         )
         self._notification_outbox.insert_one(
