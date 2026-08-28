@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
-from typing import Any, Mapping, Protocol
+from typing import Any, Literal, Mapping, Protocol
 from zoneinfo import ZoneInfo
 
 from gerec_api.domain.business_time import BusinessClock
@@ -15,6 +15,8 @@ OUTCOMES = frozenset(
     {"qualified_follow_up", "qualified_closed_no_conversion", "disqualified", "won"}
 )
 DISQUALIFICATION_REASONS = frozenset({"no_answer_after_5_attempts", "no_cnpj", "outside_sp"})
+COMMERCIAL_STATUSES = frozenset({"undefined", "negotiation", "won"})
+CommercialStatus = Literal["undefined", "negotiation", "won"]
 
 
 @dataclass(frozen=True)
@@ -43,6 +45,15 @@ class OutcomeCommand:
     idempotency_key: str
     disqualification_reason: str | None = None
     response_confirmed: bool = False
+
+
+@dataclass(frozen=True)
+class TreatmentCommand:
+    lead_id: Any
+    comment: str
+    commercial_status: CommercialStatus
+    is_disqualified: bool
+    idempotency_key: str
 
 
 @dataclass(frozen=True)
@@ -137,6 +148,43 @@ class OutcomeResult:
         )
 
 
+@dataclass(frozen=True)
+class TreatmentResult:
+    lead_id: str
+    treatment_id: str
+    status: str
+    commercial_status: CommercialStatus
+    is_disqualified: bool
+    comment_count: int
+    reminder_at: datetime | None
+    due_at: datetime | None
+
+    def to_document(self) -> dict[str, Any]:
+        return {
+            "leadId": self.lead_id,
+            "treatmentId": self.treatment_id,
+            "status": self.status,
+            "commercialStatus": self.commercial_status,
+            "isDisqualified": self.is_disqualified,
+            "commentCount": self.comment_count,
+            "reminderAt": self.reminder_at,
+            "dueAt": self.due_at,
+        }
+
+    @classmethod
+    def from_document(cls, value: Mapping[str, Any]) -> "TreatmentResult":
+        return cls(
+            lead_id=str(value["leadId"]),
+            treatment_id=str(value["treatmentId"]),
+            status=str(value["status"]),
+            commercial_status=str(value["commercialStatus"]),  # type: ignore[arg-type]
+            is_disqualified=bool(value["isDisqualified"]),
+            comment_count=int(value["commentCount"]),
+            reminder_at=value.get("reminderAt"),
+            due_at=value.get("dueAt"),
+        )
+
+
 class Clock(Protocol):
     def now(self, session: Any | None = None) -> datetime: ...
 
@@ -147,6 +195,17 @@ class SystemClock:
 
 
 class OperationsPersistence(Protocol):
+    def register_treatment(
+        self,
+        command: TreatmentCommand,
+        *,
+        actor_id: Any,
+        actor_role: str,
+        now: datetime,
+        reminder_at: datetime,
+        due_at: datetime,
+    ) -> TreatmentResult: ...
+
     def register_feedback(
         self,
         command: FeedbackCommand,
@@ -228,6 +287,32 @@ class OperationsService:
             due_at = self._business_clock.add_business_hours(now, 24)
             reminder_at = self._business_clock.subtract_business_hours(due_at, 4)
         return self._persistence.register_feedback(
+            command,
+            actor_id=self._actor_id,
+            actor_role=self._actor_role,
+            now=now,
+            reminder_at=reminder_at,
+            due_at=due_at,
+        )
+
+    def register_treatment(self, command: TreatmentCommand) -> TreatmentResult:
+        if self._actor_role != "seller":
+            raise ValueError("treatments require a seller actor")
+        if command.commercial_status not in COMMERCIAL_STATUSES:
+            raise ValueError("commercial status is invalid")
+        if not isinstance(command.is_disqualified, bool):
+            raise ValueError("is disqualified must be a boolean")
+        command = TreatmentCommand(
+            command.lead_id,
+            _comment(command.comment),
+            command.commercial_status,
+            command.is_disqualified,
+            _required(command.idempotency_key, "idempotency key"),
+        )
+        now = self._aware_now()
+        due_at = self._business_clock.add_business_hours(now, 24)
+        reminder_at = self._business_clock.subtract_business_hours(due_at, 4)
+        return self._persistence.register_treatment(
             command,
             actor_id=self._actor_id,
             actor_role=self._actor_role,

@@ -16,6 +16,8 @@ from gerec_api.domain.operations import (
     FeedbackResult,
     OutcomeCommand,
     OutcomeResult,
+    TreatmentCommand,
+    TreatmentResult,
     Clock,
     SystemClock,
 )
@@ -26,8 +28,9 @@ from gerec_api.infrastructure.mongo.collections import MongoCollections
 FEEDBACK_COMMAND = "operations.register_feedback"
 ATTEMPT_COMMAND = "operations.register_attempt"
 OUTCOME_COMMAND = "operations.register_outcome"
+TREATMENT_COMMAND = "operations.register_treatment"
 TERMINAL_CONVERSIONS = frozenset({"closed_no_conversion", "won"})
-ResultT = TypeVar("ResultT", FeedbackResult, AttemptResult, OutcomeResult)
+ResultT = TypeVar("ResultT", FeedbackResult, AttemptResult, OutcomeResult, TreatmentResult)
 
 
 class OperationsStateError(RuntimeError):
@@ -64,6 +67,32 @@ class MongoOperationsRepository:
             FeedbackResult,
             now,
             lambda session, transaction_now: self._register_feedback(
+                command,
+                actor_id,
+                actor_role,
+                transaction_now,
+                reminder_at,
+                due_at,
+                session,
+            ),
+        )
+
+    def register_treatment(
+        self,
+        command: TreatmentCommand,
+        *,
+        actor_id: Any,
+        actor_role: str,
+        now: datetime,
+        reminder_at: datetime,
+        due_at: datetime,
+    ) -> TreatmentResult:
+        return self._execute(
+            TREATMENT_COMMAND,
+            command.idempotency_key,
+            TreatmentResult,
+            now,
+            lambda session, transaction_now: self._register_treatment(
                 command,
                 actor_id,
                 actor_role,
@@ -307,6 +336,132 @@ class MongoOperationsRepository:
             "recorded",
             reminder_at,
             due_at,
+        )
+
+    def _register_treatment(
+        self,
+        command: TreatmentCommand,
+        actor_id: Any,
+        actor_role: str,
+        now: datetime,
+        reminder_at: datetime,
+        due_at: datetime,
+        session: Any,
+    ) -> TreatmentResult:
+        lead = self._lead(command.lead_id, session)
+        self._require_current_seller(lead, actor_id, actor_role)
+        lead_before = deepcopy(lead)
+        cycle = self._feedback_cycles.find_one(
+            {"leadId": command.lead_id, "closedAt": None}, session=session
+        )
+        cycle_before = deepcopy(cycle)
+        treatment_id = ObjectId()
+        effective_disqualification = bool(lead.get("isDisqualified")) or command.is_disqualified
+        comment_count = int(lead.get("commentCount", 0)) + 1
+
+        self._lead_treatments.insert_one(
+            {
+                "_id": treatment_id,
+                "leadId": command.lead_id,
+                "sellerId": actor_id,
+                "comment": command.comment,
+                "commercialStatus": command.commercial_status,
+                "isDisqualified": command.is_disqualified,
+                "idempotencyKey": command.idempotency_key,
+                "createdAt": now,
+            },
+            session=session,
+        )
+
+        update: dict[str, Any] = {
+            "commercialStatus": command.commercial_status,
+            "isDisqualified": effective_disqualification,
+            "commentCount": comment_count,
+            "lastCommentAt": now,
+            "updatedAt": now,
+        }
+        after_cycle = None
+        scheduled_cycle_id = None
+        if effective_disqualification:
+            update.update({"feedbackDueAt": None, "feedbackReminderAt": None})
+            if cycle is not None:
+                closed = self._feedback_cycles.update_one(
+                    {"_id": cycle["_id"], "closedAt": None},
+                    {"$set": {"closedAt": now, "closedByTreatmentId": treatment_id}},
+                    session=session,
+                )
+                if closed.matched_count != 1:
+                    raise OperationsStateError("feedback cycle changed concurrently")
+                self._cancel_cycle_reminder(cycle["_id"], now, session)
+                after_cycle = self._feedback_cycles.find_one({"_id": cycle["_id"]}, session=session)
+        else:
+            if cycle is not None:
+                closed = self._feedback_cycles.update_one(
+                    {"_id": cycle["_id"], "closedAt": None},
+                    {"$set": {"closedAt": now, "closedByTreatmentId": treatment_id}},
+                    session=session,
+                )
+                if closed.matched_count != 1:
+                    raise OperationsStateError("feedback cycle changed concurrently")
+                self._cancel_cycle_reminder(cycle["_id"], now, session)
+            cycle_id = ObjectId()
+            self._feedback_cycles.insert_one(
+                {
+                    "_id": cycle_id,
+                    "leadId": command.lead_id,
+                    "startAt": now,
+                    "reminderAt": reminder_at,
+                    "dueAt": due_at,
+                    "closedAt": None,
+                },
+                session=session,
+            )
+            update.update(
+                {
+                    "feedbackCycleId": cycle_id,
+                    "feedbackReminderAt": reminder_at,
+                    "feedbackDueAt": due_at,
+                }
+            )
+            after_cycle = self._feedback_cycles.find_one({"_id": cycle_id}, session=session)
+            scheduled_cycle_id = cycle_id
+
+        changed = self._leads.update_one(
+            {"_id": command.lead_id}, {"$set": update}, session=session
+        )
+        if changed.matched_count != 1:
+            raise OperationsStateError("lead changed concurrently")
+        lead_after = self._leads.find_one({"_id": command.lead_id}, session=session)
+        self._record_event(
+            "lead.treatment_recorded",
+            command.lead_id,
+            actor_id,
+            command.idempotency_key,
+            {"lead": lead_before, "cycle": cycle_before},
+            {"lead": lead_after, "cycle": after_cycle, "treatmentId": treatment_id},
+            now,
+            session,
+        )
+        if scheduled_cycle_id is not None:
+            self._schedule_reminder(
+                command.lead_id,
+                scheduled_cycle_id,
+                reminder_at,
+                due_at,
+                actor_id,
+                command.idempotency_key,
+                now,
+                session,
+            )
+        return TreatmentResult(
+            str(command.lead_id),
+            str(treatment_id),
+            "recorded",
+            command.commercial_status,
+            effective_disqualification,
+            comment_count,
+            lead_after.get("feedbackReminderAt"),
+            lead_after.get("feedbackDueAt"),
         )
 
     def _register_attempt(
@@ -657,3 +812,7 @@ class MongoOperationsRepository:
     @property
     def _command_results(self):
         return self._database[MongoCollections.COMMAND_RESULTS]
+
+    @property
+    def _lead_treatments(self):
+        return self._database[MongoCollections.LEAD_TREATMENTS]

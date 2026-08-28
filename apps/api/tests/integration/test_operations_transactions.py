@@ -14,7 +14,13 @@ from gerec_api.auth.dependencies import get_current_user
 from gerec_api.auth.sessions import CurrentUser
 from gerec_api.config import Settings
 from gerec_api.domain.business_time import BusinessClock
-from gerec_api.domain.operations import AttemptCommand, FeedbackCommand, OperationsService, OutcomeCommand
+from gerec_api.domain.operations import (
+    AttemptCommand,
+    FeedbackCommand,
+    OperationsService,
+    OutcomeCommand,
+    TreatmentCommand,
+)
 from gerec_api.infrastructure.mongo.operations_repository import (
     MongoOperationsRepository,
     OperationsStateError,
@@ -61,6 +67,8 @@ class FakeSession:
         try:
             return callback(self)
         except Exception:
+            for name in set(self._database) - set(snapshot):
+                del self._database[name]
             for name, documents in snapshot.items():
                 self._database[name].documents = documents
             raise
@@ -498,3 +506,119 @@ def test_operations_routes_bind_authenticated_actor_without_exposing_mongodb() -
     assert attempt.status_code == 200
     assert "mongodb" not in (feedback.text + attempt.text).casefold()
     assert all(item["actorId"] == seller_id for item in database["audit_log"].documents)
+
+
+def test_treatment_requires_the_current_seller_and_rejects_admin() -> None:
+    """Breaks if a seller from another lead or an admin can create a treatment."""
+    database = FakeDatabase()
+    lead_id, _, seller_id, _ = _seed_assigned_lead(database)
+
+    with pytest.raises(OperationsStateError, match="current lead assignee"):
+        _service(database, ObjectId()).register_treatment(
+            TreatmentCommand(lead_id, "Cliente pediu proposta", "negotiation", False, "other-seller")
+        )
+    with pytest.raises(ValueError, match="seller"):
+        _service(database, seller_id, role="admin").register_treatment(
+            TreatmentCommand(lead_id, "Cliente pediu proposta", "negotiation", False, "admin-treatment")
+        )
+
+    assert database["lead_treatments"].documents == []
+
+
+def test_treatment_materializes_projection_records_event_and_is_idempotent() -> None:
+    """Breaks if replay duplicates the immutable event or comment projection."""
+    database = FakeDatabase()
+    lead_id, _, seller_id, previous_cycle_id = _seed_assigned_lead(database)
+    command = TreatmentCommand(
+        lead_id,
+        "Cliente confirmou interesse na proposta",
+        "negotiation",
+        False,
+        "treatment-idempotent",
+    )
+
+    first = _service(database, seller_id).register_treatment(command)
+    replay = _service(database, seller_id).register_treatment(command)
+
+    lead = database["leads"].find_one({"_id": lead_id})
+    treatment = database["lead_treatments"].documents[0]
+    assert replay == first
+    assert first.comment_count == 1
+    assert treatment["comment"] == "Cliente confirmou interesse na proposta"
+    assert treatment["commercialStatus"] == "negotiation"
+    assert treatment["isDisqualified"] is False
+    assert lead["commercialStatus"] == "negotiation"
+    assert lead["isDisqualified"] is False
+    assert lead["commentCount"] == 1
+    assert lead["lastCommentAt"] == NOW
+    assert database["feedback_cycles"].find_one({"_id": previous_cycle_id})["closedAt"] == NOW
+    assert len(database["lead_treatments"].documents) == 1
+    assert len(database["audit_log"].documents) == 1
+    assert [event["eventType"] for event in database["notification_outbox"].documents] == [
+        "lead.treatment_recorded",
+        "lead.feedback_due_soon",
+    ]
+
+
+def test_won_plus_disqualified_closes_sla_and_later_treatment_does_not_reopen_it() -> None:
+    """Breaks if the marker overwrites won or permits a later SLA reactivation."""
+    database = FakeDatabase()
+    lead_id, _, seller_id, cycle_id = _seed_assigned_lead(database)
+
+    result = _service(database, seller_id).register_treatment(
+        TreatmentCommand(lead_id, "Venda confirmada e cadastro encerrado", "won", True, "won-marker")
+    )
+    later = _service(database, seller_id).register_treatment(
+        TreatmentCommand(lead_id, "Cliente confirmou os dados finais", "won", False, "later-won")
+    )
+
+    lead = database["leads"].find_one({"_id": lead_id})
+    assert result.commercial_status == "won"
+    assert result.is_disqualified is True
+    assert later.is_disqualified is True
+    assert lead["commercialStatus"] == "won"
+    assert lead["isDisqualified"] is True
+    assert lead["feedbackDueAt"] is None
+    assert lead["feedbackReminderAt"] is None
+    assert database["feedback_cycles"].find_one({"_id": cycle_id})["closedAt"] == NOW
+    assert len(database["feedback_cycles"].documents) == 1
+
+
+def test_treatment_ignores_legacy_exclusive_statuses_when_materializing_projection() -> None:
+    """Breaks if old terminal fields prevent the approved independent treatment projection."""
+    database = FakeDatabase()
+    lead_id, _, seller_id, _ = _seed_assigned_lead(database)
+    database["leads"].update_one(
+        {"_id": lead_id},
+        {"$set": {"qualificationStatus": "disqualified", "conversionStatus": "won"}},
+    )
+
+    result = _service(database, seller_id).register_treatment(
+        TreatmentCommand(lead_id, "Cliente pediu uma nova negociação", "negotiation", False, "legacy")
+    )
+
+    lead = database["leads"].find_one({"_id": lead_id})
+    assert result.commercial_status == "negotiation"
+    assert lead["commercialStatus"] == "negotiation"
+    assert len(database["lead_treatments"].documents) == 1
+
+
+def test_treatment_rolls_back_event_projection_audit_and_cycle_on_intermediate_failure() -> None:
+    """Breaks if an audit failure can leave a treatment or closed SLA behind."""
+    database = FakeDatabase()
+    lead_id, _, seller_id, cycle_id = _seed_assigned_lead(database)
+    database["audit_log"].fail_next_insert = True
+
+    with pytest.raises(RuntimeError, match="injected"):
+        _service(database, seller_id).register_treatment(
+            TreatmentCommand(lead_id, "Cliente pediu retorno comercial", "negotiation", False, "rollback")
+        )
+
+    lead = database["leads"].find_one({"_id": lead_id})
+    assert database["lead_treatments"].documents == []
+    assert lead.get("commercialStatus") is None
+    assert lead.get("commentCount") is None
+    assert database["feedback_cycles"].find_one({"_id": cycle_id})["closedAt"] is None
+    assert database["audit_log"].documents == []
+    assert database["notification_outbox"].documents == []
+    assert database["command_results"].documents == []
