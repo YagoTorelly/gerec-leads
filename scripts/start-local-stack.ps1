@@ -10,6 +10,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$logDirectory = Join-Path $ProjectRoot ".local\logs"
+$null = New-Item -ItemType Directory -Force -Path $logDirectory
 
 if ([string]::IsNullOrWhiteSpace($MongoUri)) { throw "Define MONGODB_URI or pass -MongoUri." }
 if ([string]::IsNullOrWhiteSpace($MongoDatabase)) { throw "Define MONGODB_DATABASE or pass -MongoDatabase." }
@@ -24,15 +26,34 @@ function Start-LocalProcess {
   param(
     [string]$ScriptPath,
     [string]$Arguments,
-    [hashtable]$Environment
+    [hashtable]$Environment,
+    [string]$LogPath,
+    [switch]$PublicWebEnvironment
   )
 
   $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
-  $startInfo.FileName = $powershell
-  $startInfo.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" -ProjectRoot `"$ProjectRoot`" $Arguments"
+  $startInfo.FileName = (Get-Command cmd.exe).Source
+  $scriptInvocation = "`"$powershell`" -NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" -ProjectRoot `"$ProjectRoot`" $Arguments"
+  $startInfo.Arguments = "/d /c `"`"$scriptInvocation`" > `"$LogPath`" 2>&1`""
   $startInfo.WorkingDirectory = $ProjectRoot
   $startInfo.UseShellExecute = $false
   $startInfo.CreateNoWindow = $true
+  if ($PublicWebEnvironment) {
+    $safeEnvironmentNames = @(
+      "ALLUSERSPROFILE", "APPDATA", "COMSPEC", "HOMEDRIVE", "HOMEPATH", "LOCALAPPDATA",
+      "NUMBER_OF_PROCESSORS", "OS", "PATH", "PATHEXT", "PROCESSOR_ARCHITECTURE",
+      "PROCESSOR_IDENTIFIER", "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432",
+      "PSMODULEPATH", "SYSTEMDRIVE", "SYSTEMROOT", "TEMP", "TMP", "USERDOMAIN",
+      "USERDOMAIN_ROAMINGPROFILE", "USERNAME", "USERPROFILE", "WINDIR"
+    )
+    $startInfo.EnvironmentVariables.Clear()
+    foreach ($name in $safeEnvironmentNames) {
+      $value = [Environment]::GetEnvironmentVariable($name)
+      if (-not [string]::IsNullOrWhiteSpace($value)) {
+        $startInfo.EnvironmentVariables[$name] = $value
+      }
+    }
+  }
   foreach ($entry in $Environment.GetEnumerator()) {
     $startInfo.EnvironmentVariables[$entry.Key] = $entry.Value
   }
@@ -46,7 +67,9 @@ $backendEnvironment = @{
   MONGODB_DATABASE = $MongoDatabase
   APP_SECRET = $AppSecret
 }
-Start-LocalProcess -ScriptPath (Join-Path $PSScriptRoot "start-api.ps1") -Arguments "-Port $ApiPort" -Environment $backendEnvironment
-Start-LocalProcess -ScriptPath (Join-Path $PSScriptRoot "start-web.ps1") -Arguments "-ApiUrl `"$ApiUrl`" -Port $WebPort" -Environment @{ NEXT_PUBLIC_API_URL = $ApiUrl }
+$apiLog = Join-Path $logDirectory "api.log"
+$webLog = Join-Path $logDirectory "web.log"
+Start-LocalProcess -ScriptPath (Join-Path $PSScriptRoot "start-api.ps1") -Arguments "-Port $ApiPort" -Environment $backendEnvironment -LogPath $apiLog
+Start-LocalProcess -ScriptPath (Join-Path $PSScriptRoot "start-web.ps1") -Arguments "-ApiUrl `"$ApiUrl`" -Port $WebPort" -Environment @{ NEXT_PUBLIC_API_URL = $ApiUrl } -LogPath $webLog -PublicWebEnvironment
 
-Write-Output "MongoDB, API and web started in background processes."
+Write-Output "MongoDB, API and web started in background processes. Logs: $apiLog, $webLog"

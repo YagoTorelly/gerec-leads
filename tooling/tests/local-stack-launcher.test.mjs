@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const launcherPath = resolve(root, "scripts/start-local-stack.ps1");
 
-test("launcher local cria processos com ambiente isolado sem segredos nos argumentos", () => {
+test("launcher local cria processos com ambiente isolado, público e auditável", () => {
   assert.equal(existsSync(launcherPath), true);
   const launcher = readFileSync(launcherPath, "utf8");
 
@@ -15,8 +15,12 @@ test("launcher local cria processos com ambiente isolado sem segredos nos argume
   assert.match(launcher, /EnvironmentVariables\[\$entry\.Key\] = \$entry\.Value/);
   assert.match(launcher, /MONGODB_URI = \$MongoUri/);
   assert.match(launcher, /APP_SECRET = \$AppSecret/);
-  assert.doesNotMatch(launcher, /RedirectStandardOutput/);
-  assert.doesNotMatch(launcher, /RedirectStandardError/);
+  assert.match(launcher, /\[switch\]\$PublicWebEnvironment/);
+  assert.match(launcher, /EnvironmentVariables\.Clear\(\)/);
+  assert.match(launcher, /-PublicWebEnvironment/);
+  assert.match(launcher, /api\.log/);
+  assert.match(launcher, /web\.log/);
+  assert.match(launcher, /CreateNoWindow = \$true/);
   assert.doesNotMatch(launcher, /-MongoUri `"\$MongoUri`"/);
   assert.doesNotMatch(launcher, /-AppSecret `"\$AppSecret`"/);
 });
