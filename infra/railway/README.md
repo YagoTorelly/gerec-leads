@@ -4,7 +4,7 @@
 
 | Serviço | Tipo | Comando | Agenda |
 | --- | --- | --- | --- |
-| `api` | persistente/web | definido pelo `apps/api/Dockerfile` | — |
+| `api` | persistente/web | `uvicorn gerec_api.main:create_app --factory --host 0.0.0.0 --port ${PORT:-8000}` via `apps/api/Dockerfile` | — |
 | `outbox-worker` | persistente/worker | `python -m gerec_api.automation.outbox_worker` | — |
 | `google-sheets-sync` | cron | `python -m gerec_api.automation.scheduler` | `*/5 * * * *` |
 
