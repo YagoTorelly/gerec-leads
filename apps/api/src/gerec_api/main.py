@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 
 from gerec_api.auth.sessions import AuthService
 from gerec_api.auth.permissions import DashboardService
@@ -23,6 +23,9 @@ from gerec_api.routes.operations import router as operations_router
 from gerec_api.routes.queue import router as queue_router
 from gerec_api.routes.dashboard import router as dashboard_router
 from gerec_api.routes.admin import router as admin_router
+
+
+API_CONTRACT_VERSION = "1"
 
 
 def create_app(
@@ -57,6 +60,12 @@ def create_app(
         business_clock=business_clock,
         clock=database_clock,
     )
+
+    @app.middleware("http")
+    async def add_contract_version(request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Gerec-API-Contract-Version"] = API_CONTRACT_VERSION
+        return response
 
     @app.get("/health")
     def health() -> dict[str, str]:

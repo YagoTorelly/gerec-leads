@@ -1,0 +1,104 @@
+name: Gerenciador de Leads CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    env:
+      MONGODB_URI: mongodb://127.0.0.1:27017/?replicaSet=rs0
+      MONGODB_DATABASE: gerec_leads_e2e
+      APP_SECRET: ci-only-secret
+      PYTHONPATH: apps/api/src
+      API_CONTRACT_BASE_URL: http://127.0.0.1:8011
+      NEXT_PUBLIC_API_URL: http://127.0.0.1:8011
+      E2E_BASE_URL: http://127.0.0.1:3000
+      E2E_EMAIL: admin.e2e@wtg.test
+      E2E_SELLER_EMAIL: seller.e2e@wtg.test
+      E2E_DISABLED_EMAIL: disabled.e2e@wtg.test
+      E2E_PASSWORD: Senha-e2e-2026!
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Instalar dependências
+        run: |
+          npm ci
+          npm run test:e2e:install:ci
+          python -m pip install -e "apps/api[dev]"
+      - name: Iniciar MongoDB replica set
+        run: docker compose -f infra/mongodb/docker-compose.yml up -d --wait
+      - name: Iniciar API Python
+        run: |
+          python -m uvicorn gerec_api.main:create_app --factory --host 127.0.0.1 --port 8011 > api.log 2>&1 &
+          echo $! > .api.pid
+          for attempt in {1..30}; do curl --fail --silent http://127.0.0.1:8011/health && exit 0; sleep 1; done
+          cat api.log
+          exit 1
+      - name: Preparar dados E2E
+        run: |
+          python - <<'PY' >> "$GITHUB_ENV"
+          from datetime import UTC, datetime, timedelta
+          from bson import ObjectId
+          from pymongo import MongoClient
+          from gerec_api.auth.passwords import hash_password
+          from gerec_api.infrastructure.mongo.bootstrap import ensure_schema
+
+          db = MongoClient("mongodb://127.0.0.1:27017/?replicaSet=rs0")["gerec_leads_e2e"]
+          db.client.drop_database(db.name)
+          ensure_schema(db)
+          password = hash_password("Senha-e2e-2026!")
+          admin, seller, disabled, colleague = ObjectId(), ObjectId(), ObjectId(), ObjectId()
+          db.users.insert_many([
+              {"_id": admin, "emailNormalized": "admin.e2e@wtg.test", "passwordHash": password, "role": "admin", "active": True},
+              {"_id": seller, "emailNormalized": "seller.e2e@wtg.test", "passwordHash": password, "role": "seller", "active": True},
+              {"_id": disabled, "emailNormalized": "disabled.e2e@wtg.test", "passwordHash": password, "role": "seller", "active": False},
+              {"_id": colleague, "emailNormalized": "jessica.e2e@wtg.test", "passwordHash": password, "role": "seller", "active": True},
+          ])
+          campaign = ObjectId()
+          db.campaigns.insert_one({"_id": campaign, "identityKey": "e2e", "status": "approved"})
+          now = datetime.now(UTC)
+          def lead(name, assignee):
+              company, item, cycle = ObjectId(), ObjectId(), ObjectId()
+              db.companies.insert_one({"_id": company, "ownerId": assignee, "clientSince": None})
+              db.leads.insert_one({"_id": item, "sourceName": name, "companyId": company, "campaignId": campaign, "assigneeId": assignee, "assignmentStatus": "assigned", "qualificationStatus": "pending", "conversionStatus": "active", "feedbackDueAt": now + timedelta(days=1), "feedbackCycleId": cycle, "state": "SP", "archivedAt": None, "createdAt": now})
+              db.feedback_cycles.insert_one({"_id": cycle, "leadId": item, "startAt": now, "reminderAt": now + timedelta(hours=20), "dueAt": now + timedelta(days=1), "closedAt": None})
+              return item
+          lifecycle = lead("Lead privado do vendedor", seller)
+          attempts = lead("Tentativas E2E", seller)
+          lead("Lead da Jessica", colleague)
+          print(f"E2E_LIFECYCLE_LEAD_ID={lifecycle}")
+          print(f"E2E_ATTEMPTS_LEAD_ID={attempts}")
+          PY
+      - name: Iniciar site Next.js
+        run: |
+          npm run dev > web.log 2>&1 &
+          echo $! > .web.pid
+          for attempt in {1..30}; do curl --fail --silent http://127.0.0.1:3000/login > /dev/null && exit 0; sleep 1; done
+          cat web.log
+          exit 1
+      - name: Validar Python
+        run: python -m pytest apps/api/tests -q
+      - name: Validar TypeScript
+        run: npm run check
+      - name: Validar contrato HTTP
+        run: npm run test:contracts
+      - name: Validar E2E
+        run: npm run test:e2e
+      - name: Encerrar serviços
+        if: always()
+        run: |
+          test ! -f .web.pid || kill "$(cat .web.pid)" || true
+          test ! -f .api.pid || kill "$(cat .api.pid)" || true
+          docker compose -f infra/mongodb/docker-compose.yml down --volumes

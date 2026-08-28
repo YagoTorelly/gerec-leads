@@ -6,43 +6,37 @@ import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
 
 const productRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-const workflowPath = resolve(productRoot, "../.github/workflows/gerec-leads-ci.yml");
+const workflowPath = resolve(productRoot, ".github/workflows/gerec-leads-ci.yml");
 
-test("o CI permanece limitado ao Gerenciador de Leads", () => {
+test("CI inicia stack Mongo, API e web antes dos contratos e E2E", () => {
   const workflow = parse(readFileSync(workflowPath, "utf8"));
-
-  assert.deepEqual(workflow.on.push.paths, ["gerec_leads/**"]);
-  assert.deepEqual(workflow.on.pull_request.paths, ["gerec_leads/**"]);
-  assert.deepEqual(workflow.permissions, { contents: "read" });
-  assert.equal(workflow.defaults.run["working-directory"], "gerec_leads");
-
   const steps = workflow.jobs.quality.steps;
+  const commands = steps.flatMap((step) => (step.run ? [step.run] : []));
+
+  assert.deepEqual(workflow.permissions, { contents: "read" });
   assert.deepEqual(
     steps.flatMap((step) => (step.uses ? [step.uses] : [])),
-    ["actions/checkout@v7", "actions/setup-node@v7"],
+    ["actions/checkout@v7", "actions/setup-node@v7", "actions/setup-python@v6"],
   );
-
-  const setupNode = steps.find((step) => step.uses === "actions/setup-node@v7");
-  assert.ok(setupNode);
-  assert.equal(setupNode.with["node-version"], 24);
-  assert.equal(setupNode.with["cache-dependency-path"], "gerec_leads/package-lock.json");
-
-  assert.deepEqual(
-    steps.flatMap((step) => (step.run ? [step.run] : [])),
-    [
-      "npm ci",
-      "npm run test:e2e:install:ci",
-      "npm run supabase:start",
-      "npm run env:local",
-      "npm run check",
-      "npm run test:e2e",
-      "npm run supabase:stop",
-    ],
+  assert.ok(commands.some((command) => command.includes("npm ci")));
+  assert.ok(commands.some((command) => command.includes("npm run test:e2e:install:ci")));
+  assert.ok(
+    commands.some((command) => command.includes('python -m pip install -e "apps/api[dev]"')),
   );
+  assert.ok(
+    commands.some((command) =>
+      command.includes("docker compose -f infra/mongodb/docker-compose.yml up -d"),
+    ),
+  );
+  assert.ok(commands.some((command) => command.includes("gerec_api.main:create_app")));
+  assert.ok(commands.some((command) => command.includes("npm run dev")));
+  assert.ok(commands.includes("python -m pytest apps/api/tests -q"));
+  assert.ok(commands.includes("npm run check"));
+  assert.ok(commands.includes("npm run test:contracts"));
+  assert.ok(commands.includes("npm run test:e2e"));
 
-  const stopSupabase = steps.find((step) => step.run === "npm run supabase:stop");
-  assert.equal(stopSupabase?.if, "always()");
-
-  const serializedWorkflow = JSON.stringify(workflow);
-  assert.equal(serializedWorkflow.includes("${{ secrets."), false);
+  const cleanup = steps.find((step) => step.name === "Encerrar serviços");
+  assert.equal(cleanup?.if, "always()");
+  assert.match(cleanup?.run ?? "", /docker compose .* down --volumes/);
+  assert.equal(JSON.stringify(workflow).includes("${{ secrets."), false);
 });

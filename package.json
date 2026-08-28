@@ -25,6 +25,7 @@
     "test:supabase-tooling": "node --test tooling/supabase/*.test.mjs",
     "test:structure": "node --test tooling/tests/workspace-structure.test.mjs",
     "test:e2e": "node tooling/playwright/run-e2e.mjs",
+    "test:contracts": "node --test tests/contracts/*.test.mjs",
     "test:e2e:install": "playwright install chromium",
     "test:e2e:install:ci": "playwright install --with-deps chromium",
     "test:playwright-tooling": "node --test tooling/playwright/*.test.mjs",
