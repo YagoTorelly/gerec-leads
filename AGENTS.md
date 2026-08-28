@@ -42,14 +42,14 @@ Também:
 
 - Use o workspace modular descrito em `docs/ARQUITETURA.md`.
 - Next.js/React não decide sozinho atribuição, cursor, propriedade, venda ou créditos de pulo.
-- Regras críticas vivem em comandos transacionais do PostgreSQL/Supabase, protegidos por constraints, locks e testes.
+- Regras críticas vivem em comandos transacionais do MongoDB, protegidos por índices, escritas condicionais, locks lógicos e testes.
 - Não coloque lógica de negócio crítica em controllers, handlers, componentes React ou workflows do n8n.
 - O n8n atua como adaptador de Google Sheets, agendas e notificações.
 - Google Sheets é somente origem; o sistema nunca escreve na planilha.
 - A planilha definitiva continua uma dependência posterior. Mantenha o contrato físico da origem atrás do adapter e não enfraqueça identidade, deduplicação ou recorrência por CNPJ para acomodar o mock.
 - Toda mudança de banco usa nova migração versionada. Nunca edite uma migração já aplicada.
 - RLS deve proteger os dados no banco; ocultar elementos na interface não é controle de acesso.
-- `service_role` e demais segredos nunca podem chegar ao navegador.
+- `MONGODB_URI`, `MONGODB_DATABASE`, `APP_SECRET` e demais segredos nunca podem chegar ao navegador.
 
 ## Permissões já aprovadas
 
@@ -74,7 +74,7 @@ Use somente as skills relevantes à tarefa, quando disponíveis:
 
 - descoberta e desenho: `using-superpowers`, `brainstorming`, `product-brainstorming`, `writing-plans`;
 - arquitetura e interfaces: `codebase-design`, `vercel-composition-patterns`;
-- banco e segurança: `supabase-postgres-best-practices`;
+- banco e segurança: práticas de transações, índices e segredos do MongoDB;
 - implementação: `test-driven-development`;
 - React/Next.js: `vercel-react-best-practices`;
 - interface: `frontend-design`, `ui-ux-pro-max`, `high-end-visual-design` ou `minimalist-ui`, conforme a direção aprovada;

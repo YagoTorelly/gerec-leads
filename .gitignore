@@ -20,6 +20,5 @@ __pycache__/
 .env.*
 !.env.example
 
-# Estado local do Supabase
-supabase/.branches/
-supabase/.temp/
+# Estado local da execução
+.local/

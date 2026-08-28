@@ -7,5 +7,5 @@ $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -ProjectR
 $action = New-ScheduledTaskAction -Execute $powershell -Argument $arguments
 $trigger = New-ScheduledTaskTrigger -AtLogOn
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
-Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description "Inicia Docker, Supabase local e frontend WTG após login." -Force
+Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description "Inicia MongoDB local, API Python e frontend WTG após login." -Force
 Write-Output "Tarefa criada: $taskName"

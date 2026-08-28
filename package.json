@@ -13,16 +13,14 @@
     "build": "npm --workspace @wtg/web run build",
     "lint": "npm --workspace @wtg/web run lint",
     "typecheck": "npm --workspace @wtg/web run typecheck",
-    "supabase:init": "supabase init",
-    "supabase:start": "supabase start -x vector",
-    "supabase:stop": "supabase stop",
-    "supabase:status": "supabase status",
-    "supabase:reset": "supabase db reset",
-    "env:local": "node tooling/supabase/write-web-env.mjs",
-    "test:db": "supabase test db --local",
-    "supabase:bootstrap-users": "node tooling/supabase/bootstrap-local-users.mjs",
+    "mongodb:start": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-mongodb.ps1",
+    "mongodb:stop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stop-mongodb.ps1",
+    "mongodb:bootstrap": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/mongodb-bootstrap.ps1",
+    "api:start": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-api.ps1",
+    "web:start": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-web.ps1",
+    "worker:start": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-worker.ps1",
+    "start:local": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-local-stack.ps1",
     "test:ci-contract": "node --test tooling/tests/ci-contract.test.mjs",
-    "test:supabase-tooling": "node --test tooling/supabase/*.test.mjs",
     "test:structure": "node --test tooling/tests/workspace-structure.test.mjs",
     "test:e2e": "node tooling/playwright/run-e2e.mjs",
     "test:contracts": "node --test tests/contracts/*.test.mjs",
@@ -32,12 +30,11 @@
     "test": "npm --workspace @wtg/web run test",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "check": "npm run format:check && npm run lint && npm run typecheck && npm run test && npm run test:structure && npm run test:supabase-tooling && npm run test:playwright-tooling && npm run test:ci-contract && npm run build"
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm run test && npm run test:structure && npm run test:playwright-tooling && npm run test:ci-contract && npm run build"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",
     "prettier": "3.9.6",
-    "supabase": "^2.115.0",
     "yaml": "^2.8.1"
   }
 }

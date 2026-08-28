@@ -1,49 +1,33 @@
+[CmdletBinding()]
 param(
   [string]$ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path,
-  [int]$DockerTimeoutSeconds = 180,
+  [string]$MongoUri = $env:MONGODB_URI,
+  [string]$MongoDatabase = $env:MONGODB_DATABASE,
+  [string]$AppSecret = $env:APP_SECRET,
+  [string]$ApiUrl = $env:NEXT_PUBLIC_API_URL,
+  [int]$ApiPort = 8000,
   [int]$WebPort = 3000
 )
 
 $ErrorActionPreference = "Stop"
 $logDirectory = Join-Path $ProjectRoot ".local\logs"
 $null = New-Item -ItemType Directory -Force -Path $logDirectory
-$logFile = Join-Path $logDirectory "startup.log"
 
-function Write-StartupLog([string]$Message) {
-  $line = "{0} {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $Message
-  Add-Content -LiteralPath $logFile -Value $line
-}
+if ([string]::IsNullOrWhiteSpace($MongoUri)) { throw "Define MONGODB_URI or pass -MongoUri." }
+if ([string]::IsNullOrWhiteSpace($MongoDatabase)) { throw "Define MONGODB_DATABASE or pass -MongoDatabase." }
+if ([string]::IsNullOrWhiteSpace($AppSecret)) { throw "Define APP_SECRET or pass -AppSecret." }
+if ([string]::IsNullOrWhiteSpace($ApiUrl)) { $ApiUrl = "http://127.0.0.1:$ApiPort" }
 
-try {
-  Write-StartupLog "Iniciando stack local em $ProjectRoot"
-  $dockerDesktop = Join-Path $env:ProgramFiles "Docker\Docker\Docker Desktop.exe"
-  if (Test-Path -LiteralPath $dockerDesktop) {
-    Start-Process -FilePath $dockerDesktop -WindowStyle Hidden
-    Write-StartupLog "Docker Desktop solicitado"
-  }
-  $deadline = (Get-Date).AddSeconds($DockerTimeoutSeconds)
-  do {
-    docker info *> $null
-    if ($LASTEXITCODE -eq 0) { break }
-    Start-Sleep -Seconds 5
-  } while ((Get-Date) -lt $deadline)
-  docker info *> $null
-  if ($LASTEXITCODE -ne 0) { throw "Docker daemon não respondeu dentro do limite." }
-  Write-StartupLog "Docker daemon disponível"
-  Push-Location $ProjectRoot
-  try {
-    npm run supabase:start *>> $logFile
-    if ($LASTEXITCODE -ne 0) { throw "supabase:start falhou" }
-    npm run env:local *>> $logFile
-    if ($LASTEXITCODE -ne 0) { throw "env:local falhou" }
-    $webLog = Join-Path $logDirectory "web.log"
-    $webCommand = "npm --workspace @wtg/web run dev -- --hostname 0.0.0.0 -p $WebPort >> `"$webLog`" 2>&1"
-    Start-Process -FilePath "cmd.exe" -ArgumentList "/d", "/c", $webCommand -WorkingDirectory $ProjectRoot -WindowStyle Hidden
-    Write-StartupLog "Frontend iniciado na porta $WebPort"
-  }
-  finally { Pop-Location }
-}
-catch {
-  Write-StartupLog "ERRO: $($_.Exception.Message)"
-  exit 1
-}
+$powershell = (Get-Command powershell.exe).Source
+& (Join-Path $PSScriptRoot "start-mongodb.ps1") -ProjectRoot $ProjectRoot
+& (Join-Path $PSScriptRoot "mongodb-bootstrap.ps1") -MongoUri $MongoUri -MongoDatabase $MongoDatabase
+
+$apiLog = Join-Path $logDirectory "api.log"
+$apiArguments = "-NoProfile -ExecutionPolicy Bypass -File `"$PSScriptRoot\start-api.ps1`" -ProjectRoot `"$ProjectRoot`" -MongoUri `"$MongoUri`" -MongoDatabase `"$MongoDatabase`" -AppSecret `"$AppSecret`" -Port $ApiPort"
+Start-Process -FilePath $powershell -ArgumentList $apiArguments -WorkingDirectory $ProjectRoot -WindowStyle Hidden -RedirectStandardOutput $apiLog -RedirectStandardError $apiLog
+
+$webLog = Join-Path $logDirectory "web.log"
+$webArguments = "-NoProfile -ExecutionPolicy Bypass -File `"$PSScriptRoot\start-web.ps1`" -ProjectRoot `"$ProjectRoot`" -ApiUrl `"$ApiUrl`" -Port $WebPort"
+Start-Process -FilePath $powershell -ArgumentList $webArguments -WorkingDirectory $ProjectRoot -WindowStyle Hidden -RedirectStandardOutput $webLog -RedirectStandardError $webLog
+
+Write-Output "MongoDB, API and web started. Logs: $logDirectory"
