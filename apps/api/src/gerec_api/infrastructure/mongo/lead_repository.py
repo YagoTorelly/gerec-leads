@@ -174,6 +174,9 @@ class LeadRepository:
             }
             result = self._campaigns.insert_one(document, session=session)
             return {"_id": result.inserted_id, **document}
+        if campaign.get("status") == "pending_approval":
+            fields["status"] = "approved"
+            fields["approvalMode"] = "google_sheets_auto"
         self._campaigns.update_one({"_id": campaign["_id"]}, {"$set": fields}, session=session)
         return {**campaign, **fields}
 
