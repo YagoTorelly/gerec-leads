@@ -1,6 +1,6 @@
 # Reconstrução das interações, status e SLA — desenho
 
-**Status:** proposta aprovada em conversa, pendente de revisão deste documento antes do plano de execução.
+**Status:** aprovado para implementação em 28 de agosto de 2026; formalizado por GOV-004 e DEC-028.
 **Produto:** Gerenciador de Leads WTG
 **Aprovação de produto:** Yago, 28 de agosto de 2026.
 
