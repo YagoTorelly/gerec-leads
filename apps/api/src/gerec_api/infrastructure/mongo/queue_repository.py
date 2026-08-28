@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from time import sleep
 from typing import Any, Callable, TypeVar
 
 from pymongo.errors import DuplicateKeyError
@@ -29,6 +30,10 @@ class QueueStateError(RuntimeError):
     """Raised when a queue command cannot preserve a domain invariant."""
 
 
+class _FifoPredecessorPending(QueueStateError):
+    """Allows a concurrent older lead a bounded window to commit first."""
+
+
 class QueueRepository:
     """Commit every queue side effect in one retryable MongoDB transaction."""
 
@@ -36,20 +41,34 @@ class QueueRepository:
         self._database = database
         self._now = now or (lambda: datetime.now(UTC))
 
-    def distribute_normal(self, lead_id: Any, command_id: str) -> AssignmentResult:
-        return self._execute(
-            NORMAL_COMMAND,
-            command_id,
-            AssignmentResult,
-            lambda session: self._distribute_normal(lead_id, command_id, session),
-        )
+    def distribute_normal(
+        self, lead_id: Any, command_id: str, *, actor_id: Any
+    ) -> AssignmentResult:
+        pending_error: _FifoPredecessorPending | None = None
+        for attempt in range(100):
+            try:
+                return self._execute(
+                    NORMAL_COMMAND,
+                    command_id,
+                    AssignmentResult,
+                    lambda session: self._distribute_normal(
+                        lead_id, command_id, actor_id, session
+                    ),
+                )
+            except _FifoPredecessorPending as error:
+                pending_error = error
+                if attempt < 99:
+                    sleep(0.01)
+        raise QueueStateError(str(pending_error))
 
-    def assign_recurring(self, lead_id: Any, command_id: str) -> AssignmentResult:
+    def assign_recurring(
+        self, lead_id: Any, command_id: str, *, actor_id: Any
+    ) -> AssignmentResult:
         return self._execute(
             RECURRING_COMMAND,
             command_id,
             AssignmentResult,
-            lambda session: self._assign_recurring(lead_id, command_id, session),
+            lambda session: self._assign_recurring(lead_id, command_id, actor_id, session),
         )
 
     def assign_temporarily(
@@ -58,6 +77,8 @@ class QueueRepository:
         seller_id: Any,
         reason: str,
         command_id: str,
+        *,
+        actor_id: Any,
     ) -> AssignmentResult:
         return self._execute(
             TEMPORARY_COMMAND,
@@ -68,6 +89,7 @@ class QueueRepository:
                 seller_id,
                 reason,
                 command_id,
+                actor_id,
                 session,
             ),
         )
@@ -78,6 +100,8 @@ class QueueRepository:
         seller_id: Any,
         reason: str,
         command_id: str,
+        *,
+        actor_id: Any,
     ) -> TransferResult:
         return self._execute(
             TRANSFER_COMMAND,
@@ -88,6 +112,7 @@ class QueueRepository:
                 seller_id,
                 reason,
                 command_id,
+                actor_id,
                 session,
             ),
         )
@@ -145,6 +170,7 @@ class QueueRepository:
         self,
         lead_id: Any,
         command_id: str,
+        actor_id: Any,
         session: Any,
     ) -> AssignmentResult:
         now = self._now()
@@ -166,7 +192,8 @@ class QueueRepository:
         )
         if state_update.matched_count != 1:
             raise QueueStateError("queue state changed concurrently")
-        for seller_id in decision.consumed_credit_seller_ids:
+        for credit_index, seller_id in enumerate(decision.consumed_credit_seller_ids):
+            previous_balance = self._balance(seller_id, session)
             consumed = self._skip_balances.update_one(
                 {"sellerId": seller_id, "balance": {"$gte": 1}},
                 {"$inc": {"balance": -1}, "$set": {"updatedAt": now}},
@@ -174,6 +201,19 @@ class QueueRepository:
             )
             if consumed.matched_count != 1:
                 raise QueueStateError("skip balance changed concurrently")
+            self._record_event(
+                event_type="seller.skip_consumed",
+                entity_type="seller",
+                entity_id=seller_id,
+                action="seller.skip_consumed",
+                command_id=command_id,
+                actor_id=actor_id,
+                before={"balance": previous_balance},
+                after={"balance": previous_balance - 1},
+                now=now,
+                session=session,
+                event_key=f"{command_id}:seller.skip_consumed:{credit_index}",
+            )
 
         if decision.seller_id is None:
             self._leads.update_one(
@@ -201,6 +241,7 @@ class QueueRepository:
                 entity_id=lead_id,
                 action="queue.parked",
                 command_id=command_id,
+                actor_id=actor_id,
                 before={"assignmentStatus": lead.get("assignmentStatus")},
                 after={"assignmentStatus": "parked", "parkReason": "no_eligible_seller"},
                 now=now,
@@ -214,6 +255,7 @@ class QueueRepository:
             "normal",
             None,
             command_id,
+            actor_id,
             now,
             session,
         )
@@ -222,6 +264,7 @@ class QueueRepository:
         self,
         lead_id: Any,
         command_id: str,
+        actor_id: Any,
         session: Any,
     ) -> AssignmentResult:
         now = self._now()
@@ -256,19 +299,21 @@ class QueueRepository:
                 entity_id=lead_id,
                 action="queue.recurring_parked",
                 command_id=command_id,
+                actor_id=actor_id,
                 before={"assignmentStatus": lead.get("assignmentStatus")},
                 after={"assignmentStatus": "parked", "parkReason": "owner_unavailable"},
                 now=now,
                 session=session,
             )
             return result
-        self._credit(owner_id, now, session)
+        self._credit(owner_id, command_id, actor_id, now, session)
         return self._assign_effective(
             lead,
             owner_id,
             "recurring",
             None,
             command_id,
+            actor_id,
             now,
             session,
         )
@@ -279,19 +324,29 @@ class QueueRepository:
         seller_id: Any,
         reason: str,
         command_id: str,
+        actor_id: Any,
         session: Any,
     ) -> AssignmentResult:
         now = self._now()
         lead = self._available_lead(lead_id, session)
+        if lead.get("assignmentStatus") != "parked" or lead.get("parkReason") != "owner_unavailable":
+            raise QueueStateError("temporary assignment requires a recurring parked lead")
+        company = self._companies.find_one({"_id": lead["companyId"]}, session=session)
+        owner_id = None if company is None else company.get("ownerId")
+        if owner_id is None:
+            raise QueueStateError("temporary assignment requires a previous owner")
+        if owner_id == seller_id:
+            raise QueueStateError("temporary seller must differ from the company owner")
         if not self._seller_operational(seller_id, now, session):
             raise QueueStateError("temporary seller is not operational")
-        self._credit(seller_id, now, session)
+        self._credit(seller_id, command_id, actor_id, now, session)
         return self._assign_effective(
             lead,
             seller_id,
             "temporary",
             reason,
             command_id,
+            actor_id,
             now,
             session,
         )
@@ -302,6 +357,7 @@ class QueueRepository:
         seller_id: Any,
         reason: str,
         command_id: str,
+        actor_id: Any,
         session: Any,
     ) -> TransferResult:
         now = self._now()
@@ -323,6 +379,7 @@ class QueueRepository:
             entity_id=company_id,
             action="company.owner_transferred",
             command_id=command_id,
+            actor_id=actor_id,
             before={"ownerId": previous_owner_id},
             after={"ownerId": seller_id},
             now=now,
@@ -342,9 +399,16 @@ class QueueRepository:
         assignment_type: str,
         reason: str | None,
         command_id: str,
+        actor_id: Any,
         now: datetime,
         session: Any,
     ) -> AssignmentResult:
+        company = self._companies.find_one({"_id": lead["companyId"]}, session=session)
+        if company is None:
+            raise QueueStateError("lead company not found")
+        owner_id = company.get("ownerId")
+        if assignment_type == "temporary" and owner_id is None:
+            raise QueueStateError("temporary assignment cannot claim company ownership")
         assignment = {
             "leadId": lead["_id"],
             "sellerId": seller_id,
@@ -374,10 +438,6 @@ class QueueRepository:
         if updated.matched_count != 1:
             raise QueueStateError("lead already has a current assignment")
 
-        company = self._companies.find_one({"_id": lead["companyId"]}, session=session)
-        if company is None:
-            raise QueueStateError("lead company not found")
-        owner_id = company.get("ownerId")
         if owner_id is None:
             claimed = self._companies.update_one(
                 {"_id": lead["companyId"], "ownerId": None},
@@ -397,6 +457,7 @@ class QueueRepository:
             entity_id=lead["_id"],
             action="queue.assigned",
             command_id=command_id,
+            actor_id=actor_id,
             before={
                 "assignmentStatus": lead.get("assignmentStatus"),
                 "assigneeId": lead.get("assigneeId"),
@@ -470,7 +531,15 @@ class QueueRepository:
             raise QueueStateError("skip balance cannot be negative")
         return balance
 
-    def _credit(self, seller_id: Any, now: datetime, session: Any) -> None:
+    def _credit(
+        self,
+        seller_id: Any,
+        command_id: str,
+        actor_id: Any,
+        now: datetime,
+        session: Any,
+    ) -> None:
+        previous_balance = self._balance(seller_id, session)
         self._skip_balances.update_one(
             {"sellerId": seller_id},
             {
@@ -479,6 +548,18 @@ class QueueRepository:
                 "$setOnInsert": {"sellerId": seller_id},
             },
             upsert=True,
+            session=session,
+        )
+        self._record_event(
+            event_type="seller.skip_credited",
+            entity_type="seller",
+            entity_id=seller_id,
+            action="seller.skip_credited",
+            command_id=command_id,
+            actor_id=actor_id,
+            before={"balance": previous_balance},
+            after={"balance": previous_balance + 1},
+            now=now,
             session=session,
         )
 
@@ -504,8 +585,6 @@ class QueueRepository:
         ):
             if candidate.get("parkReason") not in (None, "no_eligible_seller"):
                 continue
-            if candidate["_id"] != lead["_id"] and candidate.get("assignmentStatus") != "parked":
-                continue
             candidates.append(candidate)
         if not candidates:
             return
@@ -517,7 +596,7 @@ class QueueRepository:
             ),
         )
         if first["_id"] != lead["_id"]:
-            raise QueueStateError("normal lead would bypass FIFO order")
+            raise _FifoPredecessorPending("normal lead would bypass FIFO order")
 
     def _owner_id(self, lead: dict[str, Any], session: Any) -> str | None:
         company = self._companies.find_one({"_id": lead["companyId"]}, session=session)
@@ -532,15 +611,17 @@ class QueueRepository:
         entity_id: Any,
         action: str,
         command_id: str,
+        actor_id: Any,
         before: dict[str, Any],
         after: dict[str, Any],
         now: datetime,
         session: Any,
         reason: str | None = None,
+        event_key: str | None = None,
     ) -> None:
         self._audit_log.insert_one(
             {
-                "actorId": None,
+                "actorId": actor_id,
                 "action": action,
                 "entityType": entity_type,
                 "entityId": entity_id,
@@ -556,7 +637,8 @@ class QueueRepository:
             {
                 "eventType": event_type,
                 "aggregateId": entity_id,
-                "idempotencyKey": f"{command_id}:{event_type}",
+                "actorId": actor_id,
+                "idempotencyKey": event_key or f"{command_id}:{event_type}",
                 "status": "pending",
                 "attempts": 0,
                 "payload": after,

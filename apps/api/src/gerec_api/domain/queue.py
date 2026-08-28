@@ -134,9 +134,13 @@ class TransferResult:
 
 
 class QueuePersistence(Protocol):
-    def distribute_normal(self, lead_id: Any, command_id: str) -> AssignmentResult: ...
+    def distribute_normal(
+        self, lead_id: Any, command_id: str, *, actor_id: Any
+    ) -> AssignmentResult: ...
 
-    def assign_recurring(self, lead_id: Any, command_id: str) -> AssignmentResult: ...
+    def assign_recurring(
+        self, lead_id: Any, command_id: str, *, actor_id: Any
+    ) -> AssignmentResult: ...
 
     def assign_temporarily(
         self,
@@ -144,6 +148,8 @@ class QueuePersistence(Protocol):
         seller_id: Any,
         reason: str,
         command_id: str,
+        *,
+        actor_id: Any,
     ) -> AssignmentResult: ...
 
     def transfer_owner(
@@ -152,20 +158,36 @@ class QueuePersistence(Protocol):
         seller_id: Any,
         reason: str,
         command_id: str,
+        *,
+        actor_id: Any,
     ) -> TransferResult: ...
 
 
 class QueueService:
     """Expose queue mutations without leaking MongoDB details to routes or workers."""
 
-    def __init__(self, persistence: QueuePersistence) -> None:
+    def __init__(self, persistence: QueuePersistence, *, actor_id: Any = "system") -> None:
         self._persistence = persistence
+        self._actor_id = actor_id
+
+    def with_actor(self, actor_id: Any) -> "QueueService":
+        if actor_id is None or (isinstance(actor_id, str) and not actor_id.strip()):
+            raise ValueError("actor id is required")
+        return QueueService(self._persistence, actor_id=actor_id)
 
     def distribute_normal(self, lead_id: Any, command_id: str) -> AssignmentResult:
-        return self._persistence.distribute_normal(lead_id, _required(command_id, "command id"))
+        return self._persistence.distribute_normal(
+            lead_id,
+            _required(command_id, "command id"),
+            actor_id=self._actor_id,
+        )
 
     def assign_recurring(self, lead_id: Any, command_id: str) -> AssignmentResult:
-        return self._persistence.assign_recurring(lead_id, _required(command_id, "command id"))
+        return self._persistence.assign_recurring(
+            lead_id,
+            _required(command_id, "command id"),
+            actor_id=self._actor_id,
+        )
 
     def assign_temporarily(
         self,
@@ -179,6 +201,7 @@ class QueueService:
             seller_id,
             _required(reason, "reason"),
             _required(command_id, "command id"),
+            actor_id=self._actor_id,
         )
 
     def transfer_owner(
@@ -193,6 +216,7 @@ class QueueService:
             seller_id,
             _required(reason, "reason"),
             _required(command_id, "command id"),
+            actor_id=self._actor_id,
         )
 
 

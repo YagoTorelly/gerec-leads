@@ -11,6 +11,8 @@ import pytest
 from bson import ObjectId
 from fastapi.testclient import TestClient
 
+from gerec_api.auth.dependencies import get_current_user
+from gerec_api.auth.sessions import CurrentUser
 from gerec_api.config import Settings
 from gerec_api.domain.queue import QueueService
 from gerec_api.infrastructure.mongo.queue_repository import QueueRepository, QueueStateError
@@ -136,8 +138,8 @@ def _seed_lead(database: FakeDatabase, *, company_id=None, entered_offset=0):
     return lead_id, company_id
 
 
-def _service(database: FakeDatabase) -> QueueService:
-    return QueueService(QueueRepository(database, now=lambda: NOW))
+def _service(database: FakeDatabase, *, actor_id: Any = "system") -> QueueService:
+    return QueueService(QueueRepository(database, now=lambda: NOW), actor_id=actor_id)
 
 
 def test_ac01_normal_rotation_is_atomic_and_first_assignment_defines_owner() -> None:
@@ -185,14 +187,16 @@ def test_ac02_ac04_blocked_seller_loses_turn_and_one_overdue_lead_is_enough() ->
     assert database["queue_state"].documents[0]["nextSellerId"] not in (renato, sandra)
 
 
-def test_ac05_ac06_all_blocked_parks_and_fifo_cannot_be_bypassed_after_release() -> None:
-    """Breaks if parked leads are dropped or a newer normal lead jumps the FIFO."""
+def test_ac05_ac06_all_blocked_parks_and_regularization_releases_ready_fifo() -> None:
+    """Breaks if ready/parked leads are dropped or a newer normal lead jumps the FIFO."""
     database = FakeDatabase()
     sellers = _seed_queue(database)
     oldest, _ = _seed_lead(database, entered_offset=0)
     newest, _ = _seed_lead(database, entered_offset=1)
+    blockers = {}
     for seller_id in sellers:
         blocked, _ = _seed_lead(database, entered_offset=-10)
+        blockers[seller_id] = blocked
         database["leads"].update_one(
             {"_id": blocked},
             {
@@ -205,13 +209,25 @@ def test_ac05_ac06_all_blocked_parks_and_fifo_cannot_be_bypassed_after_release()
         )
     service = _service(database)
 
+    with pytest.raises(QueueStateError, match="FIFO"):
+        service.distribute_normal(newest, "jump-ready-fifo")
     parked = service.distribute_normal(oldest, "park-oldest")
     with pytest.raises(QueueStateError, match="FIFO"):
-        service.distribute_normal(newest, "jump-fifo")
+        service.distribute_normal(newest, "jump-parked-fifo")
+
+    database["leads"].update_one(
+        {"_id": blockers[sellers[1]]},
+        {"$set": {"feedbackDueAt": NOW + timedelta(hours=1)}},
+    )
+    released_oldest = service.distribute_normal(oldest, "release-oldest")
+    released_newest = service.distribute_normal(newest, "release-newest")
 
     assert parked.status == "parked"
     assert parked.seller_id is None
-    assert database["leads"].find_one({"_id": oldest})["parkReason"] == "no_eligible_seller"
+    assert released_oldest.seller_id == str(sellers[1])
+    assert released_newest.seller_id == str(sellers[1])
+    assignment_leads = [item["leadId"] for item in database["assignments"].documents]
+    assert assignment_leads[-2:] == [oldest, newest]
 
 
 def test_ac07_ac08_recurring_preserves_cursor_and_adds_credit_consumed_later() -> None:
@@ -266,6 +282,72 @@ def test_ac09_ac10_ac11_blocked_owner_waits_and_temporary_assignment_preserves_o
     assert database["leads"].find_one({"_id": recurring})["assigneeId"] == sandra
     assert database["companies"].find_one({"_id": company_id})["ownerId"] == renato
     assert database["skip_balances"].find_one({"sellerId": sandra})["balance"] == 1
+
+
+def test_temporary_assignment_rejects_normal_or_ownerless_leads() -> None:
+    """Breaks if the admin override can turn a normal lead into recurrence or claim ownership."""
+    database = FakeDatabase()
+    renato, sandra, _, _ = _seed_queue(database)
+    normal, company_id = _seed_lead(database)
+    service = _service(database)
+
+    with pytest.raises(QueueStateError, match="recurring parked"):
+        service.assign_temporarily(normal, sandra, "Tentativa inválida", "temp-normal")
+
+    database["companies"].update_one({"_id": company_id}, {"$set": {"ownerId": renato}})
+    database["leads"].update_one(
+        {"_id": normal},
+        {"$set": {"assignmentStatus": "parked", "parkReason": "no_eligible_seller"}},
+    )
+    with pytest.raises(QueueStateError, match="recurring parked"):
+        service.assign_temporarily(normal, sandra, "Lead normal parado", "temp-normal-parked")
+
+    database["companies"].update_one({"_id": company_id}, {"$set": {"ownerId": None}})
+    database["leads"].update_one(
+        {"_id": normal},
+        {"$set": {"assignmentStatus": "parked", "parkReason": "owner_unavailable"}},
+    )
+    with pytest.raises(QueueStateError, match="owner"):
+        service.assign_temporarily(normal, sandra, "Sem proprietário", "temp-ownerless")
+
+    assert database["companies"].find_one({"_id": company_id})["ownerId"] is None
+    assert database["assignments"].documents == []
+
+
+def test_ac08_three_recurring_credits_are_audited_and_consumed_without_negative_balance() -> None:
+    """Breaks if any of three credits is lost, unaudited, or consumed below zero."""
+    database = FakeDatabase()
+    renato, *_ = _seed_queue(database)
+    actor_id = ObjectId()
+    company_id = ObjectId()
+    database["companies"].insert_one({"_id": company_id, "ownerId": renato})
+    service = _service(database, actor_id=actor_id)
+    for index in range(3):
+        recurring, _ = _seed_lead(database, company_id=company_id, entered_offset=index)
+        service.assign_recurring(recurring, f"recurring-credit-{index}")
+
+    assert database["skip_balances"].find_one({"sellerId": renato})["balance"] == 3
+
+    normal_results = []
+    for index in range(7):
+        normal, _ = _seed_lead(database, entered_offset=10 + index)
+        normal_results.append(service.distribute_normal(normal, f"consume-credit-{index}"))
+
+    assert all(result.seller_id != str(renato) for result in normal_results)
+    assert database["skip_balances"].find_one({"sellerId": renato})["balance"] == 0
+    credit_audits = [
+        item for item in database["audit_log"].documents if item["action"].startswith("seller.skip_")
+    ]
+    assert [item["action"] for item in credit_audits].count("seller.skip_credited") == 3
+    assert [item["action"] for item in credit_audits].count("seller.skip_consumed") == 3
+    assert all(item["actorId"] == actor_id for item in credit_audits)
+    credit_outbox = [
+        item
+        for item in database["notification_outbox"].documents
+        if item["eventType"].startswith("seller.skip_")
+    ]
+    assert len(credit_outbox) == 6
+    assert all(item["actorId"] == actor_id for item in credit_outbox)
 
 
 def test_permanent_transfer_changes_future_owner_without_rewriting_assignments() -> None:
@@ -338,3 +420,60 @@ def test_internal_queue_route_calls_the_transactional_service_without_exposing_m
     assert response.status_code == 200
     assert response.json()["sellerId"] == str(first_seller)
     assert "mongodb" not in response.text.casefold()
+    assert database["audit_log"].documents[-1]["actorId"] == "system"
+
+
+def test_admin_routes_propagate_actor_and_require_transfer_confirmation() -> None:
+    """Breaks if admin identity is lost or an accidental transfer can be submitted unconfirmed."""
+    database = FakeDatabase()
+    renato, sandra, _, _ = _seed_queue(database)
+    lead_id, company_id = _seed_lead(database)
+    database["companies"].update_one({"_id": company_id}, {"$set": {"ownerId": renato}})
+    database["leads"].update_one(
+        {"_id": lead_id},
+        {"$set": {"assignmentStatus": "parked", "parkReason": "owner_unavailable"}},
+    )
+    admin_id = ObjectId()
+    settings = Settings(
+        MONGODB_URI="mongodb://localhost:27017/?replicaSet=rs0",
+        MONGODB_DATABASE="gerec_leads",
+        APP_SECRET="queue-route-secret",
+    )
+    app = create_app(settings=settings, database=database)
+    app.state.queue_service = _service(database)
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        id=str(admin_id), email="admin@example.test", role="admin"
+    )
+    client = TestClient(app)
+
+    temporary = client.post(
+        f"/api/admin/leads/{lead_id}/temporary-assignment",
+        json={
+            "seller_id": str(sandra),
+            "reason": "Cobertura administrativa",
+            "command_id": "route-temporary",
+        },
+    )
+    unconfirmed = client.post(
+        f"/api/admin/companies/{company_id}/transfer-owner",
+        json={
+            "seller_id": str(sandra),
+            "reason": "Transferência aprovada",
+            "command_id": "route-transfer-no",
+            "confirmed": False,
+        },
+    )
+    confirmed = client.post(
+        f"/api/admin/companies/{company_id}/transfer-owner",
+        json={
+            "seller_id": str(sandra),
+            "reason": "Transferência aprovada",
+            "command_id": "route-transfer-yes",
+            "confirmed": True,
+        },
+    )
+
+    assert temporary.status_code == 200
+    assert unconfirmed.status_code == 422
+    assert confirmed.status_code == 200
+    assert all(item["actorId"] == admin_id for item in database["audit_log"].documents)

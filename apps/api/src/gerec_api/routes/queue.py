@@ -29,6 +29,7 @@ class TemporaryAssignmentRequest(CommandRequest):
 class TransferOwnerRequest(CommandRequest):
     seller_id: str
     reason: str = Field(min_length=1, max_length=2_000)
+    confirmed: bool
 
 
 def get_queue_service(request: Request) -> QueueService:
@@ -56,7 +57,11 @@ def distribute_normal(
     payload: CommandRequest,
     service: QueueService = Depends(get_queue_service),
 ) -> dict[str, Any]:
-    return _run(lambda: service.distribute_normal(_object_id(lead_id), payload.command_id))
+    return _run(
+        lambda: service.with_actor("system").distribute_normal(
+            _object_id(lead_id), payload.command_id
+        )
+    )
 
 
 @router.post(
@@ -68,20 +73,24 @@ def assign_recurring(
     payload: CommandRequest,
     service: QueueService = Depends(get_queue_service),
 ) -> dict[str, Any]:
-    return _run(lambda: service.assign_recurring(_object_id(lead_id), payload.command_id))
+    return _run(
+        lambda: service.with_actor("system").assign_recurring(
+            _object_id(lead_id), payload.command_id
+        )
+    )
 
 
 @router.post(
     "/api/admin/leads/{lead_id}/temporary-assignment",
-    dependencies=[Depends(require_admin)],
 )
 def assign_temporarily(
     lead_id: str,
     payload: TemporaryAssignmentRequest,
     service: QueueService = Depends(get_queue_service),
+    current_user: CurrentUser = Depends(require_admin),
 ) -> dict[str, Any]:
     return _run(
-        lambda: service.assign_temporarily(
+        lambda: service.with_actor(_object_id(current_user.id)).assign_temporarily(
             _object_id(lead_id),
             _object_id(payload.seller_id),
             payload.reason,
@@ -92,15 +101,20 @@ def assign_temporarily(
 
 @router.post(
     "/api/admin/companies/{company_id}/transfer-owner",
-    dependencies=[Depends(require_admin)],
 )
 def transfer_owner(
     company_id: str,
     payload: TransferOwnerRequest,
     service: QueueService = Depends(get_queue_service),
+    current_user: CurrentUser = Depends(require_admin),
 ) -> dict[str, Any]:
+    if payload.confirmed is not True:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Permanent owner transfer requires explicit confirmation",
+        )
     return _run(
-        lambda: service.transfer_owner(
+        lambda: service.with_actor(_object_id(current_user.id)).transfer_owner(
             _object_id(company_id),
             _object_id(payload.seller_id),
             payload.reason,
