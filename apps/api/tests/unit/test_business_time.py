@@ -36,15 +36,15 @@ class HolidayCollection:
 
 
 def test_ac18_weekend_is_ignored_for_due_date_and_reminder() -> None:
-    """Breaks if Saturday or Sunday consumes any part of the 24-hour SLA."""
+    """Breaks if the SLA counts overnight instead of only commercial hours."""
     clock = BusinessClock(FixedHolidayRepository())
     assigned_at = datetime(2026, 8, 28, 14, 0, tzinfo=SAO_PAULO)  # Friday
 
     assert clock.add_business_hours(assigned_at, 24) == datetime(
-        2026, 8, 31, 14, 0, tzinfo=SAO_PAULO
+        2026, 9, 2, 11, 0, tzinfo=SAO_PAULO
     )
     assert clock.add_business_hours(assigned_at, 20) == datetime(
-        2026, 8, 31, 10, 0, tzinfo=SAO_PAULO
+        2026, 9, 1, 16, 0, tzinfo=SAO_PAULO
     )
 
 
@@ -57,7 +57,56 @@ def test_national_and_sp_holidays_are_ignored_as_complete_days(scope: str) -> No
     assigned_at = datetime(2026, 8, 28, 14, 0, tzinfo=SAO_PAULO)
 
     assert clock.add_business_hours(assigned_at, 24) == datetime(
-        2026, 9, 1, 14, 0, tzinfo=SAO_PAULO
+        2026, 9, 3, 11, 0, tzinfo=SAO_PAULO
+    )
+
+
+def test_add_business_hours_consumes_only_the_commercial_window() -> None:
+    """Breaks if a Friday 17:00 SLA counts nighttime or non-business days."""
+    clock = BusinessClock(FixedHolidayRepository())
+
+    assert clock.add_business_hours(
+        datetime(2026, 8, 28, 17, 0, tzinfo=SAO_PAULO), 24
+    ) == datetime(2026, 9, 2, 14, 0, tzinfo=SAO_PAULO)
+
+
+def test_add_business_hours_normalizes_before_and_after_the_commercial_window() -> None:
+    """Breaks if 08:30 or 18:00 can start an SLA outside the approved window."""
+    clock = BusinessClock(FixedHolidayRepository())
+
+    assert clock.add_business_hours(
+        datetime(2026, 8, 31, 8, 30, tzinfo=SAO_PAULO), 0
+    ) == datetime(2026, 8, 31, 9, 0, tzinfo=SAO_PAULO)
+    assert clock.add_business_hours(
+        datetime(2026, 8, 28, 18, 0, tzinfo=SAO_PAULO), 0
+    ) == datetime(2026, 8, 31, 9, 0, tzinfo=SAO_PAULO)
+
+
+def test_add_business_hours_preserves_minutes_when_crossing_the_weekend() -> None:
+    """Breaks if a partial commercial hour is rounded while skipping the weekend."""
+    clock = BusinessClock(FixedHolidayRepository())
+
+    assert clock.add_business_hours(
+        datetime(2026, 8, 28, 17, 59, tzinfo=SAO_PAULO), 1
+    ) == datetime(2026, 8, 31, 9, 59, tzinfo=SAO_PAULO)
+
+
+def test_sp_holiday_is_skipped_inside_the_commercial_window() -> None:
+    """Breaks if a configured São Paulo holiday consumes commercial hours."""
+    clock = BusinessClock(FixedHolidayRepository(date(2026, 8, 31)))
+
+    assert clock.add_business_hours(
+        datetime(2026, 8, 28, 17, 0, tzinfo=SAO_PAULO), 24
+    ) == datetime(2026, 9, 3, 14, 0, tzinfo=SAO_PAULO)
+
+
+def test_subtract_business_hours_calculates_the_four_hour_reminder() -> None:
+    """Breaks if the reminder subtracts calendar time instead of business time."""
+    clock = BusinessClock(FixedHolidayRepository())
+    due_at = datetime(2026, 9, 2, 14, 0, tzinfo=SAO_PAULO)
+
+    assert clock.subtract_business_hours(due_at, 4) == datetime(
+        2026, 9, 2, 10, 0, tzinfo=SAO_PAULO
     )
 
 

@@ -6,6 +6,8 @@ from zoneinfo import ZoneInfo
 
 
 SAO_PAULO = ZoneInfo("America/Sao_Paulo")
+BUSINESS_DAY_START = time(9)
+BUSINESS_DAY_END = time(18)
 
 
 class HolidayRepository(Protocol):
@@ -37,30 +39,75 @@ class BusinessClock:
         if hours < 0:
             raise ValueError("hours must be non-negative")
 
-        current = start.astimezone(SAO_PAULO)
-        if hours == 0:
-            return current
+        current = self._normalize_forward(start.astimezone(SAO_PAULO))
         remaining = timedelta(hours=hours)
 
         while remaining:
-            if not self.is_business_day(current.date()):
-                current = self._next_midnight(current)
-                continue
-
-            next_midnight = self._next_midnight(current)
-            available = next_midnight - current
-            if remaining < available:
+            business_day_end = self._at_business_day_end(current.date())
+            available = business_day_end - current
+            if remaining <= available:
                 return current + remaining
             remaining -= available
-            current = next_midnight
+            current = self._next_business_day_start(current.date())
 
-        while not self.is_business_day(current.date()):
-            current = self._next_midnight(current)
+        return current
+
+    def subtract_business_hours(self, deadline: datetime, hours: int) -> datetime:
+        if deadline.tzinfo is None or deadline.utcoffset() is None:
+            raise ValueError("deadline datetime must include a timezone")
+        if hours < 0:
+            raise ValueError("hours must be non-negative")
+
+        current = self._normalize_backward(deadline.astimezone(SAO_PAULO))
+        remaining = timedelta(hours=hours)
+
+        while remaining:
+            business_day_start = self._at_business_day_start(current.date())
+            available = current - business_day_start
+            if remaining <= available:
+                return current - remaining
+            remaining -= available
+            current = self._previous_business_day_end(current.date())
+
         return current
 
     def is_business_day(self, day: date) -> bool:
         return day.weekday() < 5 and not self._holidays.is_holiday(day)
 
+    def _normalize_forward(self, value: datetime) -> datetime:
+        if not self.is_business_day(value.date()):
+            return self._next_business_day_start(value.date())
+        if value.time() < BUSINESS_DAY_START:
+            return self._at_business_day_start(value.date())
+        if value.time() >= BUSINESS_DAY_END:
+            return self._next_business_day_start(value.date())
+        return value
+
+    def _normalize_backward(self, value: datetime) -> datetime:
+        if not self.is_business_day(value.date()):
+            return self._previous_business_day_end(value.date())
+        if value.time() < BUSINESS_DAY_START:
+            return self._previous_business_day_end(value.date())
+        if value.time() > BUSINESS_DAY_END:
+            return self._at_business_day_end(value.date())
+        return value
+
+    def _next_business_day_start(self, day: date) -> datetime:
+        next_day = day + timedelta(days=1)
+        while not self.is_business_day(next_day):
+            next_day += timedelta(days=1)
+        return self._at_business_day_start(next_day)
+
+    def _previous_business_day_end(self, day: date) -> datetime:
+        previous_day = day - timedelta(days=1)
+        while not self.is_business_day(previous_day):
+            previous_day -= timedelta(days=1)
+        return self._at_business_day_end(previous_day)
+
     @staticmethod
-    def _next_midnight(value: datetime) -> datetime:
-        return datetime.combine(value.date() + timedelta(days=1), time.min, tzinfo=SAO_PAULO)
+    def _at_business_day_start(day: date) -> datetime:
+        return datetime.combine(day, BUSINESS_DAY_START, tzinfo=SAO_PAULO)
+
+    @staticmethod
+    def _at_business_day_end(day: date) -> datetime:
+        return datetime.combine(day, BUSINESS_DAY_END, tzinfo=SAO_PAULO)
