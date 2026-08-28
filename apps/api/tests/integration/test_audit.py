@@ -91,6 +91,19 @@ def test_dashboard_serializes_nested_bson_identifiers() -> None:
     assert isinstance(item["metadata"]["relatedIds"][0], str)
 
 
+def test_dashboard_enriches_operational_rows_with_human_labels() -> None:
+    database = Database()
+    database["leads"] = Collection([{"_id": "lead-1", "assigneeId": "seller-1", "companyId": "company-1", "campaignId": "campaign-1", "contactName": "Ana"}])
+    database["users"] = Collection([{"_id": "seller-1", "fullName": "Renato"}])
+    database["companies"] = Collection([{"_id": "company-1", "name": "Empresa Ana"}])
+    database["campaigns"] = Collection([{"_id": "campaign-1", "displayName": "Campanha WTG"}])
+    payload = DashboardService(database).for_user(CurrentUser("seller-1", "renato@example.test", "seller"))
+    item = payload["leads"]["items"][0]
+    assert item["sellerName"] == "Renato"
+    assert item["companyName"] == "Empresa Ana"
+    assert item["campaignName"] == "Campanha WTG"
+
+
 def test_dashboard_page_two_skips_first_page():
     database = Database()
     database["leads"] = Collection([{"_id": f"lead-{i}", "assigneeId": "seller-1"} for i in range(3)])

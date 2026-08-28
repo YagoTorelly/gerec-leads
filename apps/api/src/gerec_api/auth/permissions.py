@@ -99,9 +99,44 @@ class DashboardService:
             cursor = cursor.skip((page - 1) * page_size)
         if hasattr(cursor, "limit"):
             cursor = cursor.limit(page_size)
-        items = [_public_document(item) for item in cursor]
+        raw_items = list(cursor)
+        items = [self._enrich(collection_name, item) for item in raw_items]
         total = collection.count_documents(dict(query)) if hasattr(collection, "count_documents") else len(items)
         return {"items": items, "page": page, "pageSize": page_size, "total": total}
+
+    def _enrich(self, collection_name: str, document: Mapping[str, Any]) -> dict[str, Any]:
+        """Expose human-readable names while retaining IDs for internal actions."""
+        result = dict(document)
+        if collection_name == MongoCollections.SELLER_QUEUE:
+            seller = self._find_by_id(MongoCollections.USERS, result.get("sellerId"))
+            result["sellerName"] = _display_name(seller, result.get("sellerId"))
+        elif collection_name == MongoCollections.ASSIGNMENTS:
+            seller = self._find_by_id(MongoCollections.USERS, result.get("sellerId"))
+            lead = self._find_by_id(MongoCollections.LEADS, result.get("leadId"))
+            result["sellerName"] = _display_name(seller, result.get("sellerId"))
+            result["leadName"] = (lead or {}).get("contactName") or (lead or {}).get("email") or "Lead sem nome"
+            if lead:
+                company = self._find_by_id(MongoCollections.COMPANIES, lead.get("companyId"))
+                campaign = self._find_by_id(MongoCollections.CAMPAIGNS, lead.get("campaignId"))
+                result["companyName"] = _display_name(company, lead.get("companyId"))
+                result["campaignName"] = _campaign_name(campaign, lead.get("campaignId"))
+        elif collection_name == MongoCollections.LEADS:
+            company = self._find_by_id(MongoCollections.COMPANIES, result.get("companyId"))
+            campaign = self._find_by_id(MongoCollections.CAMPAIGNS, result.get("campaignId"))
+            result["companyName"] = _display_name(company, result.get("companyId"))
+            result["campaignName"] = _campaign_name(campaign, result.get("campaignId"))
+            seller = self._find_by_id(MongoCollections.USERS, result.get("assigneeId"))
+            result["sellerName"] = _display_name(seller, result.get("assigneeId"))
+        return _public_document(result)
+
+    def _find_by_id(self, collection_name: str, value: Any) -> Mapping[str, Any] | None:
+        if value is None:
+            return None
+        collection = self._database[collection_name]
+        item = collection.find_one({"_id": value})
+        if item is None and isinstance(value, str) and ObjectId.is_valid(value):
+            item = collection.find_one({"_id": ObjectId(value)})
+        return item
 
     def _first(self, collection_name: str, query: Mapping[str, Any]) -> dict[str, Any] | None:
         item = self._database[collection_name].find_one(dict(query))
@@ -113,6 +148,17 @@ def _identity_values(value: str) -> list[Any]:
     if ObjectId.is_valid(value):
         values.append(ObjectId(value))
     return values
+
+
+def _display_name(document: Mapping[str, Any] | None, identifier: Any = None) -> str:
+    """Resolve a human label at the read seam; never make the UI know Mongo IDs."""
+    value = (document or {}).get("fullName") or (document or {}).get("name") or (document or {}).get("email")
+    return str(value) if value else "Não identificado"
+
+
+def _campaign_name(document: Mapping[str, Any] | None, identifier: Any = None) -> str:
+    value = (document or {}).get("displayName") or (document or {}).get("sourceName") or (document or {}).get("name")
+    return str(value) if value else "Campanha não identificada"
 
 
 def _page_number(value: int) -> int:
