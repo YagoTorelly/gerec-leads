@@ -464,8 +464,8 @@ class QueueRepository:
         }
         if self._business_clock is not None:
             cycle_id = ObjectId()
-            reminder_at = self._business_clock.add_business_hours(now, 20)
             due_at = self._business_clock.add_business_hours(now, 24)
+            reminder_at = self._business_clock.subtract_business_hours(due_at, 4)
             self._feedback_cycles.insert_one(
                 {
                     "_id": cycle_id,

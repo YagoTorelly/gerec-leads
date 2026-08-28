@@ -223,8 +223,8 @@ class MongoOperationsRepository:
 
         if self._business_clock is None:
             raise OperationsStateError("business clock is required for seller feedback")
-        reminder_at = self._business_clock.add_business_hours(now, 20)
         due_at = self._business_clock.add_business_hours(now, 24)
+        reminder_at = self._business_clock.subtract_business_hours(due_at, 4)
         self._require_current_seller(lead, actor_id, actor_role)
         self._require_active(lead)
         cycle = self._feedback_cycles.find_one(

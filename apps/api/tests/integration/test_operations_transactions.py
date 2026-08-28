@@ -456,7 +456,7 @@ def test_public_feedback_reuses_the_server_timestamp_without_a_command_in_transa
         FeedbackCommand(lead_id, "Cliente pediu retorno", True, "database-clock")
     )
 
-    assert result.due_at == datetime(2026, 9, 7, 14, 0, tzinfo=SAO_PAULO)
+    assert result.due_at == datetime(2026, 9, 9, 11, 0, tzinfo=SAO_PAULO)
     assert process_clock.sessions == [None]
     assert transaction_clock.sessions == []
 

@@ -1,6 +1,6 @@
 """Unit coverage for the business-day clock used by feedback SLAs."""
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -108,6 +108,42 @@ def test_subtract_business_hours_calculates_the_four_hour_reminder() -> None:
     assert clock.subtract_business_hours(due_at, 4) == datetime(
         2026, 9, 2, 10, 0, tzinfo=SAO_PAULO
     )
+
+
+def test_subtract_business_hours_crosses_the_end_of_a_business_day() -> None:
+    """Breaks if subtracting from 09:30 does not resume at 17:30 on the prior day."""
+    clock = BusinessClock(FixedHolidayRepository())
+
+    assert clock.subtract_business_hours(
+        datetime(2026, 9, 1, 9, 30, tzinfo=SAO_PAULO), 1
+    ) == datetime(2026, 8, 31, 17, 30, tzinfo=SAO_PAULO)
+
+
+def test_subtract_business_hours_crosses_a_weekend() -> None:
+    """Breaks if weekend hours are consumed while subtracting a reminder."""
+    clock = BusinessClock(FixedHolidayRepository())
+
+    assert clock.subtract_business_hours(
+        datetime(2026, 8, 31, 9, 30, tzinfo=SAO_PAULO), 1
+    ) == datetime(2026, 8, 28, 17, 30, tzinfo=SAO_PAULO)
+
+
+def test_subtract_business_hours_crosses_an_sp_holiday() -> None:
+    """Breaks if an SP holiday is counted while subtracting a reminder."""
+    clock = BusinessClock(FixedHolidayRepository(date(2026, 8, 31)))
+
+    assert clock.subtract_business_hours(
+        datetime(2026, 9, 1, 9, 30, tzinfo=SAO_PAULO), 1
+    ) == datetime(2026, 8, 28, 17, 30, tzinfo=SAO_PAULO)
+
+
+def test_subtract_business_hours_converts_an_external_timezone_to_sao_paulo() -> None:
+    """Breaks if an aware deadline outside São Paulo is not normalized before subtraction."""
+    clock = BusinessClock(FixedHolidayRepository())
+
+    assert clock.subtract_business_hours(
+        datetime(2026, 9, 2, 14, 0, tzinfo=UTC), 4
+    ) == datetime(2026, 9, 1, 16, 0, tzinfo=SAO_PAULO)
 
 
 def test_business_clock_rejects_naive_datetimes_and_negative_hours() -> None:

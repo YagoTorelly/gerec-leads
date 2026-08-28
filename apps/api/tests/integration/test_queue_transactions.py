@@ -173,7 +173,7 @@ def test_ac01_normal_rotation_is_atomic_and_first_assignment_defines_owner() -> 
     assert all(item["closedAt"] is None for item in database["feedback_cycles"].documents)
     assert all(
         database["leads"].find_one({"_id": lead_id})["feedbackDueAt"]
-        == datetime(2026, 8, 28, 12, tzinfo=ZoneInfo("America/Sao_Paulo"))
+        == datetime(2026, 8, 31, 18, tzinfo=ZoneInfo("America/Sao_Paulo"))
         for lead_id in leads
     )
     reminders = [

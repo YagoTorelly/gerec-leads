@@ -225,8 +225,8 @@ class OperationsService:
                 raise ValueError("seller feedback requires a seller actor")
             if not command.contact_started:
                 raise ValueError("feedback requires an explicit contact action")
-            reminder_at = self._business_clock.add_business_hours(now, 20)
             due_at = self._business_clock.add_business_hours(now, 24)
+            reminder_at = self._business_clock.subtract_business_hours(due_at, 4)
         return self._persistence.register_feedback(
             command,
             actor_id=self._actor_id,

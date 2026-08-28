@@ -32,6 +32,21 @@ class FixedClock:
         return NOW
 
 
+class DeadlineDerivedClock:
+    due_at = datetime(2026, 9, 3, 11, 0, tzinfo=SAO_PAULO)
+    reminder_at = datetime(2026, 9, 2, 16, 0, tzinfo=SAO_PAULO)
+
+    def add_business_hours(self, start: datetime, hours: int) -> datetime:
+        if hours != 24:
+            raise AssertionError("reminder must be derived from the SLA deadline")
+        return self.due_at
+
+    def subtract_business_hours(self, deadline: datetime, hours: int) -> datetime:
+        if deadline != self.due_at or hours != 4:
+            raise AssertionError("reminder must subtract four business hours from the deadline")
+        return self.reminder_at
+
+
 class RecordingPersistence:
     def __init__(self) -> None:
         self.feedbacks = []
@@ -71,10 +86,13 @@ class RecordingPersistence:
         )
 
 
-def _service(persistence: RecordingPersistence | None = None) -> OperationsService:
+def _service(
+    persistence: RecordingPersistence | None = None,
+    business_clock: BusinessClock | None = None,
+) -> OperationsService:
     return OperationsService(
         persistence or RecordingPersistence(),
-        business_clock=BusinessClock(NoHolidays()),
+        business_clock=business_clock or BusinessClock(NoHolidays()),
         clock=FixedClock(),
     ).with_actor("seller-1", "seller")
 
@@ -99,8 +117,18 @@ def test_ac20_valid_feedback_opens_24_business_hour_cycle_with_four_hour_reminde
     )
 
     assert result.status == "recorded"
-    assert result.reminder_at == datetime(2026, 9, 1, 10, 0, tzinfo=SAO_PAULO)
-    assert result.due_at == datetime(2026, 9, 1, 14, 0, tzinfo=SAO_PAULO)
+    assert result.reminder_at == datetime(2026, 9, 2, 16, 0, tzinfo=SAO_PAULO)
+    assert result.due_at == datetime(2026, 9, 3, 11, 0, tzinfo=SAO_PAULO)
+
+
+def test_feedback_derives_the_reminder_by_subtracting_from_its_deadline() -> None:
+    """Breaks if OperationsService calculates the reminder independently from the due date."""
+    result = _service(business_clock=DeadlineDerivedClock()).register_feedback(
+        FeedbackCommand("lead-1", "Retorno confirmado", True, "feedback-derived-reminder")
+    )
+
+    assert result.due_at == DeadlineDerivedClock.due_at
+    assert result.reminder_at == DeadlineDerivedClock.reminder_at
 
 
 def test_feedback_requires_an_explicit_contact_action() -> None:
