@@ -176,7 +176,7 @@ def test_import_is_idempotent_and_repeated_company_campaign_reuses_the_commercia
 
     assert first.status == "created"
     assert replay == first
-    assert second_source.status == "pending"
+    assert second_source.status == "updated"
     assert len(database["command_results"].documents) == 2
     assert len(database["source_records"].documents) == 2
     assert len(database["companies"].documents) == 1
