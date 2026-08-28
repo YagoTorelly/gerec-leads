@@ -176,6 +176,11 @@ class MongoOperationsRepository:
     ) -> FeedbackResult:
         lead = self._lead(command.lead_id, session)
         lead_before = deepcopy(lead)
+        open_cycle_before = deepcopy(
+            self._feedback_cycles.find_one(
+                {"leadId": command.lead_id, "closedAt": None}, session=session
+            )
+        )
         feedback_id = ObjectId()
         if command.administrative_note:
             if actor_role != "admin":
@@ -197,8 +202,14 @@ class MongoOperationsRepository:
                     "lead.administrative_note_added",
                     command.lead_id,
                     command.idempotency_key,
-                    {},
-                    {"feedbackId": feedback_id},
+                    {"lead": lead_before, "cycle": open_cycle_before},
+                    {
+                        "lead": self._leads.find_one({"_id": command.lead_id}, session=session),
+                        "cycle": self._feedback_cycles.find_one(
+                            {"leadId": command.lead_id, "closedAt": None}, session=session
+                        ),
+                        "feedbackId": feedback_id,
+                    },
                     now,
                 ),
                 session=session,

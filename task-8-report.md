@@ -15,12 +15,14 @@
 - Toda leitura administrativa recebe `CurrentUser` e filtro explícito; filtro ausente é rejeitado.
 - Auditoria operacional captura snapshots `before`/`after` de lead, ciclo e empresa dentro da transação.
 - Fakes e testes cobrem paginação página 2 e isolamento seller A/B.
+- Notas administrativas também registram snapshots reais do lead/ciclo (sem mutar SLA), e chamadas diretas do dashboard rejeitam `limit=0`.
+- Rotas administrativas têm teste HTTP de `403` para seller; testes cobrem snapshots de tentativa, outcome, nota administrativa, histórico, fila e saldo.
 
 ## Testes
 
 ```text
 pytest -q
-82 passed, 5 skipped in 18.27s
+85 passed, 5 skipped in 17.03s
 ```
 
 Os 5 skips dependem de MongoDB em replica set local.
@@ -30,3 +32,5 @@ Os 5 skips dependem de MongoDB em replica set local.
 Commit inicial: `743c068 feat(gerec-leads): aplica autorização e auditoria no backend`
 
 Commit de correção: `fix(gerec-leads): fecha escopos, paginação e snapshots de auditoria`
+
+Commit round 2: `fix(gerec-leads): completa auditoria e valida paginação`

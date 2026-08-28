@@ -67,7 +67,7 @@ class DashboardService:
     def for_user(self, user: CurrentUser | None, *, page: int = 1, limit: int | None = None) -> dict[str, Any]:
         current = PermissionService.require_current_user(user)
         page = _page_number(page)
-        page_size = _page_limit(limit or self._page_size)
+        page_size = _page_limit(self._page_size if limit is None else limit)
         leads = self._page(MongoCollections.LEADS, PermissionService.scope_query(current, "leads"), page, page_size)
         history = self._page(
             MongoCollections.ASSIGNMENTS,

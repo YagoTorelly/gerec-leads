@@ -1,7 +1,13 @@
 from datetime import UTC, datetime
 
-from gerec_api.auth.permissions import DashboardService
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from gerec_api.auth.dependencies import get_current_user
+from gerec_api.auth.permissions import DashboardService, PermissionService, PermissionDenied
 from gerec_api.auth.sessions import CurrentUser
+from gerec_api.routes.admin import router as admin_router
 
 
 class Collection:
@@ -78,3 +84,27 @@ def test_dashboard_seller_scope_excludes_another_seller():
         CurrentUser("seller-a", "a@example.test", "seller")
     )
     assert [item["id"] for item in payload["leads"]["items"]] == ["a"]
+
+
+def test_dashboard_service_rejects_invalid_direct_pagination():
+    with pytest.raises(ValueError, match="limit"):
+        DashboardService(Database()).for_user(
+            CurrentUser("seller-a", "a@example.test", "seller"), limit=0
+        )
+
+
+def test_admin_route_returns_403_for_seller():
+    app = FastAPI()
+    app.include_router(admin_router)
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        "seller-a", "a@example.test", "seller"
+    )
+    response = TestClient(app).get("/api/admin/users")
+    assert response.status_code == 403
+
+
+def test_seller_scopes_history_queue_and_balance_to_session_identity():
+    seller = CurrentUser("seller-a", "a@example.test", "seller")
+    assert PermissionService.scope_query(seller, "history") == {"sellerId": {"$in": ["seller-a"]}}
+    assert PermissionService.scope_query(seller, "queue") == {"sellerId": {"$in": ["seller-a"]}}
+    assert PermissionService.scope_query(seller, "skip_balance") == {"sellerId": {"$in": ["seller-a"]}}

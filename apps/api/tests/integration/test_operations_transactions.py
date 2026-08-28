@@ -230,6 +230,9 @@ def test_ac21_five_distinct_attempts_enable_but_do_not_apply_manual_disqualifica
 
     assert [result.sequence for result in results] == [1, 2, 3, 4, 5]
     assert results[-1].may_disqualify_no_answer is True
+    attempt_audit = database["audit_log"].documents[0]
+    assert attempt_audit["before"]["lead"]["qualificationStatus"] == "pending"
+    assert attempt_audit["after"]["lead"]["qualificationStatus"] == "pending"
     assert database["leads"].find_one({"_id": lead_id})["qualificationStatus"] == "pending"
     with pytest.raises(OperationsStateError, match="same business date"):
         service.register_attempt(
@@ -328,6 +331,9 @@ def test_ac24_ac28_won_is_idempotent_marks_client_and_preserves_owner() -> None:
     assert database["companies"].find_one({"_id": company_id})["clientSince"] == NOW
     assert database["sales"].documents[0]["creditedSellerId"] == temporary_seller
     assert database["feedback_cycles"].find_one({"_id": cycle_id})["closedAt"] == NOW
+    outcome_audit = database["audit_log"].documents[-1]
+    assert outcome_audit["before"]["company"]["clientSince"] is None
+    assert outcome_audit["after"]["company"]["clientSince"] == NOW
 
 
 def test_ac30_administrative_note_does_not_change_deadline_or_close_cycle() -> None:
@@ -351,6 +357,11 @@ def test_ac30_administrative_note_does_not_change_deadline_or_close_cycle() -> N
     assert database["leads"].find_one({"_id": lead_id})["feedbackDueAt"] == before_due
     assert database["feedback_cycles"].find_one({"_id": cycle_id})["closedAt"] is None
     assert database["feedbacks"].documents[0]["kind"] == "administrative_note"
+    audit = database["audit_log"].documents[-1]
+    assert audit["before"]["lead"]["feedbackDueAt"] == before_due
+    assert audit["after"]["lead"]["feedbackDueAt"] == before_due
+    assert audit["before"]["cycle"]["closedAt"] is None
+    assert audit["after"]["cycle"]["closedAt"] is None
 
 
 def test_won_rolls_back_lead_company_cycle_and_event_when_sale_insert_fails() -> None:
