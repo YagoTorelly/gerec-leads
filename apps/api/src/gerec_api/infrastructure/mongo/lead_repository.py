@@ -168,7 +168,8 @@ class LeadRepository:
                 "identityKey": identity_key,
                 **fields,
                 "displayName": row.campaign_name or row.campaign_external_id,
-                "status": "pending_approval",
+                "status": "approved",
+                "approvalMode": "google_sheets_auto",
                 "createdAt": now,
             }
             result = self._campaigns.insert_one(document, session=session)

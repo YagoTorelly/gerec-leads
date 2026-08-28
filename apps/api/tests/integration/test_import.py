@@ -174,7 +174,7 @@ def test_import_is_idempotent_and_repeated_company_campaign_reuses_the_commercia
     replay = service.import_row(_complete_row("source-1"), "command-1")
     second_source = service.import_row(_complete_row("source-2"), "command-2")
 
-    assert first.status == "pending"
+    assert first.status == "created"
     assert replay == first
     assert second_source.status == "pending"
     assert len(database["command_results"].documents) == 2
@@ -182,7 +182,7 @@ def test_import_is_idempotent_and_repeated_company_campaign_reuses_the_commercia
     assert len(database["companies"].documents) == 1
     assert len(database["campaigns"].documents) == 1
     assert len(database["leads"].documents) == 1
-    assert database["leads"].documents[0]["assignmentStatus"] == "pending_campaign"
+    assert database["leads"].documents[0]["assignmentStatus"] == "ready"
     assert all(session.transactions == 1 for session in database.client.sessions)
 
 
