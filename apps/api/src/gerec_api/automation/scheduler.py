@@ -126,6 +126,7 @@ class Scheduler:
         try:
             self._run_sync_job(f"sync:{slot}")
         except Exception:
+            logging.exception("google_sheets_sync job failed")
             self._locks.finish(SYNC_JOB_NAME, slot, timestamp, succeeded=False)
             return JobResult(sync_runs=0, skipped=0, failed=1)
         self._locks.finish(SYNC_JOB_NAME, slot, timestamp, succeeded=True)
