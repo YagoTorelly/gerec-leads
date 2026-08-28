@@ -206,6 +206,7 @@ def test_ac20_feedback_closes_previous_cycle_and_opens_the_next_atomically() -> 
     reminder = events[1]
     assert reminder["scheduledFor"] == result.reminder_at
     assert reminder["idempotencyKey"] == f"{lead_id}:{result.cycle_id}:feedback_due_soon"
+    assert all(event["attempts"] == 0 for event in events)
     audit = database["audit_log"].documents[-1]
     assert audit["before"]["lead"]["feedbackDueAt"] == NOW - timedelta(hours=1)
     assert audit["after"]["lead"]["feedbackDueAt"] == result.due_at

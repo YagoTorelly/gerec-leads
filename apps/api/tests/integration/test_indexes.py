@@ -101,6 +101,9 @@ def test_index_contract_covers_each_persisted_identity_and_active_lifecycle() ->
     assert definitions["sales_active_lead_unique"].partial_filter == {"reversedAt": None}
     assert definitions["sessions_token_hash_unique"].keys == (("tokenHash", 1),)
     assert definitions["command_results_idempotency_key_unique"].keys == (("idempotencyKey", 1),)
+    assert definitions["notification_outbox_idempotency_key_unique"].keys == (("idempotencyKey", 1),)
+    assert definitions["notification_incidents_outbox_event_unique"].keys == (("outboxEventId", 1),)
+    assert MongoCollections.AUTOMATION_JOB_LOCKS in MongoCollections.ALL
     assert all(definition.unique for definition in INDEXES)
 
 

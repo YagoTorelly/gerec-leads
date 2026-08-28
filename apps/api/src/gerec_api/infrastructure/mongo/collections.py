@@ -30,6 +30,7 @@ class MongoCollections:
     SOURCE_CONFLICTS: Final = "source_conflicts"
     NOTIFICATION_OUTBOX: Final = "notification_outbox"
     NOTIFICATION_INCIDENTS: Final = "notification_incidents"
+    AUTOMATION_JOB_LOCKS: Final = "automation_job_locks"
     AUDIT_LOG: Final = "audit_log"
     SYSTEM_SETTINGS: Final = "system_settings"
     COMMAND_RESULTS: Final = "command_results"
@@ -56,6 +57,7 @@ class MongoCollections:
         SOURCE_CONFLICTS,
         NOTIFICATION_OUTBOX,
         NOTIFICATION_INCIDENTS,
+        AUTOMATION_JOB_LOCKS,
         AUDIT_LOG,
         SYSTEM_SETTINGS,
         COMMAND_RESULTS,

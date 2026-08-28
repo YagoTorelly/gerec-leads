@@ -153,4 +153,16 @@ INDEXES: Final[tuple[MongoIndex, ...]] = (
         "command_results_idempotency_key_unique",
         unique=True,
     ),
+    MongoIndex(
+        MongoCollections.NOTIFICATION_OUTBOX,
+        (("idempotencyKey", ASCENDING),),
+        "notification_outbox_idempotency_key_unique",
+        unique=True,
+    ),
+    MongoIndex(
+        MongoCollections.NOTIFICATION_INCIDENTS,
+        (("outboxEventId", ASCENDING),),
+        "notification_incidents_outbox_event_unique",
+        unique=True,
+    ),
 )

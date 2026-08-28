@@ -1,4 +1,5 @@
-# Integrações n8n
+# Integração removida
 
-Este diretório receberá workflows exportados e documentação na Etapa 7.
-O n8n atua como adaptador e não contém regras críticas de negócio.
+O sistema novo não usa n8n. Sincronizações, consumo da outbox, retries e agendas são processos Python publicados na Railway e usam os serviços de domínio da API.
+
+Configuração operacional: `infra/railway/README.md`.
