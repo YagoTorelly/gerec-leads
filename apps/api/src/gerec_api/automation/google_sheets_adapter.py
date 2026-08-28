@@ -9,6 +9,9 @@ from typing import Any
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
+from google.auth.transport.requests import Request as GoogleAuthRequest
+from google.oauth2 import service_account
+
 from gerec_api.automation.workbook_adapter import EXPECTED_HEADERS, InvalidWorkbookError
 from gerec_api.domain.normalization import NormalizedSourceRow, normalize_source_row
 
@@ -33,10 +36,19 @@ class GoogleSheetsAdapter:
 
     @classmethod
     def from_env(cls) -> "GoogleSheetsAdapter":
+        service_account_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+        access_token = os.environ.get("GOOGLE_SHEETS_ACCESS_TOKEN", "")
+        if service_account_json:
+            credentials = service_account.Credentials.from_service_account_info(
+                json.loads(service_account_json),
+                scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"],
+            )
+            credentials.refresh(GoogleAuthRequest())
+            access_token = credentials.token or ""
         return cls(
             os.environ.get("GOOGLE_SHEETS_SPREADSHEET_ID", ""),
             os.environ.get("GOOGLE_SHEETS_RANGE", "Leads!A:Q"),
-            os.environ.get("GOOGLE_SHEETS_ACCESS_TOKEN", ""),
+            access_token,
         )
 
     def read(self) -> Iterable[NormalizedSourceRow]:

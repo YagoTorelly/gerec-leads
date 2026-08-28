@@ -168,10 +168,8 @@ def test_railway_deployment_contract_documents_api_worker_cron_and_server_only_s
     guide = (root / "infra" / "railway" / "README.md").read_text(encoding="utf-8")
 
     assert config["$schema"] == "https://railway.com/railway.schema.json"
-    assert config["build"]["buildCommand"] == "pip install ./apps/api"
-    assert config["deploy"]["startCommand"] == (
-        "uvicorn gerec_api.main:create_app --factory --host 0.0.0.0 --port $PORT"
-    )
+    assert config["build"]["dockerfilePath"] == "apps/api/Dockerfile"
+    assert "startCommand" not in config["deploy"]
     assert config["deploy"]["healthcheckPath"] == "/health"
     assert "uvicorn gerec_api.main:create_app" in guide
     assert "python -m gerec_api.automation.outbox_worker" in guide
