@@ -344,3 +344,31 @@ def test_admin_accepts_unbounded_nonempty_passwords_without_auditing_secrets() -
         assert "passwordhash" not in rendered
         assert not _contains_sensitive_key(item["before"])
         assert not _contains_sensitive_key(item["after"])
+
+
+def test_blank_after_trim_passwords_return_safe_http_validation_errors() -> None:
+    """Breaks if an invalid credential is reflected while creating or resetting a user."""
+    database = FakeDatabase()
+    admin_id = _seed_admin(database)
+    client = _client(database)
+    creation_password = " \t \n "
+    reset_password = "\r\t  "
+
+    created = client.post(
+        "/api/admin/users",
+        json={
+            "fullName": "Senha Inválida",
+            "email": "senha-invalida@example.test",
+            "role": "seller",
+            "password": creation_password,
+        },
+    )
+    reset = client.patch(
+        f"/api/admin/users/{admin_id}/password",
+        json={"password": reset_password},
+    )
+
+    for response, password in ((created, creation_password), (reset, reset_password)):
+        assert response.status_code == 422
+        assert password not in response.text
+        assert response.json() == {"detail": "password is required"}
