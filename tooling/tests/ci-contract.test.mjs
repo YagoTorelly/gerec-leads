@@ -31,7 +31,7 @@ test("CI inicia stack Mongo, API e web antes dos contratos e E2E", () => {
   assert.ok(commands.some((command) => command.includes("gerec_api.main:create_app")));
   assert.ok(commands.some((command) => command.includes("npm run dev")));
   assert.ok(commands.includes("python -m pytest apps/api/tests -q"));
-  assert.ok(commands.includes("npm run check"));
+  assert.equal(commands.includes("npm run check"), false);
   const scopedWeb = steps.find((step) => step.name === "Validar TypeScript e testes web escopados");
   assert.match(scopedWeb?.run ?? "", /npm run lint\s+npm run typecheck\s+npm run test/);
   assert.ok(commands.includes("npm run test:contracts"));
@@ -42,7 +42,14 @@ test("CI inicia stack Mongo, API e web antes dos contratos e E2E", () => {
   assert.match(cleanup?.run ?? "", /docker compose .* down --volumes/);
   assert.equal(JSON.stringify(workflow).includes("${{ secrets."), false);
   assert.equal(
-    steps.find((step) => step.name === "Registrar check global legado")?.["continue-on-error"],
+    steps.find((step) => step.name === "Registrar format check legado")?.["continue-on-error"],
     true,
   );
+  assert.equal(
+    steps.find((step) => step.name === "Registrar format check legado")?.run,
+    "npm run format:check",
+  );
+  assert.equal("APP_SECRET" in workflow.jobs.quality.env, false);
+  assert.equal("E2E_PASSWORD" in workflow.jobs.quality.env, false);
+  assert.ok(commands.some((command) => command.includes("openssl rand")));
 });

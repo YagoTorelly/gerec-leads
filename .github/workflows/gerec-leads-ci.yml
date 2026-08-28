@@ -13,7 +13,6 @@ jobs:
     env:
       MONGODB_URI: mongodb://127.0.0.1:27017/?replicaSet=rs0
       MONGODB_DATABASE: gerec_leads_e2e
-      APP_SECRET: ci-only-secret
       PYTHONPATH: apps/api/src
       API_CONTRACT_BASE_URL: http://127.0.0.1:8011
       NEXT_PUBLIC_API_URL: http://127.0.0.1:8011
@@ -21,7 +20,6 @@ jobs:
       E2E_EMAIL: admin.e2e@wtg.test
       E2E_SELLER_EMAIL: seller.e2e@wtg.test
       E2E_DISABLED_EMAIL: disabled.e2e@wtg.test
-      E2E_PASSWORD: Senha-e2e-2026!
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -39,6 +37,10 @@ jobs:
           python -m pip install -e "apps/api[dev]"
       - name: Iniciar MongoDB replica set
         run: docker compose -f infra/mongodb/docker-compose.yml up -d --wait
+      - name: Gerar credenciais efêmeras de teste
+        run: |
+          echo "APP_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+          echo "E2E_PASSWORD=$(openssl rand -base64 32 | tr -d '\n')" >> "$GITHUB_ENV"
       - name: Iniciar API Python
         run: |
           python -m uvicorn gerec_api.main:create_app --factory --host 127.0.0.1 --port 8011 > api.log 2>&1 &
@@ -49,6 +51,7 @@ jobs:
       - name: Preparar dados E2E
         run: |
           python - <<'PY' >> "$GITHUB_ENV"
+          import os
           from datetime import UTC, datetime, timedelta
           from bson import ObjectId
           from pymongo import MongoClient
@@ -58,7 +61,7 @@ jobs:
           db = MongoClient("mongodb://127.0.0.1:27017/?replicaSet=rs0")["gerec_leads_e2e"]
           db.client.drop_database(db.name)
           ensure_schema(db)
-          password = hash_password("Senha-e2e-2026!")
+          password = hash_password(os.environ["E2E_PASSWORD"])
           admin, seller, disabled, colleague = ObjectId(), ObjectId(), ObjectId(), ObjectId()
           db.users.insert_many([
               {"_id": admin, "emailNormalized": "admin.e2e@wtg.test", "passwordHash": password, "role": "admin", "active": True},
@@ -90,9 +93,9 @@ jobs:
           exit 1
       - name: Validar Python
         run: python -m pytest apps/api/tests -q
-      - name: Registrar check global legado
+      - name: Registrar format check legado
         continue-on-error: true
-        run: npm run check
+        run: npm run format:check
       - name: Validar TypeScript e testes web escopados
         run: |
           npm run lint

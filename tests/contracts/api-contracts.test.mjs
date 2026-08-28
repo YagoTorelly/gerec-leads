@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { once } from "node:events";
 import { dirname, resolve } from "node:path";
 import test, { after, before } from "node:test";
@@ -10,6 +11,9 @@ const port = 18011;
 const baseUrl = `http://127.0.0.1:${port}`;
 const serverPath = resolve(root, "tests/contracts/api-contract-server.py");
 let server;
+const testPassword = randomBytes(24).toString("base64url");
+const invalidPassword = randomBytes(24).toString("base64url");
+const appSecret = randomBytes(32).toString("hex");
 
 async function waitForServer() {
   for (let attempt = 0; attempt < 40; attempt += 1) {
@@ -27,7 +31,12 @@ async function waitForServer() {
 before(async () => {
   server = spawn("python", [serverPath, "--port", String(port)], {
     cwd: root,
-    env: { ...process.env, PYTHONPATH: resolve(root, "apps/api/src") },
+    env: {
+      ...process.env,
+      PYTHONPATH: resolve(root, "apps/api/src"),
+      CONTRACT_TEST_APP_SECRET: appSecret,
+      CONTRACT_TEST_PASSWORD: testPassword,
+    },
     stdio: "pipe",
   });
   await waitForServer();
@@ -50,7 +59,7 @@ async function login() {
   const result = await request("/auth/login", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ email: "admin.contract@test", password: "Senha-contrato-2026!" }),
+    body: JSON.stringify({ email: "admin.contract@test", password: testPassword }),
   });
   const token = result.response.headers.get("set-cookie")?.match(/gerec_session=([^;]+)/)?.[1];
   assert.ok(token);
@@ -64,7 +73,7 @@ test("contrato versionado expõe health e autenticação pública mínima", asyn
   const invalid = await request("/auth/login", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ email: "admin.contract@test", password: "incorreta" }),
+    body: JSON.stringify({ email: "admin.contract@test", password: invalidPassword }),
   });
 
   assert.deepEqual(health.body, { status: "ok", database: "gerec_contracts" });
@@ -89,7 +98,7 @@ test("contrato valida erros e limites de leads, queue, operations e admin", asyn
     }),
     request("/api/internal/queue/leads/not-an-id/distribute-normal", {
       method: "POST",
-      headers: { "content-type": "application/json", "X-Internal-Key": "contract-secret" },
+      headers: { "content-type": "application/json", "X-Internal-Key": appSecret },
       body: JSON.stringify({ command_id: "contract-queue" }),
     }),
     request("/api/leads/not-an-id/feedbacks", {

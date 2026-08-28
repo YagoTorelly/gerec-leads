@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from copy import deepcopy
 from datetime import UTC, datetime
 from typing import Any
@@ -85,7 +86,7 @@ def app():
         {
             "_id": user_id,
             "emailNormalized": "admin.contract@test",
-            "passwordHash": hash_password("Senha-contrato-2026!"),
+            "passwordHash": hash_password(os.environ["CONTRACT_TEST_PASSWORD"]),
             "role": "admin",
             "active": True,
             "createdAt": datetime(2026, 8, 28, tzinfo=UTC),
@@ -94,7 +95,7 @@ def app():
     settings = Settings(
         MONGODB_URI="mongodb://127.0.0.1:27017/?replicaSet=rs0",
         MONGODB_DATABASE="gerec_contracts",
-        APP_SECRET="contract-secret",
+        APP_SECRET=os.environ["CONTRACT_TEST_APP_SECRET"],
     )
     return create_app(settings=settings, database=database)
 
