@@ -85,6 +85,7 @@ class LeadRepository:
             existing_source is not None
             and existing_source.get("rowHash") == row.row_hash
             and existing_source.get("present") is True
+            and (existing_source.get("leadId") is not None or bool(row.data_issues))
         )
 
         if identical:
