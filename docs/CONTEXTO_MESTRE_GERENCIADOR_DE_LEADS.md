@@ -1,6 +1,6 @@
 ﻿# Contexto Mestre - Gerenciador de Leads WTG
 
-> Gerado em 2026-08-28 20:30:04 UTC por `scripts/generate-master-context.ps1`.
+> Gerado em 2026-08-28 20:38:19 UTC por `scripts/generate-master-context.ps1`.
 
 ## Como usar este documento
 
@@ -3207,6 +3207,7 @@ Transformar as telas atuais, que exibem dados parciais e controles sem ação, e
 
 - A área administrativa terá ações reais, com confirmação e retorno de sucesso/erro: criar usuário, pausar/ativar vendedor e redefinir senha.
 - Criar usuário solicita nome, e-mail, papel e senha inicial. E-mail é único; senha nunca é retornada pela API nem exibida após o salvamento.
+- A senha inicial e a redefinição exigem somente valor não vazio. Não há comprimento mínimo, composição obrigatória ou troca forçada nesta etapa.
 - Um novo vendedor ativo entra ao final da fila global. Um novo administrador não entra na fila.
 - Redefinir senha recebe a nova senha e salva. As sessões ativas do usuário redefinido serão revogadas por segurança.
 - Pausar/ativar muda apenas a disponibilidade manual. Não transfere leads existentes.
@@ -3263,7 +3264,7 @@ Após a revisão deste documento, registrar uma decisão de governança com esta
 | O relógio de SLA contava continuamente em dia útil, sem janela comercial. | Conta somente 09:00–18:00 em dias úteis elegíveis. | Recalcular prazos abertos e lembretes; adicionar testes de borda da janela. |
 | `desqualificado` era terminal e exclusivo; administrador podia revertê-lo. | É marcador adicional a `Indefinido`, `Negociação` ou `Ganho`; vendedor o registra junto de comentário e encerra o SLA. | Separar situação primária e marcador; métricas podem contar ambos e ciclos abertos precisam ser encerrados. |
 | Administrador podia registrar notas/corrigir resultado conforme SPEC atual. | Nesta operação, administrador consulta status e comentários, sem editar tratativa. | Bloquear comandos administrativos de status/comentário e testar autorização. |
-| Senha inicial era aleatória. | Administrador informa senha ao criar e ao redefinir usuário. | Validar senha, manter hash e revogar sessões na redefinição. |
+| Senha inicial era aleatória. | Administrador informa senha não vazia ao criar e ao redefinir usuário. | Manter hash e revogar sessões na redefinição; não impor política de tamanho ou composição nesta etapa. |
 
 Nenhum dado histórico será apagado. Registros antigos recebem projeção compatível; o estado atual e as métricas serão recalculados de modo idempotente durante a migração.
 
@@ -3273,7 +3274,7 @@ Nenhum dado histórico será apagado. Registros antigos recebem projeção compa
 2. Um lead vencido bloqueia vendedor automaticamente; regularização de todos os atrasos o libera sem recuperar turno; pausa manual permanece independente.
 3. Vendedor não vê nem altera lead de outro vendedor; administrador lê tudo, mas recebe erro ao tentar criar comentário ou mudar situação.
 4. Comentário com menos de seis caracteres falha; todo comentário persiste situação primária; desqualificação sem comentário falha; `Ganho + Desqualificado` atualiza as duas métricas; desqualificação encerra o SLA e não bloqueia o vendedor.
-5. Criar vendedor coloca-o ao final da fila; pausar/ativar preserva leads; redefinição de senha invalida sessão anterior; senha não aparece em resposta ou log.
+5. Criar vendedor coloca-o ao final da fila; pausar/ativar preserva leads; senha não vazia é aceita sem política adicional; redefinição de senha invalida sessão anterior; senha não aparece em resposta ou log.
 6. Paginação anterior/próxima funciona nas quatro telas administrativas e não exibe controles falsamente interativos.
 7. E2E em 1440 × 900 valida administrador e vendedor, com captura visual das ações reais e verificação de que não há IDs técnicos como rótulo principal.
 
