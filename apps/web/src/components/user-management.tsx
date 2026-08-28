@@ -12,7 +12,8 @@ export function UserManagement({ users }: { users: Record<string, unknown>[] }) 
       </p>
       {users.map((user, index) => (
         <article className="user-card" key={String(user.id ?? index)}>
-          <strong>{String(user.email ?? user.id ?? "Usuário")}</strong>
+          <strong>{String(user.fullName ?? user.email ?? user.id ?? "Usuário")}</strong>
+          <div className="user-card-meta"><span>{String(user.email ?? "")}</span><span className={`pill ${user.active === false ? "disqualified" : "won"}`}>{user.active === false ? "Inativo" : "Ativo"}</span><span>{user.role === "admin" ? "Administrador" : "Vendedor"}</span></div>
           <div className="user-card-actions">
             <button type="button" disabled>
               Desativar

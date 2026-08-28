@@ -332,6 +332,12 @@ input {
   font-size: 31px;
   letter-spacing: -0.05em;
 }
+.metric-text {
+  overflow: hidden;
+  font-size: 17px !important;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .metric.red strong {
   color: var(--red);
 }
@@ -377,6 +383,9 @@ table {
   border-collapse: collapse;
   text-align: left;
   font-size: 13px;
+}
+.table-card {
+  overflow-x: auto;
 }
 th {
   padding: 11px 24px;

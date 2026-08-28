@@ -9,6 +9,14 @@ export function ResourceTable({
   items: Record<string, unknown>[];
   allowAttempts?: boolean;
 }) {
+  const labels: Record<string, string> = { contactName: "Nome", phoneNormalized: "Telefone", email: "E-mail", document: "CNPJ/MEI", sellerId: "Vendedor", position: "Posição", paused: "Status", leadId: "Lead", type: "Tipo", startedAt: "Início" };
+  const format = (key: string, value: unknown) => {
+    if (value === null || value === undefined || value === "") return "—";
+    if (key === "phoneNormalized") return String(value).replace(/(\d{2})(\d{5})(\d{4})/, "($1) $2-$3");
+    if (key === "paused") return value ? "Pausado" : "Ativo";
+    if (key.endsWith("At") || key.endsWith("Date")) return new Date(String(value)).toLocaleString("pt-BR");
+    return String(value);
+  };
   return (
     <section className="table-card">
       <div className="table-head">
@@ -26,7 +34,7 @@ export function ResourceTable({
               {Object.keys(items[0])
                 .slice(0, 6)
                 .map((key) => (
-                  <th key={key}>{key}</th>
+                  <th key={key}>{labels[key] ?? key}</th>
                 ))}
               {allowAttempts ? <th>Ação</th> : null}
             </tr>
@@ -37,7 +45,7 @@ export function ResourceTable({
                 {Object.keys(items[0])
                   .slice(0, 6)
                   .map((key) => (
-                    <td key={key}>{String(item[key] ?? "—")}</td>
+                    <td key={key}>{format(key, item[key])}</td>
                   ))}
                 {allowAttempts ? (
                   <td>
