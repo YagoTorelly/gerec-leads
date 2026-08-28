@@ -11,6 +11,7 @@ from gerec_api.infrastructure.mongo.collections import MongoCollections
 
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
+SENSITIVE_FIELDS = frozenset({"passwordHash", "tokenHash"})
 
 
 def _admin(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
@@ -36,6 +37,8 @@ def _page(request: Request, current_user: CurrentUser, collection_name: str, que
         item = dict(item)
         if "_id" in item:
             item["id"] = str(item.pop("_id"))
+        for field in SENSITIVE_FIELDS:
+            item.pop(field, None)
         items.append(item)
     total = collection.count_documents(query) if hasattr(collection, "count_documents") else len(items)
     return {"items": items, "page": page, "pageSize": limit, "total": total}

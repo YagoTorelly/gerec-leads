@@ -3,9 +3,10 @@
 ## Entrega
 
 - Criado `vercel.json` para o deploy do workspace Next.js sem segredos versionados. A única variável necessária na Vercel permanece `NEXT_PUBLIC_API_URL`.
-- A API Railway agora envia `X-Gerec-API-Contract-Version: 1` em todas as respostas. Os contratos HTTP verificam a versão, o health check e os limites de validação para auth, imports/leads, queue, operations e admin.
-- A suíte Playwright cobre o visitante sem sessão, login, usuário desativado, navegação de administrador, isolamento do vendedor, ciclo contato → qualificado → ganho idempotente e cinco tentativas antes da desqualificação manual.
-- O workflow GitHub Actions inicia MongoDB em replica set, API Python e Next.js, cria dados isolados de E2E, executa Python, TypeScript/web, contratos e E2E; o encerramento de processos e volumes ocorre com `if: always()`.
+- A API Railway agora envia `X-Gerec-API-Contract-Version: 1` em todas as respostas. Os contratos iniciam um processo FastAPI controlado, com banco em memória, e verificam health, login, sessão, erros e payloads mínimos de auth, imports/leads, queue, operations e admin.
+- A resposta administrativa agora remove `passwordHash` e `tokenHash`. A alteração em `admin.py` foi necessária porque o contrato controlado expôs que `GET /api/admin/users` retornava o hash de senha, contrariando a exigência de não expor segredos.
+- A suíte Playwright cobre o visitante sem sessão, login, usuário desativado, navegação de administrador, isolamento do vendedor, interação de tentativa pela interface, ciclo contato → qualificado → ganho idempotente, nova venda com chave distinta rejeitada e cinco tentativas antes da desqualificação manual.
+- O workflow GitHub Actions inicia MongoDB em replica set, API Python e Next.js, cria dados isolados de E2E, executa Python, verificações web escopadas, contratos e E2E; o encerramento de processos e volumes ocorre com `if: always()`. O `npm run check` global permanece como etapa informativa com `continue-on-error`, pois tem falhas de formatação anteriores à tarefa.
 
 ## Verificação
 
@@ -25,8 +26,8 @@ npm run test
 npm run test:e2e
 1 passed, 6 skipped sem API, credenciais e fixture E2E locais
 
-API_CONTRACT_BASE_URL=http://127.0.0.1:8011 npm run test:contracts
-3 passed
+node --test tests/contracts/api-contracts.test.mjs
+2 passed
 
 node --test tooling/tests/ci-contract.test.mjs
 1 passed

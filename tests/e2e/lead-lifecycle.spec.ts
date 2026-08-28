@@ -35,6 +35,11 @@ async function signIn(page: import("@playwright/test").Page) {
 test("lead passa por contato, qualificação e venda única", async ({ page }) => {
   await signIn(page);
   const leadId = process.env.E2E_LIFECYCLE_LEAD_ID!;
+  const leadRow = page.getByRole("row").filter({ hasText: "Lead privado do vendedor" });
+
+  await expect(leadRow).toBeVisible();
+  await leadRow.getByRole("textbox").fill("Tentativa registrada pela interface");
+  await leadRow.getByRole("button", { name: "Registrar tentativa" }).click();
 
   const feedback = await sellerApi(page, `/api/leads/${leadId}/feedbacks`, {
     comment: "Contato iniciado com retorno do cliente",
@@ -57,9 +62,16 @@ test("lead passa por contato, qualificação e venda única", async ({ page }) =
     comment: "Venda confirmada pelo cliente",
     idempotency_key: "e2e-won",
   });
+  const duplicate = await sellerApi(page, `/api/leads/${leadId}/outcome`, {
+    outcome: "won",
+    comment: "Segunda submissão de venda",
+    idempotency_key: "e2e-won-distinct-key",
+  });
 
   for (const response of [feedback, qualified, won, replay]) expect(response.status()).toBe(200);
   expect(await replay.json()).toEqual(await won.json());
+  expect(duplicate.status()).toBe(409);
+  expect(await duplicate.json()).toEqual({ detail: "lead already has a final outcome" });
 });
 
 test("quinta tentativa habilita desqualificação manual", async ({ page }) => {

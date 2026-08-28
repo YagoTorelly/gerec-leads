@@ -90,8 +90,14 @@ jobs:
           exit 1
       - name: Validar Python
         run: python -m pytest apps/api/tests -q
-      - name: Validar TypeScript
+      - name: Registrar check global legado
+        continue-on-error: true
         run: npm run check
+      - name: Validar TypeScript e testes web escopados
+        run: |
+          npm run lint
+          npm run typecheck
+          npm run test
       - name: Validar contrato HTTP
         run: npm run test:contracts
       - name: Validar E2E

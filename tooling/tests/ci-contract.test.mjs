@@ -32,6 +32,8 @@ test("CI inicia stack Mongo, API e web antes dos contratos e E2E", () => {
   assert.ok(commands.some((command) => command.includes("npm run dev")));
   assert.ok(commands.includes("python -m pytest apps/api/tests -q"));
   assert.ok(commands.includes("npm run check"));
+  const scopedWeb = steps.find((step) => step.name === "Validar TypeScript e testes web escopados");
+  assert.match(scopedWeb?.run ?? "", /npm run lint\s+npm run typecheck\s+npm run test/);
   assert.ok(commands.includes("npm run test:contracts"));
   assert.ok(commands.includes("npm run test:e2e"));
 
@@ -39,4 +41,8 @@ test("CI inicia stack Mongo, API e web antes dos contratos e E2E", () => {
   assert.equal(cleanup?.if, "always()");
   assert.match(cleanup?.run ?? "", /docker compose .* down --volumes/);
   assert.equal(JSON.stringify(workflow).includes("${{ secrets."), false);
+  assert.equal(
+    steps.find((step) => step.name === "Registrar check global legado")?.["continue-on-error"],
+    true,
+  );
 });

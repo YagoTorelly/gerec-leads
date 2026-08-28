@@ -1,52 +1,125 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { dirname, resolve } from "node:path";
+import test, { after, before } from "node:test";
+import { fileURLToPath } from "node:url";
 
-const baseUrl = process.env.API_CONTRACT_BASE_URL?.replace(/\/$/, "");
-const version = "1";
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+const port = 18011;
+const baseUrl = `http://127.0.0.1:${port}`;
+const serverPath = resolve(root, "tests/contracts/api-contract-server.py");
+let server;
+
+async function waitForServer() {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    try {
+      const response = await fetch(`${baseUrl}/health`);
+      if (response.ok) return;
+    } catch {
+      // O processo Python ainda está subindo.
+    }
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+  }
+  throw new Error("Servidor controlado de contrato não iniciou.");
+}
+
+before(async () => {
+  server = spawn("python", [serverPath, "--port", String(port)], {
+    cwd: root,
+    env: { ...process.env, PYTHONPATH: resolve(root, "apps/api/src") },
+    stdio: "pipe",
+  });
+  await waitForServer();
+});
+
+after(async () => {
+  if (!server || server.exitCode !== null) return;
+  server.kill("SIGTERM");
+  await once(server, "exit");
+});
 
 async function request(path, init) {
   const response = await fetch(`${baseUrl}${path}`, init);
-  const contentType = response.headers.get("content-type") ?? "";
-  assert.match(contentType, /application\/json/i);
-  assert.equal(response.headers.get("x-gerec-api-contract-version"), version);
+  assert.match(response.headers.get("content-type") ?? "", /application\/json/i);
+  assert.equal(response.headers.get("x-gerec-api-contract-version"), "1");
   return { response, body: await response.json() };
 }
 
-test("contrato Vercel-Railway expõe versão e health mínimo", { skip: !baseUrl }, async () => {
-  const { response, body } = await request("/health");
-
-  assert.equal(response.status, 200);
-  assert.equal(body.status, "ok");
-  assert.equal(typeof body.database, "string");
-});
-
-test("contrato rejeita payloads inválidos em auth e imports", { skip: !baseUrl }, async () => {
-  const auth = await request("/auth/login", {
+async function login() {
+  const result = await request("/auth/login", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: "{}",
+    body: JSON.stringify({ email: "admin.contract@test", password: "Senha-contrato-2026!" }),
   });
-  const leads = await request("/api/internal/imports/google-sheets/sync", {
+  const token = result.response.headers.get("set-cookie")?.match(/gerec_session=([^;]+)/)?.[1];
+  assert.ok(token);
+  return { ...result, cookie: `gerec_session=${token}` };
+}
+
+test("contrato versionado expõe health e autenticação pública mínima", async () => {
+  const health = await request("/health");
+  const authenticated = await login();
+  const me = await request("/auth/me", { headers: { Cookie: authenticated.cookie } });
+  const invalid = await request("/auth/login", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: "{}",
+    body: JSON.stringify({ email: "admin.contract@test", password: "incorreta" }),
   });
 
-  assert.equal(auth.response.status, 422);
-  assert.ok(Array.isArray(auth.body.detail));
-  assert.equal(leads.response.status, 422);
-  assert.ok(Array.isArray(leads.body.detail));
+  assert.deepEqual(health.body, { status: "ok", database: "gerec_contracts" });
+  assert.equal(authenticated.response.status, 200);
+  assert.deepEqual(authenticated.body.user, {
+    id: "000000000000000000000001",
+    email: "admin.contract@test",
+    role: "admin",
+  });
+  assert.deepEqual(me.body, authenticated.body.user);
+  assert.deepEqual(invalid.body, { detail: "Invalid credentials" });
+  assert.equal(invalid.response.status, 401);
 });
 
-test("contrato mantém limites HTTP de queue, operations e admin", { skip: !baseUrl }, async () => {
-  const [queue, operations, admin] = await Promise.all([
-    request("/api/internal/queue/leads/not-an-id/distribute-normal", { method: "GET" }),
-    request("/api/leads/not-an-id/feedbacks", { method: "GET" }),
-    request("/api/admin/users", { method: "OPTIONS" }),
+test("contrato valida erros e limites de leads, queue, operations e admin", async () => {
+  const session = await login();
+  const [leads, queue, operations, admin] = await Promise.all([
+    request("/api/internal/imports/google-sheets/sync", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    }),
+    request("/api/internal/queue/leads/not-an-id/distribute-normal", {
+      method: "POST",
+      headers: { "content-type": "application/json", "X-Internal-Key": "contract-secret" },
+      body: JSON.stringify({ command_id: "contract-queue" }),
+    }),
+    request("/api/leads/not-an-id/feedbacks", {
+      method: "POST",
+      headers: { "content-type": "application/json", Cookie: session.cookie },
+      body: JSON.stringify({
+        comment: "Contato válido",
+        contact_started: true,
+        idempotency_key: "contract-operation",
+      }),
+    }),
+    request("/api/admin/users?page=1&limit=50", { headers: { Cookie: session.cookie } }),
   ]);
 
-  assert.equal(queue.response.status, 405);
-  assert.equal(operations.response.status, 405);
-  assert.equal(admin.response.status, 405);
-  for (const { body } of [queue, operations, admin]) assert.equal(typeof body.detail, "string");
+  assert.equal(leads.response.status, 422);
+  assert.ok(Array.isArray(leads.body.detail));
+  assert.deepEqual(queue.body, { detail: "Invalid object id" });
+  assert.equal(queue.response.status, 422);
+  assert.deepEqual(operations.body, { detail: "Invalid object id" });
+  assert.equal(operations.response.status, 422);
+  assert.equal(admin.response.status, 200);
+  assert.equal(admin.body.page, 1);
+  assert.equal(admin.body.pageSize, 50);
+  assert.equal(admin.body.total, 1);
+  assert.deepEqual(admin.body.items[0], {
+    id: "000000000000000000000001",
+    emailNormalized: "admin.contract@test",
+    role: "admin",
+    active: true,
+    createdAt: "2026-08-28T00:00:00Z",
+  });
+  assert.equal("passwordHash" in admin.body.items[0], false);
 });
