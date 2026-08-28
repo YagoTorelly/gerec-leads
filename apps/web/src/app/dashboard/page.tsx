@@ -1,6 +1,5 @@
 import { redirect } from "next/navigation";
 import { AppShell } from "../../components/app-shell";
-import { AdminControls } from "../../components/admin-controls";
 import { Pagination } from "../../components/pagination";
 import { ResourceTable } from "../../components/resource-table";
 import { getSessionContext } from "../../lib/auth/session";
@@ -14,7 +13,6 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
   const page = pageNumber((await searchParams).page ?? "1");
   const data = await getDashboardData(session.sessionToken, page);
   return <AppShell profile={session.profile} activePath="/dashboard" heading="Visão geral">
-    {session.profile.role === "admin" ? <AdminControls /> : null}
     <section className="metrics" aria-label="Resumo operacional">
       <div className="metric green"><span>Total de leads</span><strong>{data.leads.total}</strong></div>
       <div className="metric"><span>Leads exibidos</span><strong>{data.leads.items.length}</strong></div>

@@ -100,6 +100,14 @@ class DashboardService:
         if hasattr(cursor, "limit"):
             cursor = cursor.limit(page_size)
         raw_items = list(cursor)
+        if collection_name == MongoCollections.SELLER_QUEUE:
+            state = self._database[MongoCollections.QUEUE_STATE].find_one({"_id": "global"})
+            next_id = (state or {}).get("nextSellerId")
+            if next_id is not None:
+                positions = {item.get("sellerId"): item.get("position", 0) for item in raw_items}
+                start = positions.get(next_id)
+                if start is not None:
+                    raw_items.sort(key=lambda item: (item.get("position", 0) - start) % max(len(raw_items), 1))
         items = [self._enrich(collection_name, item) for item in raw_items]
         total = collection.count_documents(dict(query)) if hasattr(collection, "count_documents") else len(items)
         return {"items": items, "page": page, "pageSize": page_size, "total": total}
