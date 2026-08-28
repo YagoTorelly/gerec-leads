@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import logging
+import traceback
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -149,4 +151,13 @@ def scheduler_exit_code(result: JobResult) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(scheduler_exit_code(run_due_jobs(datetime.now(UTC))))
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.info("google_sheets_sync starting")
+    try:
+        result = run_due_jobs(datetime.now(UTC))
+        logging.info("google_sheets_sync finished: %s", result)
+        raise SystemExit(scheduler_exit_code(result))
+    except Exception:
+        logging.error("google_sheets_sync failed")
+        traceback.print_exc()
+        raise
