@@ -7,6 +7,7 @@ from pymongo.database import Database
 
 from gerec_api.infrastructure.mongo.collections import MongoCollections, collection
 from gerec_api.infrastructure.mongo.indexes import INDEXES
+from gerec_api.infrastructure.mongo.migrations.runner import run_migrations
 
 
 SCHEMA_VALIDATORS: Final[dict[str, dict[str, Any]]] = {
@@ -50,6 +51,24 @@ SCHEMA_VALIDATORS: Final[dict[str, dict[str, Any]]] = {
                 "companyId": {"bsonType": "objectId"},
                 "campaignId": {"bsonType": "objectId"},
                 "archivedAt": {"bsonType": ["date", "null"]},
+                "commercialStatus": {"enum": ["undefined", "negotiation", "won"]},
+                "isDisqualified": {"bsonType": "bool"},
+                "commentCount": {"bsonType": "int", "minimum": 0},
+                "lastCommentAt": {"bsonType": ["date", "null"]},
+                "feedbackDueAt": {"bsonType": ["date", "null"]},
+                "feedbackReminderAt": {"bsonType": ["date", "null"]},
+            },
+        }
+    },
+    MongoCollections.LEAD_TREATMENTS: {
+        "$jsonSchema": {
+            "bsonType": "object",
+            "required": ["leadId", "comment", "createdAt", "idempotencyKey"],
+            "properties": {
+                "leadId": {"bsonType": "objectId"},
+                "comment": {"bsonType": "string", "minLength": 6},
+                "createdAt": {"bsonType": "date"},
+                "idempotencyKey": {"bsonType": "string", "minLength": 1},
             },
         }
     },
@@ -96,6 +115,8 @@ def ensure_schema(db: Database) -> None:
 
     for index in INDEXES:
         index.apply(collection(db, index.collection_name))
+
+    run_migrations(db)
 
 
 def _ensure_collection_validator(db: Database, name: str, validator: dict[str, Any]) -> None:

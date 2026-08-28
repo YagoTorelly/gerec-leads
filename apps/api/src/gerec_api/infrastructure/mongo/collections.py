@@ -34,6 +34,8 @@ class MongoCollections:
     AUDIT_LOG: Final = "audit_log"
     SYSTEM_SETTINGS: Final = "system_settings"
     COMMAND_RESULTS: Final = "command_results"
+    LEAD_TREATMENTS: Final = "lead_treatments"
+    SCHEMA_MIGRATIONS: Final = "schema_migrations"
 
     ALL: Final = (
         USERS,
@@ -61,6 +63,8 @@ class MongoCollections:
         AUDIT_LOG,
         SYSTEM_SETTINGS,
         COMMAND_RESULTS,
+        LEAD_TREATMENTS,
+        SCHEMA_MIGRATIONS,
     )
 
 

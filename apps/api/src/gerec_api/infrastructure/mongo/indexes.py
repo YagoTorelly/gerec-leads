@@ -154,6 +154,30 @@ INDEXES: Final[tuple[MongoIndex, ...]] = (
         unique=True,
     ),
     MongoIndex(
+        MongoCollections.LEAD_TREATMENTS,
+        (("leadId", ASCENDING), ("createdAt", ASCENDING)),
+        "lead_treatments_lead_created_at",
+    ),
+    MongoIndex(
+        MongoCollections.LEAD_TREATMENTS,
+        (("leadId", ASCENDING), ("idempotencyKey", ASCENDING)),
+        "lead_treatments_lead_idempotency_key_unique",
+        unique=True,
+    ),
+    MongoIndex(
+        MongoCollections.SELLER_QUEUE,
+        (("sellerId", ASCENDING),),
+        "seller_queue_seller_unique",
+        unique=True,
+    ),
+    MongoIndex(
+        MongoCollections.SELLER_QUEUE,
+        (("position", ASCENDING),),
+        "seller_queue_position_present_unique",
+        unique=True,
+        partial_filter={"position": {"$exists": True}},
+    ),
+    MongoIndex(
         MongoCollections.NOTIFICATION_OUTBOX,
         (("idempotencyKey", ASCENDING),),
         "notification_outbox_idempotency_key_unique",

@@ -103,8 +103,19 @@ def test_index_contract_covers_each_persisted_identity_and_active_lifecycle() ->
     assert definitions["command_results_idempotency_key_unique"].keys == (("idempotencyKey", 1),)
     assert definitions["notification_outbox_idempotency_key_unique"].keys == (("idempotencyKey", 1),)
     assert definitions["notification_incidents_outbox_event_unique"].keys == (("outboxEventId", 1),)
+    assert definitions["lead_treatments_lead_created_at"].keys == (("leadId", 1), ("createdAt", 1))
+    assert definitions["lead_treatments_lead_created_at"].unique is False
+    assert definitions["lead_treatments_lead_idempotency_key_unique"].keys == (("leadId", 1), ("idempotencyKey", 1))
+    assert definitions["seller_queue_seller_unique"].keys == (("sellerId", 1),)
+    assert definitions["seller_queue_position_present_unique"].partial_filter == {
+        "position": {"$exists": True}
+    }
     assert MongoCollections.AUTOMATION_JOB_LOCKS in MongoCollections.ALL
-    assert all(definition.unique for definition in INDEXES)
+    assert all(
+        definition.unique
+        for definition in INDEXES
+        if definition.name != "lead_treatments_lead_created_at"
+    )
 
 
 def test_command_results_enforce_idempotency_key_and_command_receipt_shape() -> None:
