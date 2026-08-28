@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
+from bson import ObjectId
 
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
@@ -175,7 +176,7 @@ class SyncJob:
                     and result.lead_id not in distributed_leads
                 ):
                     self._queue_service.distribute_ready(
-                        result.lead_id,
+                        _mongo_id(result.lead_id),
                         f"sync:{snapshot_id}:distribute:{result.lead_id}",
                     )
                     distributed_leads.add(result.lead_id)
@@ -228,3 +229,7 @@ def run_sync(source: Any, run_id: str) -> SyncResult:
         ),
         leases=MongoSyncLeaseRepository(database),
     ).run(source, run_id)
+
+
+def _mongo_id(value: str) -> Any:
+    return ObjectId(value) if ObjectId.is_valid(value) else value
