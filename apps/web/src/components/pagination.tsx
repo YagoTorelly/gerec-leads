@@ -1,13 +1,62 @@
 import type { Page } from "../lib/api/types";
 
-export function Pagination({ href, page }: { href: string; page: Page<unknown> }) {
-  const query = (number: number) => `${href}?page=${number}`;
+type SearchParams = Record<string, string | string[] | undefined>;
+
+function preservedParams(searchParams: SearchParams): Array<[string, string]> {
+  return Object.entries(searchParams).flatMap(([key, value]) => {
+    if (key === "page" || value === undefined) return [];
+    return Array.isArray(value)
+      ? value.map((entry) => [key, entry] as [string, string])
+      : [[key, value]];
+  });
+}
+
+export function Pagination({
+  href,
+  page,
+  searchParams = {},
+}: {
+  href: string;
+  page: Page<unknown>;
+  searchParams?: SearchParams;
+}) {
   const lastPage = Math.max(1, Math.ceil(page.total / page.pageSize));
+  const previousPage = Math.max(1, page.page - 1);
+  const nextPage = Math.min(lastPage, page.page + 1);
+  const params = preservedParams(searchParams);
   return (
     <nav className="pagination" aria-label="Paginação">
-      {page.page > 1 ? <a href={query(page.page - 1)}>Anterior</a> : <span aria-disabled="true">Anterior</span>}
-      <strong>Página {page.page} de {lastPage}</strong>
-      {page.page < lastPage ? <a href={query(page.page + 1)}>Próxima</a> : <span aria-disabled="true">Próxima</span>}
+      <form action={href} method="get">
+        {params.map(([key, value], index) => (
+          <input key={`${key}-${index}`} type="hidden" name={key} value={value} />
+        ))}
+        <button
+          type="submit"
+          name="page"
+          value={previousPage}
+          disabled={page.page <= 1}
+          aria-label="Página anterior"
+        >
+          Anterior
+        </button>
+      </form>
+      <strong>
+        Página {page.page} de {lastPage}
+      </strong>
+      <form action={href} method="get">
+        {params.map(([key, value], index) => (
+          <input key={`${key}-${index}`} type="hidden" name={key} value={value} />
+        ))}
+        <button
+          type="submit"
+          name="page"
+          value={nextPage}
+          disabled={page.page >= lastPage}
+          aria-label="Próxima página"
+        >
+          Próxima
+        </button>
+      </form>
     </nav>
   );
 }

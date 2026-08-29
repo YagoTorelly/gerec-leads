@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { AppShell } from "../../components/app-shell";
 import { Pagination } from "../../components/pagination";
-import { ResourceTable } from "../../components/resource-table";
+import { TreatmentHistoryTable } from "../../components/treatment-history-table";
 import { getSessionContext } from "../../lib/auth/session";
 import { getDashboardData, pageNumber } from "../../lib/dashboard/queries";
 
@@ -9,12 +9,13 @@ export const dynamic = "force-dynamic";
 export default async function HistoryPage({
   searchParams,
 }: {
-  searchParams: Promise<{ page?: string }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const session = await getSessionContext();
   if (session.status !== "authenticated") redirect("/login");
   if (session.profile.role !== "admin") redirect("/dashboard");
-  const page = pageNumber((await searchParams).page ?? "1");
+  const params = await searchParams;
+  const page = pageNumber(typeof params.page === "string" ? params.page : "1");
   const data = await getDashboardData(session.sessionToken, page);
   return (
     <AppShell
@@ -23,8 +24,8 @@ export default async function HistoryPage({
       eyebrow="Histórico auditável"
       heading="Histórico"
     >
-      <ResourceTable title="Atribuições" items={data.history.items} />
-      <Pagination href="/historico" page={data.history} />
+      <TreatmentHistoryTable treatments={data.history.items} />
+      <Pagination href="/historico" page={data.history} searchParams={params} />
     </AppShell>
   );
 }

@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 
 import { AppShell } from "../../components/app-shell";
-import { ResourceTable } from "../../components/resource-table";
+import { QueueTable } from "../../components/queue-table";
 import { getSessionContext } from "../../lib/auth/session";
 import { getDashboardData, isAdminDashboard, pageNumber } from "../../lib/dashboard/queries";
 
@@ -21,8 +21,13 @@ export default async function QueuePage({
   if (!isAdminDashboard(data)) redirect("/dashboard");
 
   return (
-    <AppShell profile={session.profile} activePath="/fila" eyebrow="Fila comercial" heading="Fila de leads">
-      <ResourceTable title="Fila" items={data.queue.items} />
+    <AppShell
+      profile={session.profile}
+      activePath="/fila"
+      eyebrow="Fila comercial"
+      heading="Fila de leads"
+    >
+      <QueueTable queue={data.queue} />
     </AppShell>
   );
 }
