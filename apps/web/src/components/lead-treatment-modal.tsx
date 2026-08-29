@@ -14,10 +14,10 @@ import {
   formatDisqualificationMarker,
 } from "../lib/dashboard/format";
 import {
-  initialTreatmentActionState,
   loadLeadTreatmentHistoryAction,
   submitLeadTreatmentAction,
 } from "../lib/operations/treatment-actions";
+import { initialTreatmentActionState } from "../lib/operations/treatment-state";
 
 export type TreatmentDraft = {
   comment: string;

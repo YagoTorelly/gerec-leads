@@ -4,19 +4,11 @@ import { randomUUID } from "node:crypto";
 import { revalidatePath } from "next/cache";
 
 import { ApiRequestError, getLeadTreatments, submitLeadTreatment } from "../api/client";
-import type { CommercialStatus, Treatment, TreatmentSubmission } from "../api/types";
+import type { CommercialStatus, Treatment } from "../api/types";
 import { getSessionContext } from "../auth/session";
+import type { TreatmentActionState } from "./treatment-state";
 
-export type TreatmentActionState =
-  | { status: "idle"; message: null; submission: null }
-  | { status: "error"; message: string; submission: null }
-  | { status: "success"; message: string; submission: TreatmentSubmission };
-
-export const initialTreatmentActionState: TreatmentActionState = {
-  status: "idle",
-  message: null,
-  submission: null,
-};
+export type { TreatmentActionState } from "./treatment-state";
 
 type TreatmentHistoryResult =
   | { status: "success"; items: Treatment[] }
@@ -41,7 +33,11 @@ export async function submitLeadTreatmentAction(
   const isDisqualified = formData.get("isDisqualified") === "on";
 
   if (!leadId || !status || comment.length < 6) {
-    return { status: "error", message: "Escreva um comentário com ao menos 6 caracteres.", submission: null };
+    return {
+      status: "error",
+      message: "Escreva um comentário com ao menos 6 caracteres.",
+      submission: null,
+    };
   }
 
   const session = await getSessionContext();
@@ -68,7 +64,9 @@ export async function submitLeadTreatmentAction(
   }
 }
 
-export async function loadLeadTreatmentHistoryAction(leadId: string): Promise<TreatmentHistoryResult> {
+export async function loadLeadTreatmentHistoryAction(
+  leadId: string,
+): Promise<TreatmentHistoryResult> {
   const session = await getSessionContext();
   if (session.status !== "authenticated") {
     return { status: "error", message: "Sessão expirada. Entre novamente.", items: [] };

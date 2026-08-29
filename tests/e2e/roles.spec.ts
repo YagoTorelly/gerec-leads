@@ -1,32 +1,28 @@
 import { expect, test } from "@playwright/test";
 
-const configured = Boolean(
-  process.env.E2E_EMAIL && process.env.E2E_PASSWORD && process.env.E2E_SELLER_EMAIL,
-);
+import { resetFixture, signIn } from "./fixture";
 
-test.skip(!configured, "Requer usuários E2E e API inicializada.");
+test.beforeEach(async ({ page }) => resetFixture(page));
 
-async function signIn(page: import("@playwright/test").Page, email: string) {
-  await page.goto("/login");
-  await page.getByLabel("E-mail").fill(email);
-  await page.getByLabel("Senha").fill(process.env.E2E_PASSWORD!);
-  await page.getByRole("button", { name: "Entrar no sistema" }).click();
-  await expect(page).toHaveURL(/\/dashboard$/);
-}
-
-test("administrador vê navegação global", async ({ page }) => {
-  await signIn(page, process.env.E2E_EMAIL!);
-
+test("administrador vê a navegação global e Jessica como próxima na fila", async ({ page }) => {
+  await signIn(page, "admin");
   await expect(page.getByRole("link", { name: "Usuários" })).toBeVisible();
-  await page.getByRole("link", { name: "Usuários" }).click();
-  await expect(page).toHaveURL(/\/usuarios$/);
-  await expect(page.getByText(process.env.E2E_SELLER_EMAIL!)).toBeVisible();
+  await expect(page.getByText("Próximo vendedor")).toBeVisible();
+  await expect(page.getByText("Jessica", { exact: true }).first()).toBeVisible();
+
+  await page.getByRole("link", { name: "Fila de leads" }).click();
+  await expect(page.getByText("Próximo elegível")).toBeVisible();
+  await expect(page.getByText("Jessica", { exact: true }).first()).toBeVisible();
 });
 
-test("vendedor não vê colegas nem controle administrativo", async ({ page }) => {
-  await signIn(page, process.env.E2E_SELLER_EMAIL!);
-
+test("vendedor só vê a própria operação e URLs globais retornam ao dashboard", async ({ page }) => {
+  await signIn(page, "seller");
   await expect(page.getByRole("link", { name: "Usuários" })).toHaveCount(0);
-  await expect(page.getByText("Lead privado do vendedor")).toBeVisible();
-  await expect(page.getByText("Lead da Jessica")).toHaveCount(0);
+  await expect(page.getByText("Lead Jessica 1", { exact: true })).toBeVisible();
+  await expect(page.getByText("Renato", { exact: true })).toHaveCount(0);
+
+  for (const path of ["/fila", "/historico", "/usuarios"]) {
+    await page.goto(path);
+    await expect(page).toHaveURL(/\/dashboard$/);
+  }
 });
