@@ -17,7 +17,24 @@ export default async function DashboardPage({
   if (session.status !== "authenticated") redirect("/login");
 
   const page = pageNumber((await searchParams).page ?? "1");
-  const dashboard = await getDashboardData(session.sessionToken, page);
+  let dashboard: Awaited<ReturnType<typeof getDashboardData>> | null = null;
+  try {
+    dashboard = await getDashboardData(session.sessionToken, page);
+  } catch {
+    // A tela não expõe detalhes internos da falha da API.
+  }
+
+  if (dashboard === null) {
+    return (
+      <AppShell profile={session.profile} activePath="/dashboard" heading="Visão geral">
+        <section className="dashboard-panel unavailable-state" aria-live="polite">
+          <p className="eyebrow">Dados indisponíveis</p>
+          <h2>Não foi possível carregar a visão geral.</h2>
+          <p className="dashboard-copy">Tente atualizar a página em alguns instantes.</p>
+        </section>
+      </AppShell>
+    );
+  }
 
   return (
     <AppShell profile={session.profile} activePath="/dashboard" heading="Visão geral">

@@ -13,6 +13,7 @@ export default async function HistoryPage({
 }) {
   const session = await getSessionContext();
   if (session.status !== "authenticated") redirect("/login");
+  if (session.profile.role !== "admin") redirect("/dashboard");
   const page = pageNumber((await searchParams).page ?? "1");
   const data = await getDashboardData(session.sessionToken, page);
   return (

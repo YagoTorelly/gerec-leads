@@ -94,6 +94,18 @@ describe("dashboards por papel", () => {
     expect(markup).toContain("Bloqueado por atraso");
   });
 
+  it("orienta o administrador quando não há vendedores disponíveis na fila", () => {
+    const markup = renderToStaticMarkup(createElement(AdminDashboard, {
+      dashboard: {
+        ...adminDashboard,
+        queue: { items: [], total: 0, nextSellerName: "Não informado", cursorSellerName: "Não informado" },
+      },
+    }));
+
+    expect(markup).toContain("Nenhum vendedor disponível na fila.");
+    expect(markup).toContain("Cadastre ou ative um vendedor para retomar a distribuição.");
+  });
+
   it("renderiza a operação própria do vendedor sem nomes ou indicadores dos colegas", () => {
     const markup = renderToStaticMarkup(createElement(SellerDashboard, { dashboard: sellerDashboard }));
 

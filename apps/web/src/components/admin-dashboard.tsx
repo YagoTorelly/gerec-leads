@@ -59,10 +59,14 @@ export function AdminDashboard({ dashboard }: { dashboard: AdminDashboardData })
             <div><p className="eyebrow">Distribuição</p><h2>Fila comercial</h2></div>
             <a className="text-link" href="/fila">Ver fila completa</a>
           </header>
-          <p className="queue-cursor">Próxima vez: <strong>{dashboard.queue.cursorSellerName}</strong></p>
-          <ol className="queue-list" aria-label="Fila comercial completa">
-            {dashboard.queue.items.map((item) => <QueueCard item={item} key={item.sellerName} />)}
-          </ol>
+          {dashboard.queue.items.length === 0 ? (
+            <p className="empty-state">Nenhum vendedor disponível na fila. Cadastre ou ative um vendedor para retomar a distribuição.</p>
+          ) : <>
+            <p className="queue-cursor">Próxima vez: <strong>{dashboard.queue.cursorSellerName}</strong></p>
+            <ol className="queue-list" aria-label="Fila comercial completa">
+              {dashboard.queue.items.map((item) => <QueueCard item={item} key={item.sellerName} />)}
+            </ol>
+          </>}
         </section>
 
         <section className="dashboard-panel">
