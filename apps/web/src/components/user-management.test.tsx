@@ -225,10 +225,12 @@ describe("gestão operacional de usuários", () => {
     expect(screen.getByRole("button", { name: "Salvar nova senha" })).toBeTruthy();
   });
 
-  it("redireciona à primeira página após criar em uma página posterior", async () => {
+  it("troca para os dados reais da primeira página após criar em uma página posterior", async () => {
     actions.create.mockResolvedValue({ status: "success", message: "Usuário criado.", user: createdSeller });
     const user = userEvent.setup();
-    render(<UserManagement users={users} page={2} />);
+    const pageTwoUsers = [users[1]];
+    const pageOneUsers = [users[0], createdSeller];
+    const view = render(<UserManagement key="users-page-2" users={pageTwoUsers} page={2} />);
 
     await user.click(screen.getByRole("button", { name: "Novo usuário" }));
     await user.type(screen.getByLabelText("Nome completo"), "Sandra");
@@ -237,6 +239,8 @@ describe("gestão operacional de usuários", () => {
     await user.click(screen.getByRole("button", { name: "Criar usuário" }));
 
     await waitFor(() => expect(navigation.push).toHaveBeenCalledWith("/usuarios"));
-    expect(screen.queryByText("Sandra")).toBeNull();
+    view.rerender(<UserManagement key="users-page-1" users={pageOneUsers} page={1} />);
+    expect(screen.getByText("Sandra")).toBeTruthy();
+    expect(screen.queryByText("Renato")).toBeNull();
   });
 });
