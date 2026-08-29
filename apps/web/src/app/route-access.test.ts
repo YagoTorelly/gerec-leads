@@ -15,6 +15,7 @@ vi.mock("../lib/dashboard/queries", async (importOriginal) => ({
 }));
 
 import DashboardPage from "./dashboard/page";
+import QueuePage from "./fila/page";
 import HistoryPage from "./historico/page";
 
 const sellerSession = {
@@ -43,16 +44,25 @@ describe("proteção das rotas operacionais", () => {
     expect(getDashboardData).not.toHaveBeenCalled();
   });
 
+  it("redireciona vendedor que tenta abrir a fila global por URL antes da consulta", async () => {
+    getSessionContext.mockResolvedValue(sellerSession);
+
+    await expect(QueuePage({ searchParams: Promise.resolve({}) })).rejects.toThrow("REDIRECT:/dashboard");
+    expect(redirect).toHaveBeenCalledWith("/dashboard");
+    expect(getDashboardData).not.toHaveBeenCalled();
+  });
+
   it("renderiza um estado seguro quando a API não disponibiliza o dashboard", async () => {
     getSessionContext.mockResolvedValue({
       ...sellerSession,
       profile: { ...sellerSession.profile, role: "admin" as const },
     });
-    getDashboardData.mockRejectedValue(new Error("API indisponível"));
+    getDashboardData.mockRejectedValue(new Error("INTERNAL_DETAIL_X"));
 
     const markup = renderToStaticMarkup(await DashboardPage({ searchParams: Promise.resolve({}) }));
 
     expect(markup).toContain("Não foi possível carregar a visão geral.");
     expect(markup).toContain("Tente atualizar a página em alguns instantes.");
+    expect(markup).not.toContain("INTERNAL_DETAIL_X");
   });
 });
