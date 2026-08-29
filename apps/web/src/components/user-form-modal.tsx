@@ -33,12 +33,17 @@ export function UserFormModal({ onClose, onCreated, onSubmit }: {
     if (!canSubmit) return;
     setPending(true);
     setError(null);
-    const result = await onSubmit({ fullName: fullName.trim(), email: email.trim(), role, password });
-    setPending(false);
-    if (result.status === "success") {
-      setPassword("");
-      onCreated(result.user, result.message);
-    } else setError(result.message);
+    try {
+      const result = await onSubmit({ fullName: fullName.trim(), email: email.trim(), role, password });
+      if (result.status === "success") {
+        setPassword("");
+        onCreated(result.user, result.message);
+      } else setError(result.message);
+    } catch {
+      setError("Não foi possível concluir a ação. Tente novamente.");
+    } finally {
+      setPending(false);
+    }
   }
 
   return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {

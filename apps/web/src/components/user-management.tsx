@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 
 import type { ManagedUser } from "../lib/api/types";
 import {
@@ -28,7 +29,8 @@ function replaceUser(users: ManagedUser[], updated: ManagedUser): ManagedUser[] 
   return users.map((user) => (user.id === updated.id ? updated : user));
 }
 
-export function UserManagement({ users: initialUsers }: { users: ManagedUser[] }) {
+export function UserManagement({ users: initialUsers, page = 1 }: { users: ManagedUser[]; page?: number }) {
+  const router = useRouter();
   const [users, setUsers] = useState(initialUsers);
   const [newUserOpen, setNewUserOpen] = useState(false);
   const [passwordUser, setPasswordUser] = useState<ManagedUser | null>(null);
@@ -45,14 +47,19 @@ export function UserManagement({ users: initialUsers }: { users: ManagedUser[] }
   async function confirmAvailability() {
     if (!availabilityConfirmation) return;
     setPendingAvailability(true);
-    const result = await setManagedUserAvailabilityAction(
-      availabilityConfirmation.user.id,
-      availabilityConfirmation.paused,
-    );
-    setPendingAvailability(false);
-    setAvailabilityConfirmation(null);
-    if (result.status === "success") setUsers((current) => replaceUser(current, result.user));
-    setNotice(result.message);
+    try {
+      const result = await setManagedUserAvailabilityAction(
+        availabilityConfirmation.user.id,
+        availabilityConfirmation.paused,
+      );
+      if (result.status === "success") setUsers((current) => replaceUser(current, result.user));
+      setNotice(result.message);
+    } catch {
+      setNotice("Não foi possível concluir a ação. Tente novamente.");
+    } finally {
+      setPendingAvailability(false);
+      setAvailabilityConfirmation(null);
+    }
   }
 
   return (
@@ -97,9 +104,13 @@ export function UserManagement({ users: initialUsers }: { users: ManagedUser[] }
         onClose={closeNewUser}
         onSubmit={createManagedUserAction}
         onCreated={(user, message) => {
-          setUsers((current) => [...current, user]);
           setNotice(message);
           closeNewUser();
+          if (page > 1) {
+            router.push("/usuarios");
+            return;
+          }
+          setUsers((current) => [...current, user]);
         }}
       /> : null}
       {passwordUser ? <UserPasswordModal

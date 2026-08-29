@@ -32,14 +32,20 @@ export function UserPasswordModal({ user, onClose, onReset, onSuccess }: {
   async function resetPassword() {
     setPending(true);
     setError(null);
-    const result = await onReset(user.id, password);
-    setPending(false);
-    if (result.status === "success") {
-      setPassword("");
-      onSuccess(result.user, result.message);
-    } else {
+    try {
+      const result = await onReset(user.id, password);
+      if (result.status === "success") {
+        setPassword("");
+        onSuccess(result.user, result.message);
+        return;
+      }
       setConfirming(false);
       setError(result.message);
+    } catch {
+      setConfirming(false);
+      setError("Não foi possível concluir a ação. Tente novamente.");
+    } finally {
+      setPending(false);
     }
   }
 

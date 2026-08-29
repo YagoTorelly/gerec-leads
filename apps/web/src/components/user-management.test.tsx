@@ -12,11 +12,15 @@ const actions = vi.hoisted(() => ({
   resetPassword: vi.fn(),
 }));
 
+const navigation = vi.hoisted(() => ({ push: vi.fn(), refresh: vi.fn() }));
+
 vi.mock("../lib/users/actions", () => ({
   createManagedUserAction: actions.create,
   setManagedUserAvailabilityAction: actions.availability,
   resetManagedUserPasswordAction: actions.resetPassword,
 }));
+
+vi.mock("next/navigation", () => ({ useRouter: () => navigation }));
 
 import { UserManagement } from "./user-management";
 
@@ -177,5 +181,62 @@ describe("gestão operacional de usuários", () => {
 
     expect(await screen.findByText("Revise os dados informados e tente novamente.")).toBeTruthy();
     expect(screen.getByRole("dialog", { name: "Novo usuário" })).toBeTruthy();
+  });
+
+  it("recupera rejeição do cadastro sem manter o botão em carregamento", async () => {
+    actions.create.mockRejectedValue(new Error("segredo técnico"));
+    const user = userEvent.setup();
+    render(<UserManagement users={users} />);
+
+    await user.click(screen.getByRole("button", { name: "Novo usuário" }));
+    await user.type(screen.getByLabelText("Nome completo"), "Sandra");
+    await user.type(screen.getByLabelText("E-mail"), "sandra@wtgseguros.com.br");
+    await user.type(screen.getByLabelText("Senha inicial"), "senha inicial");
+    await user.click(screen.getByRole("button", { name: "Criar usuário" }));
+
+    expect(await screen.findByText("Não foi possível concluir a ação. Tente novamente.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Criar usuário" })).toBeTruthy();
+  });
+
+  it("recupera rejeição da pausa sem deixar a confirmação bloqueada", async () => {
+    actions.availability.mockRejectedValue(new Error("segredo técnico"));
+    const user = userEvent.setup();
+    render(<UserManagement users={users} />);
+
+    await user.click(screen.getByRole("button", { name: "Pausar Renato" }));
+    await user.click(screen.getByRole("button", { name: "Confirmar pausa" }));
+
+    expect((await screen.findByRole("status")).textContent).toContain("Não foi possível concluir a ação. Tente novamente.");
+    expect(screen.queryByRole("button", { name: "Salvando…" })).toBeNull();
+  });
+
+  it("recupera rejeição da redefinição de senha no formulário", async () => {
+    actions.resetPassword.mockRejectedValue(new Error("segredo técnico"));
+    const user = userEvent.setup();
+    render(<UserManagement users={users} />);
+
+    await user.click(screen.getByRole("button", { name: "Redefinir senha de Renato" }));
+    await user.type(screen.getByLabelText("Nova senha"), "nova senha secreta");
+    await user.click(screen.getByRole("button", { name: "Salvar nova senha" }));
+    await user.click(screen.getByRole("button", { name: "Confirmar redefinição" }));
+
+    expect(await screen.findByText("Não foi possível concluir a ação. Tente novamente.")).toBeTruthy();
+    expect(screen.getByRole("dialog", { name: "Redefinir senha" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Salvar nova senha" })).toBeTruthy();
+  });
+
+  it("redireciona à primeira página após criar em uma página posterior", async () => {
+    actions.create.mockResolvedValue({ status: "success", message: "Usuário criado.", user: createdSeller });
+    const user = userEvent.setup();
+    render(<UserManagement users={users} page={2} />);
+
+    await user.click(screen.getByRole("button", { name: "Novo usuário" }));
+    await user.type(screen.getByLabelText("Nome completo"), "Sandra");
+    await user.type(screen.getByLabelText("E-mail"), "sandra@wtgseguros.com.br");
+    await user.type(screen.getByLabelText("Senha inicial"), "senha inicial");
+    await user.click(screen.getByRole("button", { name: "Criar usuário" }));
+
+    await waitFor(() => expect(navigation.push).toHaveBeenCalledWith("/usuarios"));
+    expect(screen.queryByText("Sandra")).toBeNull();
   });
 });

@@ -22,7 +22,7 @@ export default async function UsersPage({
 
   return (
     <AppShell profile={session.profile} activePath="/usuarios" eyebrow="Administração" heading="Usuários">
-      <UserManagement users={users.items} />
+      <UserManagement users={users.items} page={users.page} />
       <Pagination href="/usuarios" page={users} />
     </AppShell>
   );
