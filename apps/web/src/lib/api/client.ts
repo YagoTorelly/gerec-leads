@@ -41,30 +41,9 @@ function messageForStatus(status: number): string {
 }
 
 async function errorMessage(response: Response): Promise<string> {
-  try {
-    const payload: unknown = await response.json();
-    if (typeof payload === "object" && payload !== null && "detail" in payload) {
-      const detail = payload.detail;
-      if (typeof detail === "string" && detail.trim() && !isTechnicalDetail(response.status, detail)) {
-        return detail;
-      }
-    }
-  } catch {
-    // A API pode responder sem corpo em erros HTTP.
-  }
+  // O corpo de erro é um contrato técnico da API. Nunca o exponha ao usuário:
+  // pode conter termos internos, texto em outro idioma ou dados sensíveis.
   return messageForStatus(response.status);
-}
-
-function isTechnicalDetail(status: number, detail: string): boolean {
-  if (status === 401 || status === 403) return true;
-  return new Set([
-    "email already registered",
-    "forbidden",
-    "invalid object id",
-    "invalid session",
-    "unauthorized",
-    "user not found",
-  ]).has(detail.trim().toLocaleLowerCase("en-US"));
 }
 
 export async function apiRequest(path: string, init: RequestInit = {}): Promise<Response> {

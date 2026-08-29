@@ -30,7 +30,7 @@ describe("cliente HTTP operacional", () => {
     );
   });
 
-  it("preserva mensagem específica de validação da API que já é legível", async () => {
+  it("não devolve detalhes arbitrários de validação", async () => {
     vi.stubEnv("NEXT_PUBLIC_API_URL", "https://api.wtg.example");
     vi.stubGlobal(
       "fetch",
@@ -41,7 +41,7 @@ describe("cliente HTTP operacional", () => {
 
     await expect(apiFetch("/api/leads/inválido/attempts")).rejects.toMatchObject({
       status: 422,
-      message: "Lead inválido",
+      message: "Revise os dados informados e tente novamente.",
     });
   });
 
@@ -63,6 +63,22 @@ describe("cliente HTTP operacional", () => {
     [409, "Email already registered", "A operação conflita com o estado atual. Atualize os dados e tente novamente."],
     [422, "Invalid object id", "Revise os dados informados e tente novamente."],
   ])("não expõe detalhe técnico HTTP %i", async (status, detail, message) => {
+    vi.stubEnv("NEXT_PUBLIC_API_URL", "https://api.wtg.example");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail }), { status })),
+    );
+
+    await expect(apiFetch("/api/dashboard")).rejects.toMatchObject({ status, message });
+  });
+
+  it.each([
+    [409, "queue changed concurrently", "A operação conflita com o estado atual. Atualize os dados e tente novamente."],
+    [409, "retry user creation", "A operação conflita com o estado atual. Atualize os dados e tente novamente."],
+    [422, "password is required", "Revise os dados informados e tente novamente."],
+    [422, "paused must be a boolean", "Revise os dados informados e tente novamente."],
+    [422, "MONGODB_URI=mongodb://internal-secret", "Revise os dados informados e tente novamente."],
+  ])("nunca expõe detalhe operacional ou segredo HTTP %i", async (status, detail, message) => {
     vi.stubEnv("NEXT_PUBLIC_API_URL", "https://api.wtg.example");
     vi.stubGlobal(
       "fetch",
