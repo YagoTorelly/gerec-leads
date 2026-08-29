@@ -68,6 +68,50 @@ describe("acessibilidade e interação do modal de tratativa", () => {
     expect(actions.submit).not.toHaveBeenCalled();
   });
 
+  it("mantém Tab e Shift+Tab dentro do formulário com múltiplos controles", async () => {
+    const user = userEvent.setup();
+    render(<LeadTreatmentModal lead={lead} mode="write" />);
+
+    await user.click(screen.getByRole("button", { name: "Registrar tratativa" }));
+    await user.type(screen.getByLabelText("Comentário"), "Contato realizado por telefone.");
+    const close = screen.getByRole("button", { name: "Fechar janela" });
+    const submit = screen.getByRole("button", { name: "Salvar tratativa" });
+    const comment = screen.getByLabelText("Comentário");
+    close.focus();
+
+    await user.tab({ shift: true });
+    expect(document.activeElement).toBe(submit);
+    await user.tab();
+    expect(document.activeElement).toBe(close);
+    await user.tab();
+    expect(document.activeElement).toBe(comment);
+  });
+
+  it("mostra carregamento e depois renderiza o histórico devolvido pela API", async () => {
+    let resolveHistory: ((value: { status: "success"; items: Treatment[] }) => void) | undefined;
+    actions.loadHistory.mockImplementation(() => new Promise<{ status: "success"; items: Treatment[] }>((resolve) => {
+      resolveHistory = resolve;
+    }));
+    const user = userEvent.setup();
+    render(<LeadTreatmentModal lead={lead} mode="read" />);
+
+    await user.click(screen.getByRole("button", { name: "Ver histórico" }));
+    expect(screen.getByText("Carregando histórico…")).toBeTruthy();
+    resolveHistory?.({
+      status: "success",
+      items: [{
+        leadName: "Débora Souza",
+        sellerName: "Jessica",
+        comment: "Histórico carregado da API.",
+        commercialStatus: "negotiation",
+        isDisqualified: false,
+        createdAt: "2026-08-29T12:00:00.000Z",
+      }] as Treatment[],
+    });
+
+    expect(await screen.findByText("Histórico carregado da API.")).toBeTruthy();
+  });
+
   it("exibe carregamento, atualiza contador/histórico e confirma após sucesso", async () => {
     let resolveSubmission: ((value: unknown) => void) | undefined;
     actions.submit.mockImplementation(() => new Promise((resolve) => {
@@ -76,6 +120,17 @@ describe("acessibilidade e interação do modal de tratativa", () => {
     actions.loadHistory
       .mockResolvedValueOnce({ status: "success", items: [] })
       .mockResolvedValueOnce({
+        status: "success",
+        items: [{
+          leadName: "Débora Souza",
+          sellerName: "Jessica",
+          comment: "Contato registrado com sucesso.",
+          commercialStatus: "negotiation",
+          isDisqualified: false,
+          createdAt: "2026-08-29T12:00:00.000Z",
+        }] as Treatment[],
+      })
+      .mockResolvedValue({
         status: "success",
         items: [{
           leadName: "Débora Souza",
@@ -113,6 +168,10 @@ describe("acessibilidade e interação do modal de tratativa", () => {
     expect(screen.getByRole("status").textContent).toContain("Tratativa registrada.");
     expect(screen.getByText("3 comentários")).toBeTruthy();
     await waitFor(() => expect(actions.loadHistory).toHaveBeenCalledTimes(2));
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Registrar tratativa" }));
+
+    await user.click(screen.getByRole("button", { name: "Registrar tratativa" }));
+    expect(await screen.findByText("Contato registrado com sucesso.")).toBeTruthy();
   });
 
   it("mostra o erro 422 seguro no formulário", async () => {
