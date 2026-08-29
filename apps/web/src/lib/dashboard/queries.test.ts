@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const { apiFetch } = vi.hoisted(() => ({ apiFetch: vi.fn() }));
 vi.mock("../api/client", () => ({ apiFetch }));
 
-import { getDashboardData, pageNumber } from "./queries";
+import { getDashboardData, isAdminDashboard, pageNumber } from "./queries";
 
 describe("getDashboardData", () => {
   beforeEach(() => vi.clearAllMocks());
@@ -19,5 +19,16 @@ describe("getDashboardData", () => {
 
   it.each(["0", "-1", "1.5", "Infinity", "não-numero"])("recusa página inválida: %s", (value) => {
     expect(() => pageNumber(value)).toThrow("Página inválida");
+  });
+
+  it("separa a projeção administrativa pelo papel devolvido pela API", () => {
+    expect(
+      isAdminDashboard({
+        user: { id: "admin-1", email: "admin@wtgseguros.com.br", role: "admin" },
+        leads: { items: [], page: 1, pageSize: 50, total: 0 },
+        history: { items: [], page: 1, pageSize: 50, total: 0 },
+        queue: { items: [], total: 0, nextSellerName: "Não informado", cursorSellerName: "Não informado" },
+      }),
+    ).toBe(true);
   });
 });

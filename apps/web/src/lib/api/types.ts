@@ -1,13 +1,127 @@
 export type UserRole = "admin" | "seller";
 
+export type CommercialStatus = "undefined" | "negotiation" | "won";
+
+export type SellerAvailability = "active" | "paused" | "blocked_overdue";
+
 export type ApiUser = { id: string; email: string; role: UserRole };
 
 export type Page<T> = { items: T[]; page: number; pageSize: number; total: number };
 
+/**
+ * Identificadores são chaves técnicas para mutações e nunca rótulos da interface.
+ * O backend já resolve nomes, status e prazos autorizados para cada perfil.
+ */
+export type OperationalLead = {
+  id: string;
+  contactName: string;
+  sellerName: string;
+  companyName: string;
+  campaignName: string;
+  phoneDisplay: string;
+  email: string;
+  commercialStatus: CommercialStatus;
+  isDisqualified: boolean;
+  commentCount: number;
+  feedbackDueAt: string | null;
+};
+
+export type Treatment = {
+  /** Compatibilidade de leitura enquanto as telas legadas são substituídas. */
+  id?: string;
+  leadName?: string;
+  sellerName: string;
+  comment: string;
+  commercialStatus: CommercialStatus;
+  isDisqualified: boolean;
+  createdAt: string;
+  type?: string;
+  startedAt?: string;
+};
+
+export type QueueEntry = {
+  /** Chave interna compatível com a tabela legada; não é rótulo de interface. */
+  id?: string;
+  sellerName: string;
+  position: number;
+  availability: SellerAvailability;
+  reason: string | null;
+  skipBalance: number;
+  paused?: boolean;
+};
+
+export type AdminQueue = {
+  items: QueueEntry[];
+  total: number;
+  nextSellerName: string;
+  cursorSellerName: string;
+};
+
+export type SellerQueue = {
+  position: number | null;
+  availability: SellerAvailability;
+  skipBalance: number;
+};
+
+export type AdminDashboard = {
+  user: ApiUser & { role: "admin" };
+  leads: Page<OperationalLead>;
+  history: Page<Treatment>;
+  queue: AdminQueue;
+};
+
+export type SellerDashboard = {
+  user: ApiUser & { role: "seller" };
+  leads: Page<OperationalLead>;
+  history: Page<Treatment>;
+  queue: SellerQueue;
+};
+
+/**
+ * Contrato temporário das páginas legadas. Task 10 passa a consumir os tipos
+ * discriminados acima; este alias apenas mantém a verificação estática verde
+ * até a composição por perfil ser reconstruída.
+ */
 export type ApiDashboard = {
   user: ApiUser;
-  leads: Page<Record<string, unknown>>;
-  history: Page<Record<string, unknown>>;
-  queue: Page<Record<string, unknown>> & { nextSellerName?: string };
-  skipBalance: Record<string, unknown> | null;
+  leads: Page<OperationalLead>;
+  history: Page<Treatment>;
+  queue: Page<QueueEntry> & { nextSellerName?: string };
+};
+
+/** Resposta pública dos comandos administrativos; não contém password ou hash. */
+export type ManagedUser = {
+  id: string;
+  fullName: string;
+  email: string;
+  role: UserRole;
+  active: boolean;
+  paused: boolean | null;
+};
+
+export type CreateManagedUserInput = {
+  fullName: string;
+  email: string;
+  role: UserRole;
+  password: string;
+};
+
+export type ResetManagedUserPasswordInput = { password: string };
+
+export type TreatmentInput = {
+  comment: string;
+  commercialStatus: CommercialStatus;
+  isDisqualified: boolean;
+  idempotencyKey: string;
+};
+
+export type TreatmentSubmission = {
+  leadId: string;
+  treatmentId: string;
+  status: string;
+  commercialStatus: CommercialStatus;
+  isDisqualified: boolean;
+  commentCount: number;
+  reminderAt: string | null;
+  dueAt: string | null;
 };
