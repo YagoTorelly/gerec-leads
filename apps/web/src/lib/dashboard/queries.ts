@@ -18,14 +18,6 @@ export async function getDashboardData(sessionToken: string, page = 1): Promise<
 }
 
 /** A API define o papel; a web apenas escolhe a composição de apresentação. */
-export function isAdminDashboard(dashboard: unknown): dashboard is AdminDashboard {
-  return (
-    typeof dashboard === "object" &&
-    dashboard !== null &&
-    "user" in dashboard &&
-    typeof dashboard.user === "object" &&
-    dashboard.user !== null &&
-    "role" in dashboard.user &&
-    dashboard.user.role === "admin"
-  );
+export function isAdminDashboard(dashboard: ApiDashboard): dashboard is AdminDashboard {
+  return dashboard.user.role === "admin";
 }

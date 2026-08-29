@@ -31,4 +31,17 @@ describe("getDashboardData", () => {
       }),
     ).toBe(true);
   });
+
+  it("mantém a fila do vendedor sem dados globais", () => {
+    const dashboard = {
+      user: { id: "seller-1", email: "seller@wtgseguros.com.br", role: "seller" as const },
+      leads: { items: [], page: 1, pageSize: 50, total: 0 },
+      history: { items: [], page: 1, pageSize: 50, total: 0 },
+      queue: { position: 2, availability: "active" as const, skipBalance: 0 },
+    };
+
+    expect(isAdminDashboard(dashboard)).toBe(false);
+    expect(dashboard.queue).not.toHaveProperty("items");
+    expect(dashboard.queue).not.toHaveProperty("nextSellerName");
+  });
 });

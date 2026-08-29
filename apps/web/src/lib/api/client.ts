@@ -45,12 +45,26 @@ async function errorMessage(response: Response): Promise<string> {
     const payload: unknown = await response.json();
     if (typeof payload === "object" && payload !== null && "detail" in payload) {
       const detail = payload.detail;
-      if (typeof detail === "string" && detail.trim()) return detail;
+      if (typeof detail === "string" && detail.trim() && !isTechnicalDetail(response.status, detail)) {
+        return detail;
+      }
     }
   } catch {
     // A API pode responder sem corpo em erros HTTP.
   }
   return messageForStatus(response.status);
+}
+
+function isTechnicalDetail(status: number, detail: string): boolean {
+  if (status === 401 || status === 403) return true;
+  return new Set([
+    "email already registered",
+    "forbidden",
+    "invalid object id",
+    "invalid session",
+    "unauthorized",
+    "user not found",
+  ]).has(detail.trim().toLocaleLowerCase("en-US"));
 }
 
 export async function apiRequest(path: string, init: RequestInit = {}): Promise<Response> {
@@ -81,22 +95,63 @@ function sessionHeaders(sessionToken: string, headers: HeadersInit = {}): Header
   };
 }
 
-function managedUser(value: ManagedUser): ManagedUser {
+function managedUser(value: unknown): ManagedUser {
+  if (typeof value !== "object" || value === null) {
+    throw new ApiRequestError("A resposta de usuários é inválida.", 502);
+  }
+  const record = value as Record<string, unknown>;
+  const email = text(record.email) ?? text(record.emailNormalized);
+  const fullName = text(record.fullName);
+  const id = text(record.id);
+  const role = record.role;
+  if (!id || !fullName || !email || (role !== "admin" && role !== "seller") || typeof record.active !== "boolean") {
+    throw new ApiRequestError("A resposta de usuários é inválida.", 502);
+  }
   return {
-    id: value.id,
-    fullName: value.fullName,
-    email: value.email,
-    role: value.role,
-    active: value.active,
-    paused: value.paused ?? null,
+    id,
+    fullName,
+    email,
+    role,
+    active: record.active,
+    paused: typeof record.paused === "boolean" ? record.paused : null,
+  };
+}
+
+function text(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function managedUserPage(value: unknown): Page<ManagedUser> {
+  if (typeof value !== "object" || value === null) {
+    throw new ApiRequestError("A resposta de usuários é inválida.", 502);
+  }
+  const page = value as Record<string, unknown>;
+  if (
+    !Array.isArray(page.items) ||
+    typeof page.page !== "number" ||
+    !Number.isInteger(page.page) ||
+    typeof page.pageSize !== "number" ||
+    !Number.isInteger(page.pageSize) ||
+    typeof page.total !== "number" ||
+    !Number.isInteger(page.total)
+  ) {
+    throw new ApiRequestError("A resposta de usuários é inválida.", 502);
+  }
+  return {
+    items: page.items.map(managedUser),
+    page: page.page,
+    pageSize: page.pageSize,
+    total: page.total,
   };
 }
 
 export async function getManagedUsers(sessionToken: string, page = 1, limit = 50): Promise<Page<ManagedUser>> {
-  return apiFetch<Page<ManagedUser>>(`/api/admin/users?page=${page}&limit=${limit}`, {
-    cache: "no-store",
-    headers: { Cookie: `gerec_session=${sessionToken}` },
-  });
+  return managedUserPage(
+    await apiFetch<unknown>(`/api/admin/users?page=${page}&limit=${limit}`, {
+      cache: "no-store",
+      headers: { Cookie: `gerec_session=${sessionToken}` },
+    }),
+  );
 }
 
 export async function createManagedUser(
@@ -104,7 +159,7 @@ export async function createManagedUser(
   sessionToken: string,
 ): Promise<ManagedUser> {
   return managedUser(
-    await apiFetch<ManagedUser>("/api/admin/users", {
+    await apiFetch<unknown>("/api/admin/users", {
       method: "POST",
       headers: sessionHeaders(sessionToken),
       body: JSON.stringify(input),
@@ -118,7 +173,7 @@ export async function setManagedUserAvailability(
   sessionToken: string,
 ): Promise<ManagedUser> {
   return managedUser(
-    await apiFetch<ManagedUser>(`/api/admin/users/${encodeURIComponent(userId)}/availability`, {
+    await apiFetch<unknown>(`/api/admin/users/${encodeURIComponent(userId)}/availability`, {
       method: "PATCH",
       headers: sessionHeaders(sessionToken),
       body: JSON.stringify({ paused }),
@@ -132,7 +187,7 @@ export async function resetManagedUserPassword(
   sessionToken: string,
 ): Promise<ManagedUser> {
   return managedUser(
-    await apiFetch<ManagedUser>(`/api/admin/users/${encodeURIComponent(userId)}/password`, {
+    await apiFetch<unknown>(`/api/admin/users/${encodeURIComponent(userId)}/password`, {
       method: "PATCH",
       headers: sessionHeaders(sessionToken),
       body: JSON.stringify({ password }),

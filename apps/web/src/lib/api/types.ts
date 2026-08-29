@@ -27,27 +27,20 @@ export type OperationalLead = {
 };
 
 export type Treatment = {
-  /** Compatibilidade de leitura enquanto as telas legadas são substituídas. */
-  id?: string;
   leadName?: string;
   sellerName: string;
   comment: string;
   commercialStatus: CommercialStatus;
   isDisqualified: boolean;
   createdAt: string;
-  type?: string;
-  startedAt?: string;
 };
 
 export type QueueEntry = {
-  /** Chave interna compatível com a tabela legada; não é rótulo de interface. */
-  id?: string;
   sellerName: string;
   position: number;
   availability: SellerAvailability;
   reason: string | null;
   skipBalance: number;
-  paused?: boolean;
 };
 
 export type AdminQueue = {
@@ -77,17 +70,7 @@ export type SellerDashboard = {
   queue: SellerQueue;
 };
 
-/**
- * Contrato temporário das páginas legadas. Task 10 passa a consumir os tipos
- * discriminados acima; este alias apenas mantém a verificação estática verde
- * até a composição por perfil ser reconstruída.
- */
-export type ApiDashboard = {
-  user: ApiUser;
-  leads: Page<OperationalLead>;
-  history: Page<Treatment>;
-  queue: Page<QueueEntry> & { nextSellerName?: string };
-};
+export type ApiDashboard = AdminDashboard | SellerDashboard;
 
 /** Resposta pública dos comandos administrativos; não contém password ou hash. */
 export type ManagedUser = {

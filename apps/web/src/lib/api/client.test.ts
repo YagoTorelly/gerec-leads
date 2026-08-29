@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   apiFetch,
   createManagedUser,
+  getManagedUsers,
   getLeadTreatments,
   resetManagedUserPassword,
   setManagedUserAvailability,
@@ -29,7 +30,7 @@ describe("cliente HTTP operacional", () => {
     );
   });
 
-  it("preserva mensagem específica de validação da API", async () => {
+  it("preserva mensagem específica de validação da API que já é legível", async () => {
     vi.stubEnv("NEXT_PUBLIC_API_URL", "https://api.wtg.example");
     vi.stubGlobal(
       "fetch",
@@ -54,6 +55,66 @@ describe("cliente HTTP operacional", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status })));
 
     await expect(apiFetch("/api/dashboard")).rejects.toMatchObject({ status, message });
+  });
+
+  it.each([
+    [401, "Unauthorized", "Sessão expirada. Entre novamente."],
+    [403, "Forbidden", "Você não tem permissão para esta ação."],
+    [409, "Email already registered", "A operação conflita com o estado atual. Atualize os dados e tente novamente."],
+    [422, "Invalid object id", "Revise os dados informados e tente novamente."],
+  ])("não expõe detalhe técnico HTTP %i", async (status, detail, message) => {
+    vi.stubEnv("NEXT_PUBLIC_API_URL", "https://api.wtg.example");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail }), { status })),
+    );
+
+    await expect(apiFetch("/api/dashboard")).rejects.toMatchObject({ status, message });
+  });
+
+  it("normaliza a listagem persistida de usuários para o contrato público", async () => {
+    vi.stubEnv("NEXT_PUBLIC_API_URL", "https://api.wtg.example");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            items: [
+              {
+                id: "seller-1",
+                fullName: "Sandra",
+                emailNormalized: "sandracristina@wtgseguros.com.br",
+                role: "seller",
+                active: true,
+                paused: false,
+                passwordHash: "never-expose",
+                tokenHash: "never-expose",
+              },
+            ],
+            page: 1,
+            pageSize: 50,
+            total: 1,
+          }),
+          { status: 200 },
+        ),
+      ),
+    );
+
+    await expect(getManagedUsers("sessao")).resolves.toEqual({
+      items: [
+        {
+          id: "seller-1",
+          fullName: "Sandra",
+          email: "sandracristina@wtgseguros.com.br",
+          role: "seller",
+          active: true,
+          paused: false,
+        },
+      ],
+      page: 1,
+      pageSize: 50,
+      total: 1,
+    });
   });
 
   it("serializa criação de usuário e não devolve a senha", async () => {
