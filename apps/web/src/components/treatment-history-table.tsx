@@ -40,8 +40,20 @@ export function TreatmentHistoryTable({ treatments }: { treatments: Treatment[] 
                 </td>
                 <td>{formatText(treatment.sellerName)}</td>
                 <td>{formatText(treatment.comment)}</td>
-                <td>{formatCommercialStatus(treatment.commercialStatus)}</td>
-                <td>{treatment.isDisqualified ? formatDisqualificationMarker(true) : "—"}</td>
+                <td>
+                  <span className={`commercial-status ${treatment.commercialStatus}`}>
+                    {formatCommercialStatus(treatment.commercialStatus)}
+                  </span>
+                </td>
+                <td>
+                  {treatment.isDisqualified ? (
+                    <span className="disqualification-marker">
+                      {formatDisqualificationMarker(true)}
+                    </span>
+                  ) : (
+                    "—"
+                  )}
+                </td>
                 <td>{formatDateTime(treatment.createdAt)}</td>
               </tr>
             ))}

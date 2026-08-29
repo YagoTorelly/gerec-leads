@@ -2,8 +2,17 @@
 
 import { useActionState, useCallback, useEffect, useRef, useState } from "react";
 
-import type { CommercialStatus, OperationalLead, Treatment, TreatmentSubmission } from "../lib/api/types";
-import { formatCommercialStatus, formatDateTime, formatDisqualificationMarker } from "../lib/dashboard/format";
+import type {
+  CommercialStatus,
+  OperationalLead,
+  Treatment,
+  TreatmentSubmission,
+} from "../lib/api/types";
+import {
+  formatCommercialStatus,
+  formatDateTime,
+  formatDisqualificationMarker,
+} from "../lib/dashboard/format";
 import {
   initialTreatmentActionState,
   loadLeadTreatmentHistoryAction,
@@ -16,7 +25,9 @@ export type TreatmentDraft = {
   isDisqualified: boolean;
 };
 
-export function validateTreatmentDraft(draft: TreatmentDraft): { ok: true } | { ok: false; message: string } {
+export function validateTreatmentDraft(
+  draft: TreatmentDraft,
+): { ok: true } | { ok: false; message: string } {
   if (draft.comment.trim().length < 6) {
     return { ok: false, message: "Escreva um comentário com ao menos 6 caracteres." };
   }
@@ -31,8 +42,12 @@ function historyItem(item: Treatment, index: number) {
         <p>{item.comment}</p>
       </div>
       <div className="treatment-history__meta">
-        <span>{formatCommercialStatus(item.commercialStatus)}</span>
-        {item.isDisqualified ? <span>{formatDisqualificationMarker(true)}</span> : null}
+        <span className={`commercial-status ${item.commercialStatus}`}>
+          {formatCommercialStatus(item.commercialStatus)}
+        </span>
+        {item.isDisqualified ? (
+          <span className="disqualification-marker">{formatDisqualificationMarker(true)}</span>
+        ) : null}
         <small>{formatDateTime(item.createdAt)}</small>
       </div>
     </li>
@@ -50,7 +65,10 @@ function TreatmentForm({
   lead: OperationalLead;
   onSuccess: (submission: TreatmentSubmission) => void;
 }) {
-  const [state, formAction, pending] = useActionState(submitLeadTreatmentAction, initialTreatmentActionState);
+  const [state, formAction, pending] = useActionState(
+    submitLeadTreatmentAction,
+    initialTreatmentActionState,
+  );
   const [idempotencyKey] = useState(newIdempotencyKey);
   const [comment, setComment] = useState("");
   const draftIsValid = validateTreatmentDraft({
@@ -83,7 +101,11 @@ function TreatmentForm({
       </label>
       <label htmlFor={`treatment-status-${lead.id}`}>
         Situação comercial
-        <select id={`treatment-status-${lead.id}`} name="commercialStatus" defaultValue={lead.commercialStatus}>
+        <select
+          id={`treatment-status-${lead.id}`}
+          name="commercialStatus"
+          defaultValue={lead.commercialStatus}
+        >
           <option value="undefined">Indefinido</option>
           <option value="negotiation">Negociação</option>
           <option value="won">Ganho</option>
@@ -94,9 +116,15 @@ function TreatmentForm({
         Marcar como Desqualificado
       </label>
       <p className="muted">Desqualificar exige o comentário registrado nesta tratativa.</p>
-      {state.status !== "idle" ? <p className={`form-${state.status}`} role="status" aria-live="polite">{state.message}</p> : null}
+      {state.status !== "idle" ? (
+        <p className={`form-${state.status}`} role="status" aria-live="polite">
+          {state.message}
+        </p>
+      ) : null}
       <div className="modal-actions">
-        <button type="submit" className="table-action" disabled={pending || !draftIsValid}>{pending ? "Salvando…" : "Salvar tratativa"}</button>
+        <button type="submit" className="table-action" disabled={pending || !draftIsValid}>
+          {pending ? "Salvando…" : "Salvar tratativa"}
+        </button>
       </div>
     </form>
   );
@@ -141,12 +169,15 @@ export function LeadTreatmentModal({
     setOpen(true);
     refreshHistory();
   }, [refreshHistory]);
-  const onSuccess = useCallback((submission: TreatmentSubmission) => {
-    onSubmitted?.(submission);
-    refreshHistory();
-    setSuccessMessage("Tratativa registrada.");
-    setOpen(false);
-  }, [onSubmitted, refreshHistory]);
+  const onSuccess = useCallback(
+    (submission: TreatmentSubmission) => {
+      onSubmitted?.(submission);
+      refreshHistory();
+      setSuccessMessage("Tratativa registrada.");
+      setOpen(false);
+    },
+    [onSubmitted, refreshHistory],
+  );
   const closeModal = useCallback(() => setOpen(false), []);
 
   useEffect(() => {
@@ -158,35 +189,46 @@ export function LeadTreatmentModal({
     wasOpenRef.current = open;
   }, [open]);
 
-  const trapKeyboard = useCallback((event: React.KeyboardEvent<HTMLElement>) => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      closeModal();
-      return;
-    }
-    if (event.key !== "Tab" || !dialogRef.current) return;
-    const focusable = Array.from(dialogRef.current.querySelectorAll<HTMLElement>(
-      'button:not([disabled]), [href], input:not([type="hidden"]):not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-    )).filter((element) => !element.hidden);
-    if (focusable.length === 0) return;
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
-  }, [closeModal]);
+  const trapKeyboard = useCallback(
+    (event: React.KeyboardEvent<HTMLElement>) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeModal();
+        return;
+      }
+      if (event.key !== "Tab" || !dialogRef.current) return;
+      const focusable = Array.from(
+        dialogRef.current.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), [href], input:not([type="hidden"]):not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter((element) => !element.hidden);
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    },
+    [closeModal],
+  );
 
   const titleId = `lead-treatment-title-${lead.id}`;
   const triggerLabel = mode === "write" ? "Registrar tratativa" : "Ver histórico";
 
   return (
     <>
-      <button ref={triggerRef} type="button" className="table-action" onClick={openModal}>{triggerLabel}</button>
-      {successMessage ? <p className="form-success" role="status" aria-live="polite">{successMessage}</p> : null}
+      <button ref={triggerRef} type="button" className="table-action" onClick={openModal}>
+        {triggerLabel}
+      </button>
+      {successMessage ? (
+        <p className="form-success" role="status" aria-live="polite">
+          {successMessage}
+        </p>
+      ) : null}
       {open ? (
         <div
           className="modal-backdrop"
@@ -195,22 +237,47 @@ export function LeadTreatmentModal({
             if (event.target === event.currentTarget) closeModal();
           }}
         >
-          <section ref={dialogRef} className="modal-card treatment-modal" role="dialog" aria-modal="true" aria-labelledby={titleId} onKeyDown={trapKeyboard}>
+          <section
+            ref={dialogRef}
+            className="modal-card treatment-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={titleId}
+            onKeyDown={trapKeyboard}
+          >
             <header className="treatment-modal__header">
               <div>
                 <p className="eyebrow">Lead</p>
                 <h3 id={titleId}>{lead.contactName}</h3>
               </div>
-              <button ref={closeButtonRef} type="button" className="secondary-button" onClick={closeModal} aria-label="Fechar janela">Fechar</button>
+              <button
+                ref={closeButtonRef}
+                type="button"
+                className="secondary-button"
+                onClick={closeModal}
+                aria-label="Fechar janela"
+              >
+                Fechar
+              </button>
             </header>
 
             {mode === "write" ? <TreatmentForm lead={lead} onSuccess={onSuccess} /> : null}
 
             <section className="treatment-history" aria-label="Histórico de tratativas">
               <h4>Histórico de tratativas</h4>
-              {historyLoading ? <p className="muted" aria-live="polite">Carregando histórico…</p> : null}
-              {historyMessage ? <p className="form-error" role="status">{historyMessage}</p> : null}
-              {!historyLoading && !historyMessage && treatments.length === 0 ? <p className="muted">Nenhuma tratativa registrada.</p> : null}
+              {historyLoading ? (
+                <p className="muted" aria-live="polite">
+                  Carregando histórico…
+                </p>
+              ) : null}
+              {historyMessage ? (
+                <p className="form-error" role="status">
+                  {historyMessage}
+                </p>
+              ) : null}
+              {!historyLoading && !historyMessage && treatments.length === 0 ? (
+                <p className="muted">Nenhuma tratativa registrada.</p>
+              ) : null}
               {treatments.length > 0 ? <ol>{treatments.map(historyItem)}</ol> : null}
             </section>
           </section>
