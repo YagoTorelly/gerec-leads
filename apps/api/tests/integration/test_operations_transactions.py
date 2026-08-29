@@ -536,6 +536,7 @@ def test_treatment_route_accepts_only_the_current_seller_and_preserves_replay() 
     app.dependency_overrides[get_current_user] = lambda: CurrentUser(
         id=str(ObjectId()), email="other@example.test", role="seller"
     )
+    replay_by_other_seller = client.post(f"/api/leads/{lead_id}/treatments", json=payload)
     other_seller = client.post(
         f"/api/leads/{lead_id}/treatments",
         json={**payload, "idempotencyKey": "other-seller-treatment"},
@@ -552,6 +553,9 @@ def test_treatment_route_accepts_only_the_current_seller_and_preserves_replay() 
     assert replay.status_code == 201
     assert replay.json() == first.json()
     assert first.json()["commercialStatus"] == "negotiation"
+    assert replay_by_other_seller.status_code == 403
+    assert replay_by_other_seller.json() == {"detail": "Forbidden"}
+    assert "treatmentId" not in replay_by_other_seller.json()
     assert other_seller.status_code == 403
     assert other_seller.json() == {"detail": "Forbidden"}
     assert admin.status_code == 403
@@ -573,6 +577,46 @@ def test_treatment_requires_the_current_seller_and_rejects_admin() -> None:
         )
 
     assert database["lead_treatments"].documents == []
+
+
+def test_treatment_idempotency_key_cannot_replay_a_result_to_another_lead() -> None:
+    """Breaks if a command receipt is returned for the right seller but wrong aggregate."""
+    database = FakeDatabase()
+    first_lead_id, _, seller_id, _ = _seed_assigned_lead(database)
+    second_lead_id = ObjectId()
+    second_cycle_id = ObjectId()
+    database["leads"].insert_one(
+        {
+            "_id": second_lead_id,
+            "assigneeId": seller_id,
+            "assignmentStatus": "assigned",
+            "qualificationStatus": "pending",
+            "conversionStatus": "active",
+            "feedbackDueAt": NOW - timedelta(hours=1),
+            "feedbackCycleId": second_cycle_id,
+            "archivedAt": None,
+        }
+    )
+    database["feedback_cycles"].insert_one(
+        {
+            "_id": second_cycle_id,
+            "leadId": second_lead_id,
+            "startAt": NOW - timedelta(days=2),
+            "reminderAt": NOW - timedelta(hours=5),
+            "dueAt": NOW - timedelta(hours=1),
+            "closedAt": None,
+        }
+    )
+    command_key = "shared-treatment-key"
+
+    _service(database, seller_id).register_treatment(
+        TreatmentCommand(first_lead_id, "Cliente pediu proposta", "negotiation", False, command_key)
+    )
+
+    with pytest.raises(OperationsStateError, match="aggregate"):
+        _service(database, seller_id).register_treatment(
+            TreatmentCommand(second_lead_id, "Cliente pediu proposta", "negotiation", False, command_key)
+        )
 
 
 def test_treatment_materializes_projection_records_event_and_is_idempotent() -> None:

@@ -105,6 +105,8 @@ class MongoOperationsRepository:
                 due_at,
                 session,
             ),
+            actor_id=actor_id,
+            aggregate_id=command.lead_id,
         )
 
     def register_attempt(
@@ -151,15 +153,28 @@ class MongoOperationsRepository:
         result_type: type[ResultT],
         now: datetime,
         operation: Callable[[Any, datetime], ResultT],
+        *,
+        actor_id: Any | None = None,
+        aggregate_id: Any | None = None,
     ) -> ResultT:
         receipt = self._receipt(command_name, idempotency_key)
         if receipt is not None:
-            return result_type.from_document(receipt["result"])
+            return self._replay_result(
+                receipt,
+                result_type,
+                actor_id=actor_id,
+                aggregate_id=aggregate_id,
+            )
 
         def callback(session: Any) -> ResultT:
             existing = self._receipt(command_name, idempotency_key, session=session)
             if existing is not None:
-                return result_type.from_document(existing["result"])
+                return self._replay_result(
+                    existing,
+                    result_type,
+                    actor_id=actor_id,
+                    aggregate_id=aggregate_id,
+                )
             # `now` is MongoDB server time captured once before the transaction.
             # Reusing it avoids the forbidden `hello` command inside a transaction
             # and gives retryable callbacks one stable timestamp.
@@ -171,6 +186,8 @@ class MongoOperationsRepository:
                     "idempotencyKey": idempotency_key,
                     "result": result.to_document(),
                     "createdAt": transaction_now,
+                    **({"actorId": actor_id} if actor_id is not None else {}),
+                    **({"aggregateId": aggregate_id} if aggregate_id is not None else {}),
                 },
                 session=session,
             )
@@ -183,7 +200,29 @@ class MongoOperationsRepository:
             receipt = self._receipt(command_name, idempotency_key)
             if receipt is None:
                 raise OperationsStateError("operation conflicted with a concurrent command") from None
-            return result_type.from_document(receipt["result"])
+            return self._replay_result(
+                receipt,
+                result_type,
+                actor_id=actor_id,
+                aggregate_id=aggregate_id,
+            )
+
+    @staticmethod
+    def _replay_result(
+        receipt: dict[str, Any],
+        result_type: type[ResultT],
+        *,
+        actor_id: Any | None,
+        aggregate_id: Any | None,
+    ) -> ResultT:
+        if actor_id is not None:
+            if "actorId" not in receipt or "aggregateId" not in receipt:
+                raise OperationsStateError("idempotency receipt lacks actor binding")
+            if receipt["actorId"] != actor_id:
+                raise OperationsPermissionError("idempotency receipt belongs to another actor")
+            if receipt["aggregateId"] != aggregate_id:
+                raise OperationsStateError("idempotency key belongs to another aggregate")
+        return result_type.from_document(receipt["result"])
 
     def _receipt(
         self,
