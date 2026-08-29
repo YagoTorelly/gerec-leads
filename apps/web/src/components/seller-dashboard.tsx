@@ -6,6 +6,7 @@ import {
   formatDisqualificationMarker,
   formatSlaDeadline,
 } from "../lib/dashboard/format";
+import { LeadTable } from "./lead-table";
 
 function availabilityLabel(availability: SellerAvailability): string {
   return {
@@ -53,6 +54,8 @@ export function SellerDashboard({ dashboard }: { dashboard: SellerDashboardData 
           )}
         </section>
       </section>
+
+      <LeadTable leads={dashboard.leads.items} role="seller" />
     </>
   );
 }

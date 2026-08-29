@@ -4,6 +4,7 @@ import {
   formatDateTime,
   formatDisqualificationMarker,
 } from "../lib/dashboard/format";
+import { LeadTable } from "./lead-table";
 
 function availabilityLabel(availability: QueueEntry["availability"]): string {
   return {
@@ -79,6 +80,8 @@ export function AdminDashboard({ dashboard }: { dashboard: AdminDashboardData })
           )}
         </section>
       </section>
+
+      <LeadTable leads={dashboard.leads.items} role="admin" />
     </>
   );
 }
