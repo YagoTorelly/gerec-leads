@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from gerec_api.domain.business_time import BusinessClock, MongoHolidayRepository
+from gerec_api.domain.business_time import BusinessClock, MongoHolidayRepository, SAO_PAULO
 from gerec_api.infrastructure.mongo.collections import MongoCollections
 
 
@@ -38,7 +38,7 @@ def _migrate_lead(
     )
     commercial_status = _commercial_status(lead, outcomes)
     is_disqualified = _is_disqualified(lead, outcomes)
-    last_comment_at = feedbacks[-1].get("createdAt") if feedbacks else None
+    last_comment_at = _legacy_datetime(feedbacks[-1].get("createdAt")) if feedbacks else None
 
     _copy_legacy_feedbacks_as_treatments(
         database,
@@ -77,7 +77,13 @@ def _valid_feedbacks(database: Any, lead_id: Any, options: dict[str, Any]) -> li
         and feedback.get("contactStarted") is True
         and len(str(feedback.get("comment", "")).strip()) >= 6
     ]
-    return sorted(valid, key=lambda feedback: (feedback.get("createdAt") or _EPOCH, str(feedback["_id"])))
+    return sorted(
+        valid,
+        key=lambda feedback: (
+            _legacy_datetime(feedback.get("createdAt")) or _EPOCH,
+            str(feedback["_id"]),
+        ),
+    )
 
 
 def _copy_legacy_feedbacks_as_treatments(
@@ -103,7 +109,7 @@ def _copy_legacy_feedbacks_as_treatments(
                     "commercialStatus": treatment_status,
                     "isDisqualified": treatment_disqualification,
                     "legacyStatusUnavailable": status_unavailable,
-                    "createdAt": feedback.get("createdAt") or _EPOCH,
+                    "createdAt": _legacy_datetime(feedback.get("createdAt")) or _EPOCH,
                     "idempotencyKey": f"legacy-feedback:{legacy_id}",
                     "legacyFeedbackId": legacy_id,
                 }
@@ -133,7 +139,7 @@ def _rebuild_queue_positions(database: Any, session: Any | None) -> None:
 def _queue_position_sort_key(entry: dict[str, Any]) -> tuple[int, int, datetime, str]:
     position = entry.get("position")
     valid_position = isinstance(position, int) and not isinstance(position, bool) and position > 0
-    created_at = entry.get("createdAt")
+    created_at = _legacy_datetime(entry.get("createdAt"))
     return (
         0 if valid_position else 1,
         int(position) if valid_position else 0,
@@ -156,7 +162,7 @@ def _recalculate_open_cycles(
     )
     recalculated: list[dict[str, Any]] = []
     for cycle in cycles:
-        start_at = cycle.get("startAt") or lead.get("assignedAt")
+        start_at = _legacy_datetime(cycle.get("startAt")) or _legacy_datetime(lead.get("assignedAt"))
         if not isinstance(start_at, datetime):
             continue
         due_at = business_clock.add_business_hours(start_at, 24)
@@ -201,22 +207,37 @@ def _disqualification_closed_at(
     outcomes: list[dict[str, Any]], feedbacks: list[dict[str, Any]], lead: dict[str, Any]
 ) -> datetime:
     timestamps = [
-        event.get("createdAt")
+        _legacy_datetime(event.get("createdAt"))
         for event in outcomes
         if event.get("outcome") == "disqualified" and isinstance(event.get("createdAt"), datetime)
     ]
     timestamps.extend(
-        feedback.get("createdAt")
+        _legacy_datetime(feedback.get("createdAt"))
         for feedback in feedbacks
         if isinstance(feedback.get("createdAt"), datetime)
     )
-    if isinstance(lead.get("assignedAt"), datetime):
-        timestamps.append(lead["assignedAt"])
+    assigned_at = _legacy_datetime(lead.get("assignedAt"))
+    if assigned_at is not None:
+        timestamps.append(assigned_at)
     return max(timestamps, default=_EPOCH)
 
 
 def _session_options(session: Any | None) -> dict[str, Any]:
     return {} if session is None else {"session": session}
+
+
+def _legacy_datetime(value: Any) -> datetime | None:
+    """Normalize legacy Mongo timestamps before business-calendar operations.
+
+    Historical records may contain naive datetimes because older Mongo clients
+    did not persist timezone metadata. The canonical interpretation for those
+    values is local São Paulo time; aware values are converted to that zone.
+    """
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=SAO_PAULO)
+    return value.astimezone(SAO_PAULO)
 
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
