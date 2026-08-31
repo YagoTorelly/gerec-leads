@@ -14,6 +14,20 @@ import { LeadTreatmentModal } from "./lead-treatment-modal";
 
 type LeadTableProps = { leads: OperationalLead[]; role: UserRole };
 
+/** Render Brazilian numbers consistently, whether the source includes +55 or not. */
+export function formatBrazilianPhone(value: string | null | undefined): string {
+  const digits = String(value ?? "").replace(/\D/g, "");
+  const national =
+    digits.startsWith("55") && [12, 13].includes(digits.length) ? digits.slice(2) : digits;
+  if (national.length === 11) {
+    return `(${national.slice(0, 2)}) ${national.slice(2, 7)}-${national.slice(7)}`;
+  }
+  if (national.length === 10) {
+    return `(${national.slice(0, 2)}) ${national.slice(2, 6)}-${national.slice(6)}`;
+  }
+  return national || "Não informado";
+}
+
 export function commentCountsAfterSubmission(
   current: Record<string, number>,
   submission: TreatmentSubmission,
@@ -55,7 +69,10 @@ export function LeadTable({ leads, role }: LeadTableProps) {
   );
 
   return (
-    <section className="table-card lead-table-card" aria-labelledby="lead-table-title">
+    <section
+      className={`table-card lead-table-card lead-table-card--${role}`}
+      aria-labelledby="lead-table-title"
+    >
       <div className="table-head">
         <div>
           <p className="eyebrow">Dados ao vivo</p>
@@ -70,10 +87,7 @@ export function LeadTable({ leads, role }: LeadTableProps) {
             <tr>
               <th>Nome</th>
               {role === "admin" ? <th>Responsável</th> : null}
-              <th>Empresa</th>
-              <th>Campanha</th>
               <th>Telefone</th>
-              <th>E-mail</th>
               <th>Situação</th>
               <th>Marcador</th>
               <th>Atribuído em</th>
@@ -93,10 +107,7 @@ export function LeadTable({ leads, role }: LeadTableProps) {
                     <strong>{currentLead.contactName}</strong>
                   </td>
                   {role === "admin" ? <td>{currentLead.sellerName}</td> : null}
-                  <td>{currentLead.companyName}</td>
-                  <td>{currentLead.campaignName}</td>
-                  <td>{currentLead.phoneDisplay}</td>
-                  <td>{currentLead.email}</td>
+                  <td>{formatBrazilianPhone(currentLead.phoneDisplay)}</td>
                   <td>
                     <span className={statusClass(currentLead.commercialStatus)}>
                       {formatCommercialStatus(currentLead.commercialStatus)}

@@ -2,7 +2,12 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
-import { applySubmissionToLead, commentCountsAfterSubmission, LeadTable } from "./lead-table";
+import {
+  applySubmissionToLead,
+  commentCountsAfterSubmission,
+  formatBrazilianPhone,
+  LeadTable,
+} from "./lead-table";
 import { LeadTreatmentModal, validateTreatmentDraft } from "./lead-treatment-modal";
 
 const lead = {
@@ -30,12 +35,21 @@ describe("tabela de leads e tratativa", () => {
 
     expect(admin).toContain("Responsável");
     expect(admin).toContain("Renato");
-    expect(admin).toContain("Empresa da Débora");
-    expect(admin).toContain("Campanha WTG");
+    expect(admin).not.toContain("Empresa da Débora");
+    expect(admin).not.toContain("Campanha WTG");
+    expect(admin).not.toContain("E-mail");
+    expect(admin).toContain("(11) 98830-8029");
     expect(admin).toContain("2 comentários");
     expect(admin).not.toContain("Registrar tratativa");
     expect(seller).not.toContain("Responsável");
     expect(seller).toContain("Registrar tratativa");
+  });
+
+  it("normaliza telefones brasileiros com ou sem o código 55", () => {
+    expect(formatBrazilianPhone("+55 (11) 98830-8029")).toBe("(11) 98830-8029");
+    expect(formatBrazilianPhone("11988308029")).toBe("(11) 98830-8029");
+    expect(formatBrazilianPhone("5511998765432")).toBe("(11) 99876-5432");
+    expect(formatBrazilianPhone("telefone ausente")).toBe("Não informado");
   });
 
   it("exibe somente os campos comerciais e o histórico em modo leitura", () => {
