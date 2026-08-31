@@ -567,21 +567,28 @@ button:disabled {
   overflow-wrap: anywhere;
   word-break: normal;
 }
+.lead-table-card td:last-child,
+.lead-table-card td:last-child .table-action {
+  white-space: nowrap;
+}
+.lead-table-card td:nth-last-child(2) {
+  white-space: nowrap;
+}
 .lead-table-card--admin th:nth-child(1),
 .lead-table-card--admin td:nth-child(1) {
-  width: 16%;
+  width: 13%;
 }
 .lead-table-card--admin th:nth-child(2),
 .lead-table-card--admin td:nth-child(2) {
-  width: 12%;
+  width: 10%;
 }
 .lead-table-card--admin th:nth-child(3),
 .lead-table-card--admin td:nth-child(3) {
-  width: 13%;
+  width: 11%;
 }
 .lead-table-card--admin th:nth-child(4),
 .lead-table-card--admin td:nth-child(4) {
-  width: 10%;
+  width: 8%;
 }
 .lead-table-card--admin th:nth-child(5),
 .lead-table-card--admin td:nth-child(5) {
@@ -589,59 +596,59 @@ button:disabled {
 }
 .lead-table-card--admin th:nth-child(6),
 .lead-table-card--admin td:nth-child(6) {
-  width: 10%;
+  width: 8%;
 }
 .lead-table-card--admin th:nth-child(7),
 .lead-table-card--admin td:nth-child(7) {
-  width: 10%;
+  width: 8%;
 }
 .lead-table-card--admin th:nth-child(8),
 .lead-table-card--admin td:nth-child(8) {
-  width: 8%;
+  width: 6%;
 }
 .lead-table-card--admin th:nth-child(9),
 .lead-table-card--admin td:nth-child(9) {
-  width: 8%;
+  width: 12%;
 }
 .lead-table-card--admin th:nth-child(10),
 .lead-table-card--admin td:nth-child(10) {
-  width: 5%;
+  width: 16%;
 }
 .lead-table-card--seller th:nth-child(1),
 .lead-table-card--seller td:nth-child(1) {
-  width: 20%;
+  width: 13%;
 }
 .lead-table-card--seller th:nth-child(2),
 .lead-table-card--seller td:nth-child(2) {
-  width: 14%;
+  width: 10%;
 }
 .lead-table-card--seller th:nth-child(3),
 .lead-table-card--seller td:nth-child(3) {
-  width: 11%;
+  width: 9%;
 }
 .lead-table-card--seller th:nth-child(4),
 .lead-table-card--seller td:nth-child(4) {
-  width: 10%;
+  width: 8%;
 }
 .lead-table-card--seller th:nth-child(5),
 .lead-table-card--seller td:nth-child(5) {
-  width: 12%;
+  width: 10%;
 }
 .lead-table-card--seller th:nth-child(6),
 .lead-table-card--seller td:nth-child(6) {
-  width: 12%;
+  width: 10%;
 }
 .lead-table-card--seller th:nth-child(7),
 .lead-table-card--seller td:nth-child(7) {
-  width: 10%;
+  width: 11%;
 }
 .lead-table-card--seller th:nth-child(8),
 .lead-table-card--seller td:nth-child(8) {
-  width: 6%;
+  width: 13%;
 }
 .lead-table-card--seller th:nth-child(9),
 .lead-table-card--seller td:nth-child(9) {
-  width: 5%;
+  width: 16%;
 }
 .queue-table-summary {
   display: grid;
