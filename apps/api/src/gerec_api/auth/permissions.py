@@ -223,7 +223,11 @@ class DashboardService:
                 "commercialStatus": _commercial_status(lead),
                 "isDisqualified": bool(lead.get("isDisqualified", False)),
                 "commentCount": int(lead.get("commentCount", 0)),
+                "assignedAt": lead.get("assignedAt"),
                 "feedbackDueAt": lead.get("feedbackDueAt"),
+                "lastUpdatedAt": lead.get("lastCommentAt")
+                or lead.get("updatedAt")
+                or lead.get("assignedAt"),
             }
         )
 
@@ -231,15 +235,22 @@ class DashboardService:
         self, treatment: Mapping[str, Any], *, include_lead_name: bool
     ) -> dict[str, Any]:
         seller = self._find_by_id(MongoCollections.USERS, treatment.get("sellerId"))
+        lead = self._find_by_id(MongoCollections.LEADS, treatment.get("leadId"))
         result: dict[str, Any] = {
+            "leadId": str(treatment.get("leadId")),
             "sellerName": _name_or_fallback(seller),
             "comment": _text_or_fallback(treatment.get("comment")),
             "commercialStatus": _commercial_status(treatment),
             "isDisqualified": bool(treatment.get("isDisqualified", False)),
+            "assignedAt": (lead or {}).get("assignedAt"),
             "createdAt": treatment.get("createdAt"),
+            "lastUpdatedAt": (
+                (lead or {}).get("lastCommentAt")
+                or (lead or {}).get("updatedAt")
+                or (lead or {}).get("assignedAt")
+            ),
         }
         if include_lead_name:
-            lead = self._find_by_id(MongoCollections.LEADS, treatment.get("leadId"))
             result["leadName"] = _text_or_fallback((lead or {}).get("contactName"))
         return _serialize_read_model(result)
 

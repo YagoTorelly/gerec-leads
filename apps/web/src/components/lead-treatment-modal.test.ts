@@ -2,7 +2,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import { commentCountsAfterSubmission, LeadTable } from "./lead-table";
+import { applySubmissionToLead, commentCountsAfterSubmission, LeadTable } from "./lead-table";
 import { LeadTreatmentModal, validateTreatmentDraft } from "./lead-treatment-modal";
 
 const lead = {
@@ -16,13 +16,17 @@ const lead = {
   commercialStatus: "negotiation" as const,
   isDisqualified: false,
   commentCount: 2,
+  assignedAt: "2026-08-28T16:03:04.876Z",
   feedbackDueAt: "2026-08-29T16:03:04.876Z",
+  lastUpdatedAt: "2026-08-28T16:03:04.876Z",
 };
 
 describe("tabela de leads e tratativa", () => {
   it("mostra responsável somente na visão administrativa", () => {
     const admin = renderToStaticMarkup(createElement(LeadTable, { leads: [lead], role: "admin" }));
-    const seller = renderToStaticMarkup(createElement(LeadTable, { leads: [lead], role: "seller" }));
+    const seller = renderToStaticMarkup(
+      createElement(LeadTable, { leads: [lead], role: "seller" }),
+    );
 
     expect(admin).toContain("Responsável");
     expect(admin).toContain("Renato");
@@ -35,19 +39,26 @@ describe("tabela de leads e tratativa", () => {
   });
 
   it("exibe somente os campos comerciais e o histórico em modo leitura", () => {
-    const markup = renderToStaticMarkup(createElement(LeadTreatmentModal, {
-      lead,
-      mode: "read",
-      defaultOpen: true,
-      treatments: [{
-        leadName: "Débora Souza",
-        sellerName: "Renato",
-        comment: "Primeiro contato por telefone.",
-        commercialStatus: "negotiation",
-        isDisqualified: false,
-        createdAt: "2026-08-28T16:03:04.876Z",
-      }],
-    }));
+    const markup = renderToStaticMarkup(
+      createElement(LeadTreatmentModal, {
+        lead,
+        mode: "read",
+        defaultOpen: true,
+        treatments: [
+          {
+            leadId: "lead-1",
+            leadName: "Débora Souza",
+            sellerName: "Renato",
+            comment: "Primeiro contato por telefone.",
+            commercialStatus: "negotiation",
+            isDisqualified: false,
+            assignedAt: "2026-08-28T15:30:00.000Z",
+            createdAt: "2026-08-28T16:03:04.876Z",
+            lastUpdatedAt: "2026-08-28T16:03:04.876Z",
+          },
+        ],
+      }),
+    );
 
     expect(markup).toContain("Histórico de tratativas");
     expect(markup).toContain("Primeiro contato por telefone.");
@@ -56,34 +67,67 @@ describe("tabela de leads e tratativa", () => {
   });
 
   it("oferece as três situações, marcador adicional e bloqueia comentário curto", () => {
-    const markup = renderToStaticMarkup(createElement(LeadTreatmentModal, {
-      lead,
-      mode: "write",
-      treatments: [],
-      defaultOpen: true,
-    }));
+    const markup = renderToStaticMarkup(
+      createElement(LeadTreatmentModal, {
+        lead,
+        mode: "write",
+        treatments: [],
+        defaultOpen: true,
+      }),
+    );
 
     expect(markup).toContain("Indefinido");
     expect(markup).toContain("Negociação");
     expect(markup).toContain("Ganho");
     expect(markup).toContain("Desqualificado");
     expect(markup).toContain("Salvar tratativa");
-    expect(validateTreatmentDraft({ comment: "curto", commercialStatus: "undefined", isDisqualified: false })).toEqual({
+    expect(
+      validateTreatmentDraft({
+        comment: "curto",
+        commercialStatus: "undefined",
+        isDisqualified: false,
+      }),
+    ).toEqual({
       ok: false,
       message: "Escreva um comentário com ao menos 6 caracteres.",
     });
   });
 
   it("atualiza o contador exibido com o total devolvido pela API", () => {
-    expect(commentCountsAfterSubmission({ "outro-lead": 1 }, {
-      leadId: "lead-1",
-      treatmentId: "treatment-1",
-      status: "created",
+    expect(
+      commentCountsAfterSubmission(
+        { "outro-lead": 1 },
+        {
+          leadId: "lead-1",
+          treatmentId: "treatment-1",
+          status: "created",
+          commercialStatus: "won",
+          isDisqualified: false,
+          commentCount: 3,
+          reminderAt: null,
+          dueAt: null,
+        },
+      ),
+    ).toEqual({ "outro-lead": 1, "lead-1": 3 });
+  });
+
+  it("reflete a tratativa salva na própria linha do lead", () => {
+    expect(
+      applySubmissionToLead(lead, {
+        leadId: "lead-1",
+        treatmentId: "treatment-1",
+        status: "created",
+        commercialStatus: "won",
+        isDisqualified: true,
+        commentCount: 3,
+        reminderAt: null,
+        dueAt: null,
+      }),
+    ).toMatchObject({
       commercialStatus: "won",
-      isDisqualified: false,
+      isDisqualified: true,
       commentCount: 3,
-      reminderAt: null,
-      dueAt: null,
-    })).toEqual({ "outro-lead": 1, "lead-1": 3 });
+      feedbackDueAt: null,
+    });
   });
 });

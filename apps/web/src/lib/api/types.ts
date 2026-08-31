@@ -23,16 +23,21 @@ export type OperationalLead = {
   commercialStatus: CommercialStatus;
   isDisqualified: boolean;
   commentCount: number;
+  assignedAt: string | null;
   feedbackDueAt: string | null;
+  lastUpdatedAt: string | null;
 };
 
 export type Treatment = {
+  leadId: string;
   leadName?: string;
   sellerName: string;
   comment: string;
   commercialStatus: CommercialStatus;
   isDisqualified: boolean;
+  assignedAt: string | null;
   createdAt: string;
+  lastUpdatedAt: string | null;
 };
 
 export type QueueEntry = {

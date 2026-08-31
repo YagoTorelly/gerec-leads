@@ -21,20 +21,50 @@ export function commentCountsAfterSubmission(
   return { ...current, [submission.leadId]: submission.commentCount };
 }
 
+export function applySubmissionToLead(
+  lead: OperationalLead,
+  submission: TreatmentSubmission,
+): OperationalLead {
+  if (lead.id !== submission.leadId) return lead;
+  return {
+    ...lead,
+    commercialStatus: submission.commercialStatus,
+    isDisqualified: submission.isDisqualified,
+    commentCount: submission.commentCount,
+    feedbackDueAt: submission.dueAt,
+    lastUpdatedAt: new Date().toISOString(),
+  };
+}
+
 function statusClass(status: OperationalLead["commercialStatus"]): string {
   return `commercial-status ${status}`;
 }
 
 export function LeadTable({ leads, role }: LeadTableProps) {
-  const [commentCounts, setCommentCounts] = useState<Record<string, number>>({});
-  const onSubmitted = useCallback((submission: TreatmentSubmission) => {
-    setCommentCounts((current) => commentCountsAfterSubmission(current, submission));
-  }, []);
+  const [leadOverrides, setLeadOverrides] = useState<Record<string, OperationalLead>>({});
+  const onSubmitted = useCallback(
+    (submission: TreatmentSubmission) => {
+      setLeadOverrides((current) => {
+        const original =
+          current[submission.leadId] ?? leads.find((lead) => lead.id === submission.leadId);
+        if (!original) return current;
+        return { ...current, [submission.leadId]: applySubmissionToLead(original, submission) };
+      });
+    },
+    [leads],
+  );
 
   return (
     <section className="table-card lead-table-card" aria-labelledby="lead-table-title">
-      <div className="table-head"><div><p className="eyebrow">Dados ao vivo</p><h2 id="lead-table-title">Leads</h2></div></div>
-      {leads.length === 0 ? <p className="empty">Nenhum lead disponível.</p> : (
+      <div className="table-head">
+        <div>
+          <p className="eyebrow">Dados ao vivo</p>
+          <h2 id="lead-table-title">Leads</h2>
+        </div>
+      </div>
+      {leads.length === 0 ? (
+        <p className="empty">Nenhum lead disponível.</p>
+      ) : (
         <table>
           <thead>
             <tr>
@@ -46,6 +76,8 @@ export function LeadTable({ leads, role }: LeadTableProps) {
               <th>E-mail</th>
               <th>Situação</th>
               <th>Marcador</th>
+              <th>Atribuído em</th>
+              <th>Última atualização</th>
               <th>Prazo</th>
               <th>Comentários</th>
               <th>Ação</th>
@@ -53,21 +85,45 @@ export function LeadTable({ leads, role }: LeadTableProps) {
           </thead>
           <tbody>
             {leads.map((lead) => {
-              const commentCount = commentCounts[lead.id] ?? lead.commentCount;
-              const sla = getSlaState(lead.feedbackDueAt);
+              const currentLead = leadOverrides[lead.id] ?? lead;
+              const sla = getSlaState(currentLead.feedbackDueAt);
               return (
                 <tr key={lead.id}>
-                  <td><strong>{lead.contactName}</strong></td>
-                  {role === "admin" ? <td>{lead.sellerName}</td> : null}
-                  <td>{lead.companyName}</td>
-                  <td>{lead.campaignName}</td>
-                  <td>{lead.phoneDisplay}</td>
-                  <td>{lead.email}</td>
-                  <td><span className={statusClass(lead.commercialStatus)}>{formatCommercialStatus(lead.commercialStatus)}</span></td>
-                  <td>{lead.isDisqualified ? <span className="disqualification-marker">{formatDisqualificationMarker(true)}</span> : "—"}</td>
-                  <td><span className={`sla ${sla}`}>{formatSlaDeadline(lead.feedbackDueAt)}</span></td>
-                  <td>{formatCommentCount(commentCount)}</td>
-                  <td><LeadTreatmentModal lead={lead} mode={role === "seller" ? "write" : "read"} onSubmitted={role === "seller" ? onSubmitted : undefined} /></td>
+                  <td>
+                    <strong>{currentLead.contactName}</strong>
+                  </td>
+                  {role === "admin" ? <td>{currentLead.sellerName}</td> : null}
+                  <td>{currentLead.companyName}</td>
+                  <td>{currentLead.campaignName}</td>
+                  <td>{currentLead.phoneDisplay}</td>
+                  <td>{currentLead.email}</td>
+                  <td>
+                    <span className={statusClass(currentLead.commercialStatus)}>
+                      {formatCommercialStatus(currentLead.commercialStatus)}
+                    </span>
+                  </td>
+                  <td>
+                    {currentLead.isDisqualified ? (
+                      <span className="disqualification-marker">
+                        {formatDisqualificationMarker(true)}
+                      </span>
+                    ) : (
+                      "—"
+                    )}
+                  </td>
+                  <td>{formatSlaDeadline(currentLead.assignedAt)}</td>
+                  <td>{formatSlaDeadline(currentLead.lastUpdatedAt)}</td>
+                  <td>
+                    <span className={`sla ${sla}`}>{formatSlaDeadline(currentLead.feedbackDueAt)}</span>
+                  </td>
+                  <td>{formatCommentCount(currentLead.commentCount)}</td>
+                  <td>
+                    <LeadTreatmentModal
+                      lead={currentLead}
+                      mode={role === "seller" ? "write" : "read"}
+                      onSubmitted={role === "seller" ? onSubmitted : undefined}
+                    />
+                  </td>
                 </tr>
               );
             })}

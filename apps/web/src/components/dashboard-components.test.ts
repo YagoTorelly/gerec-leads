@@ -17,12 +17,15 @@ const adminDashboard = {
   history: {
     items: [
       {
+        leadId: "lead-admin-1",
         leadName: "Débora Souza",
         sellerName: "Renato",
         comment: "Primeiro contato realizado.",
         commercialStatus: "negotiation" as const,
         isDisqualified: false,
+        assignedAt: "2026-08-28T15:30:00.000Z",
         createdAt: "2026-08-28T16:03:04.876Z",
+        lastUpdatedAt: "2026-08-28T16:03:04.876Z",
       },
     ],
     page: 1,
@@ -31,8 +34,20 @@ const adminDashboard = {
   },
   queue: {
     items: [
-      { sellerName: "Jessica", position: 1, availability: "active" as const, reason: null, skipBalance: 0 },
-      { sellerName: "Nelma", position: 2, availability: "blocked_overdue" as const, reason: "Feedback vencido", skipBalance: 0 },
+      {
+        sellerName: "Jessica",
+        position: 1,
+        availability: "active" as const,
+        reason: null,
+        skipBalance: 0,
+      },
+      {
+        sellerName: "Nelma",
+        position: 2,
+        availability: "blocked_overdue" as const,
+        reason: "Feedback vencido",
+        skipBalance: 0,
+      },
     ],
     total: 2,
     nextSellerName: "Jessica",
@@ -55,7 +70,9 @@ const sellerDashboard = {
         commercialStatus: "undefined" as const,
         isDisqualified: false,
         commentCount: 2,
+        assignedAt: "2026-08-28T15:30:00.000Z",
         feedbackDueAt: "2026-08-29T16:03:04.876Z",
+        lastUpdatedAt: "2026-08-28T16:03:04.876Z",
       },
     ],
     page: 1,
@@ -65,12 +82,15 @@ const sellerDashboard = {
   history: {
     items: [
       {
+        leadId: "lead-seller-1",
         leadName: "Débora Souza",
         sellerName: "Jessica",
         comment: "Primeiro contato realizado.",
         commercialStatus: "negotiation" as const,
         isDisqualified: false,
+        assignedAt: "2026-08-28T15:30:00.000Z",
         createdAt: "2026-08-28T16:03:04.876Z",
+        lastUpdatedAt: "2026-08-28T16:03:04.876Z",
       },
     ],
     page: 1,
@@ -82,7 +102,9 @@ const sellerDashboard = {
 
 describe("dashboards por papel", () => {
   it("renderiza os indicadores administrativos e a fila completa devolvida pela API", () => {
-    const markup = renderToStaticMarkup(createElement(AdminDashboard, { dashboard: adminDashboard }));
+    const markup = renderToStaticMarkup(
+      createElement(AdminDashboard, { dashboard: adminDashboard }),
+    );
 
     expect(markup).toContain("Total de leads");
     expect(markup).toContain("Atribuições");
@@ -95,19 +117,28 @@ describe("dashboards por papel", () => {
   });
 
   it("orienta o administrador quando não há vendedores disponíveis na fila", () => {
-    const markup = renderToStaticMarkup(createElement(AdminDashboard, {
-      dashboard: {
-        ...adminDashboard,
-        queue: { items: [], total: 0, nextSellerName: "Não informado", cursorSellerName: "Não informado" },
-      },
-    }));
+    const markup = renderToStaticMarkup(
+      createElement(AdminDashboard, {
+        dashboard: {
+          ...adminDashboard,
+          queue: {
+            items: [],
+            total: 0,
+            nextSellerName: "Não informado",
+            cursorSellerName: "Não informado",
+          },
+        },
+      }),
+    );
 
     expect(markup).toContain("Nenhum vendedor disponível na fila.");
     expect(markup).toContain("Cadastre ou ative um vendedor para retomar a distribuição.");
   });
 
   it("renderiza a operação própria do vendedor sem nomes ou indicadores dos colegas", () => {
-    const markup = renderToStaticMarkup(createElement(SellerDashboard, { dashboard: sellerDashboard }));
+    const markup = renderToStaticMarkup(
+      createElement(SellerDashboard, { dashboard: sellerDashboard }),
+    );
 
     expect(markup).toContain("Meus leads");
     expect(markup).toContain("Meus comentários");
@@ -121,10 +152,18 @@ describe("dashboards por papel", () => {
   });
 
   it("limita a navegação do vendedor à própria operação", () => {
-    const markup = renderToStaticMarkup(AppShell({
-      profile: { id: "seller-1", userId: "seller-1", fullName: "Jessica", email: "jessica@wtgseguros.com.br", role: "seller" },
-      children: createElement("p", null, "Conteúdo"),
-    }));
+    const markup = renderToStaticMarkup(
+      AppShell({
+        profile: {
+          id: "seller-1",
+          userId: "seller-1",
+          fullName: "Jessica",
+          email: "jessica@wtgseguros.com.br",
+          role: "seller",
+        },
+        children: createElement("p", null, "Conteúdo"),
+      }),
+    );
 
     expect(markup).toContain("Minha operação");
     expect(markup).not.toContain("Fila de leads");

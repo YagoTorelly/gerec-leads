@@ -94,7 +94,9 @@ def _database() -> Database:
                     "commercialStatus": "negotiation",
                     "isDisqualified": False,
                     "commentCount": 2,
+                    "assignedAt": datetime(2026, 8, 28, 9, tzinfo=UTC),
                     "feedbackDueAt": datetime(2026, 8, 31, 15, tzinfo=UTC),
+                    "updatedAt": datetime(2026, 8, 28, 12, tzinfo=UTC),
                     "createdAt": datetime(2026, 8, 28, 10, tzinfo=UTC),
                 },
                 {
@@ -106,7 +108,9 @@ def _database() -> Database:
                     "commercialStatus": "undefined",
                     "isDisqualified": False,
                     "commentCount": 0,
+                    "assignedAt": datetime(2026, 8, 28, 11, tzinfo=UTC),
                     "feedbackDueAt": None,
+                    "updatedAt": datetime(2026, 8, 28, 11, tzinfo=UTC),
                     "createdAt": datetime(2026, 8, 28, 11, tzinfo=UTC),
                 },
             ]
@@ -184,7 +188,9 @@ def test_admin_lead_projection_is_human_readable_and_omits_internal_foreign_keys
         "commercialStatus": "negotiation",
         "isDisqualified": False,
         "commentCount": 2,
+        "assignedAt": "2026-08-28T09:00:00+00:00",
         "feedbackDueAt": "2026-08-31T15:00:00+00:00",
+        "lastUpdatedAt": "2026-08-28T12:00:00+00:00",
     }
     assert {"assigneeId", "companyId", "campaignId", "phoneNormalized"}.isdisjoint(lead)
 
@@ -233,11 +239,14 @@ def test_admin_treatments_are_paginated_descending_and_seller_cannot_read_anothe
     assert treatments == {
         "items": [
             {
+                "leadId": "lead-a",
                 "comment": "Cliente pediu retorno amanhã",
                 "commercialStatus": "negotiation",
                 "isDisqualified": False,
                 "sellerName": "Renato",
                 "createdAt": "2026-08-28T12:00:00+00:00",
+                "assignedAt": "2026-08-28T09:00:00+00:00",
+                "lastUpdatedAt": "2026-08-28T12:00:00+00:00",
             }
         ],
         "page": 1,

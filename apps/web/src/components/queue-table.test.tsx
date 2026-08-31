@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { QueueTable } from "./queue-table";
 
 describe("QueueTable", () => {
-  it("exibe a ordem operacional devolvida pela API, o cursor e o primeiro elegível", () => {
+  it("exibe a ordem operacional atual em vez da posição fixa do cadastro", () => {
     const markup = renderToStaticMarkup(
       createElement(QueueTable, {
         queue: {
@@ -43,7 +43,10 @@ describe("QueueTable", () => {
     expect(markup).toContain("Renato");
     expect(markup).toContain("Próximo elegível");
     expect(markup).toContain("Jessica");
-    expect(markup).toContain("Posição");
+    expect(markup).toContain("Ordem atual");
+    expect(markup).toContain("Posição base");
+    expect(markup).toContain("<td>1</td>");
+    expect(markup).toContain("<td>3</td>");
     expect(markup).toContain("Bloqueado por atraso");
     expect(markup).toContain("Feedback vencido");
     expect(markup).toContain("Pausado");

@@ -31,7 +31,9 @@ const lead = {
   commercialStatus: "undefined" as const,
   isDisqualified: false,
   commentCount: 2,
+  assignedAt: "2026-08-28T12:00:00.000Z",
   feedbackDueAt: null,
+  lastUpdatedAt: "2026-08-28T12:00:00.000Z",
 };
 
 afterEach(() => {
@@ -167,6 +169,7 @@ describe("acessibilidade e interação do modal de tratativa", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(screen.getByRole("status").textContent).toContain("Tratativa registrada.");
     expect(screen.getByText("3 comentários")).toBeTruthy();
+    expect(screen.getByText("Negociação")).toBeTruthy();
     await waitFor(() => expect(actions.loadHistory).toHaveBeenCalledTimes(2));
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "Registrar tratativa" }));
 
@@ -189,5 +192,46 @@ describe("acessibilidade e interação do modal de tratativa", () => {
 
     expect(await screen.findByText("Revise os dados informados e tente novamente.")).toBeTruthy();
     expect(screen.getByRole("dialog")).toBeTruthy();
+  });
+
+  it("encerra o SLA visível quando a tratativa desqualifica o lead", async () => {
+    actions.submit.mockResolvedValue({
+      status: "success",
+      message: "Tratativa registrada.",
+      submission: {
+        leadId: "lead-1",
+        treatmentId: "treatment-2",
+        status: "created",
+        commercialStatus: "won",
+        isDisqualified: true,
+        commentCount: 3,
+        reminderAt: null,
+        dueAt: null,
+      },
+    });
+    actions.loadHistory
+      .mockResolvedValueOnce({ status: "success", items: [] })
+      .mockResolvedValueOnce({
+        status: "success",
+        items: [{
+          leadName: "Débora Souza",
+          sellerName: "Jessica",
+          comment: "Fora do escopo, mas com fechamento excepcional.",
+          commercialStatus: "won",
+          isDisqualified: true,
+          createdAt: "2026-08-29T13:00:00.000Z",
+        }] as Treatment[],
+      });
+    const user = userEvent.setup();
+    render(<LeadTable leads={[{ ...lead, feedbackDueAt: "2026-08-29T16:03:04.876Z" }]} role="seller" />);
+
+    await user.click(screen.getByRole("button", { name: "Registrar tratativa" }));
+    await user.type(screen.getByLabelText("Comentário"), "Fora do escopo, mas com fechamento excepcional.");
+    await user.click(screen.getByLabelText("Marcar como Desqualificado"));
+    await user.click(screen.getByRole("button", { name: "Salvar tratativa" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.getByText("Desqualificado")).toBeTruthy();
+    expect(screen.getByText("Não informado")).toBeTruthy();
   });
 });

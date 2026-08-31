@@ -14,16 +14,16 @@ function availabilityLabel(availability: QueueEntry["availability"]): string {
   }[availability];
 }
 
-function QueueCard({ item }: { item: QueueEntry }) {
+function QueueCard({ item, currentPosition }: { item: QueueEntry; currentPosition: number }) {
   const label = availabilityLabel(item.availability);
   return (
     <li className="queue-card">
       <div className="queue-card__header">
-        <span className="queue-card__position">#{item.position}</span>
+        <span className="queue-card__position">#{currentPosition}</span>
         <span className={`status-badge status-badge--${item.availability}`}>{label}</span>
       </div>
       <strong>{item.sellerName}</strong>
-      <small>{item.reason ?? "Disponível para novas atribuições"}</small>
+      <small>Ordem base {item.position}. {item.reason ?? "Disponível para novas atribuições"}</small>
     </li>
   );
 }
@@ -92,8 +92,8 @@ export function AdminDashboard({ dashboard }: { dashboard: AdminDashboardData })
                 Próxima vez: <strong>{dashboard.queue.cursorSellerName}</strong>
               </p>
               <ol className="queue-list" aria-label="Fila comercial completa">
-                {dashboard.queue.items.map((item) => (
-                  <QueueCard item={item} key={item.sellerName} />
+                {dashboard.queue.items.map((item, index) => (
+                  <QueueCard item={item} currentPosition={index + 1} key={item.sellerName} />
                 ))}
               </ol>
             </>

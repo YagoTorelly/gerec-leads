@@ -37,7 +37,8 @@ export function QueueTable({ queue }: { queue: AdminQueue }) {
         <table>
           <thead>
             <tr>
-              <th>Posição</th>
+              <th>Ordem atual</th>
+              <th>Posição base</th>
               <th>Vendedor</th>
               <th>Disponibilidade</th>
               <th>Motivo</th>
@@ -45,8 +46,9 @@ export function QueueTable({ queue }: { queue: AdminQueue }) {
             </tr>
           </thead>
           <tbody>
-            {queue.items.map((item) => (
+            {queue.items.map((item, index) => (
               <tr key={`${item.position}-${item.sellerName}`}>
+                <td>{index + 1}</td>
                 <td>{item.position}</td>
                 <td>
                   <strong>{item.sellerName}</strong>

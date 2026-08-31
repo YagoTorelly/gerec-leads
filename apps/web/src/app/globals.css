@@ -529,8 +529,7 @@ button:disabled {
 }
 .lead-table-card td:nth-child(3),
 .lead-table-card td:nth-child(4),
-.lead-table-card td:nth-child(6),
-.treatment-history-table td:nth-child(3) {
+.lead-table-card td:nth-child(6) {
   max-width: 240px;
   overflow-wrap: anywhere;
 }
@@ -719,6 +718,44 @@ button:disabled {
   margin-top: 24px;
   padding-top: 20px;
   border-top: 1px solid var(--line);
+}
+.treatment-conversations {
+  display: grid;
+  gap: 14px;
+  padding: 0 24px 24px;
+}
+.treatment-conversation-card {
+  padding: 18px;
+  border: 1px solid #dfe7ed;
+  border-radius: 10px;
+  background: var(--surface-muted);
+}
+.treatment-conversation-card h3 {
+  margin: 0;
+  color: var(--text-strong);
+  font-size: 18px;
+  letter-spacing: -0.03em;
+}
+.treatment-conversation-card__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+.treatment-conversation-card__meta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(120px, 1fr));
+  gap: 16px;
+  margin: 0;
+}
+.treatment-conversation-card__meta dt {
+  color: var(--muted);
+  font-size: 11px;
+}
+.treatment-conversation-card__meta dd {
+  margin: 4px 0 0;
+  color: var(--text-strong);
+  font-weight: 700;
 }
 .treatment-history ol {
   margin-top: 14px;
