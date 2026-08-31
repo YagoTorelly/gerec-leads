@@ -206,6 +206,27 @@ def test_missing_names_and_contact_data_use_the_single_safe_fallback() -> None:
     assert lead["email"] == "Não informado"
 
 
+@pytest.mark.parametrize(
+    ("source_payload", "expected"),
+    [
+        ({"phone_number": "+55 (11) 98830-8029"}, "11988308029"),
+        ({"phone": "11988308029"}, "11988308029"),
+    ],
+)
+def test_lead_projection_recovers_phone_from_persisted_source_payload(
+    source_payload: dict[str, str], expected: str
+) -> None:
+    """Older imports may retain the source phone only in source_records.payload."""
+    database = _database()
+    database["leads"].documents[0]["phoneNormalized"] = None
+    database["source_records"] = Collection([{"leadId": "lead-a", "payload": source_payload}])
+
+    payload = DashboardService(database).for_user(_admin())
+    lead = next(item for item in payload["leads"]["items"] if item["id"] == "lead-a")
+
+    assert lead["phoneDisplay"] == expected
+
+
 def test_seller_projection_never_exposes_colleagues_or_global_queue_totals() -> None:
     payload = DashboardService(_database()).for_user(_seller_a())
 

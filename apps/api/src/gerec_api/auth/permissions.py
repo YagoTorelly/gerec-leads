@@ -218,7 +218,7 @@ class DashboardService:
                 "sellerName": _name_or_fallback(seller),
                 "companyName": _company_name(company),
                 "campaignName": _campaign_name(campaign),
-                "phoneDisplay": _phone_without_country_code(lead.get("phoneNormalized")),
+                "phoneDisplay": _phone_without_country_code(self._lead_phone_value(lead)),
                 "email": _text_or_fallback(lead.get("email") or lead.get("emailNormalized")),
                 "commercialStatus": _commercial_status(lead),
                 "isDisqualified": bool(lead.get("isDisqualified", False)),
@@ -301,6 +301,35 @@ class DashboardService:
             item = collection.find_one({"_id": candidate})
             if item is not None:
                 return item
+        return None
+
+    def _lead_phone_value(self, lead: Mapping[str, Any]) -> Any:
+        """Read the canonical phone, tolerating source records from older imports.
+
+        Current imports persist ``phoneNormalized`` on the lead.  Some already
+        persisted snapshots retain the original value only in ``source_records``;
+        reading those fields keeps the read model useful without changing the
+        source contract or mutating data during a GET.
+        """
+        for field in ("phoneNormalized", "phoneNumber", "phone_number", "phone"):
+            value = lead.get(field)
+            if value is not None and str(value).strip():
+                return value
+
+        source_records = self._database[MongoCollections.SOURCE_RECORDS]
+        source = source_records.find_one(
+            {"leadId": {"$in": _identity_values(lead.get("_id"))}}
+        )
+        if source is None:
+            return None
+        for container_name in ("payload", "sellerProjection"):
+            container = source.get(container_name)
+            if not isinstance(container, Mapping):
+                continue
+            for field in ("phoneNormalized", "phoneNumber", "phone_number", "phone"):
+                value = container.get(field)
+                if value is not None and str(value).strip():
+                    return value
         return None
 
 
