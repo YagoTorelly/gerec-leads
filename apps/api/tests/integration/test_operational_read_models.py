@@ -227,6 +227,26 @@ def test_lead_projection_recovers_phone_from_persisted_source_payload(
     assert lead["phoneDisplay"] == expected
 
 
+def test_lead_projection_recovers_phone_from_legacy_nested_source_record() -> None:
+    database = _database()
+    database["leads"].documents[0].update(
+        {"phoneNormalized": None, "sourceLeadId": "sheet-lead-a"}
+    )
+    database["source_records"] = Collection(
+        [
+            {
+                "lead_id": "sheet-lead-a",
+                "sourcePayload": {"row": {"telefone": "p:+5511998765432"}},
+            }
+        ]
+    )
+
+    payload = DashboardService(database).for_user(_admin())
+    lead = next(item for item in payload["leads"]["items"] if item["id"] == "lead-a")
+
+    assert lead["phoneDisplay"] == "11998765432"
+
+
 def test_seller_projection_never_exposes_colleagues_or_global_queue_totals() -> None:
     payload = DashboardService(_database()).for_user(_seller_a())
 

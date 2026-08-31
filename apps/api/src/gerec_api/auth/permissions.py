@@ -311,26 +311,15 @@ class DashboardService:
         reading those fields keeps the read model useful without changing the
         source contract or mutating data during a GET.
         """
-        for field in ("phoneNormalized", "phoneNumber", "phone_number", "phone"):
-            value = lead.get(field)
-            if value is not None and str(value).strip():
-                return value
+        value = _phone_from_mapping(lead)
+        if value is not None:
+            return value
 
         source_records = self._database[MongoCollections.SOURCE_RECORDS]
-        source = source_records.find_one(
-            {"leadId": {"$in": _identity_values(lead.get("_id"))}}
-        )
+        source = _find_source_record(source_records, lead)
         if source is None:
             return None
-        for container_name in ("payload", "sellerProjection"):
-            container = source.get(container_name)
-            if not isinstance(container, Mapping):
-                continue
-            for field in ("phoneNormalized", "phoneNumber", "phone_number", "phone"):
-                value = container.get(field)
-                if value is not None and str(value).strip():
-                    return value
-        return None
+        return _phone_from_mapping(source)
 
 
 def _identity_values(value: Any) -> list[Any]:
@@ -338,6 +327,55 @@ def _identity_values(value: Any) -> list[Any]:
     if isinstance(value, str) and ObjectId.is_valid(value):
         values.append(ObjectId(value))
     return values
+
+
+_PHONE_FIELDS = ("phoneNormalized", "phoneNumber", "phone_number", "phone", "telefone")
+_PHONE_CONTAINERS = (
+    "sourceProjection",
+    "sourcePayload",
+    "sellerProjection",
+    "payload",
+    "projection",
+    "source_projection",
+    "source_payload",
+)
+_SOURCE_LINK_FIELDS = ("leadId", "lead_id", "sourceLeadId", "source_lead_id")
+
+
+def _phone_from_mapping(value: Any, *, depth: int = 0) -> Any:
+    """Extract only known phone aliases from known persisted containers."""
+    if not isinstance(value, Mapping) or depth > 4:
+        return None
+    for field in _PHONE_FIELDS:
+        candidate = value.get(field)
+        if candidate is not None and str(candidate).strip():
+            return candidate
+    for field in _PHONE_CONTAINERS:
+        candidate = value.get(field)
+        found = _phone_from_mapping(candidate, depth=depth + 1)
+        if found is not None:
+            return found
+    return None
+
+
+def _find_source_record(collection: Any, lead: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """Resolve source records across current and legacy link field names."""
+    lead_values: list[Any] = []
+    for field in ("_id", "id", "sourceLeadId", "source_lead_id"):
+        candidate = lead.get(field)
+        if candidate is not None:
+            lead_values.extend(_identity_values(candidate))
+    seen: set[str] = set()
+    for link_field in _SOURCE_LINK_FIELDS:
+        for candidate in lead_values:
+            marker = f"{link_field}:{candidate!r}"
+            if marker in seen:
+                continue
+            seen.add(marker)
+            source = collection.find_one({link_field: candidate})
+            if source is not None:
+                return source
+    return None
 
 
 def _public_user(user: CurrentUser) -> dict[str, str]:
