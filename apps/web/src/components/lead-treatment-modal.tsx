@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useCallback, useEffect, useRef, useState } from "react";
+import { useActionState, useCallback, useEffect, useId, useRef, useState } from "react";
 
 import type {
   CommercialStatus,
@@ -54,25 +54,23 @@ function historyItem(item: Treatment, index: number) {
   );
 }
 
-function newIdempotencyKey(): string {
-  return globalThis.crypto?.randomUUID?.() ?? `tratativa-${Date.now()}-${Math.random()}`;
-}
-
 function TreatmentForm({
   lead,
   onSuccess,
+  sessionNumber,
 }: {
   lead: OperationalLead;
   onSuccess: (submission: TreatmentSubmission) => void;
+  sessionNumber: number;
 }) {
   const [state, formAction, pending] = useActionState(
     submitLeadTreatmentAction,
     initialTreatmentActionState,
   );
-  // Do not generate a random value during render: this component is server
-  // rendered and the browser would generate a different key during hydration.
-  const [idempotencyKey, setIdempotencyKey] = useState("");
-  useEffect(() => setIdempotencyKey(newIdempotencyKey()), []);
+  // React IDs are stable between SSR and hydration. The session number makes
+  // a new idempotency key whenever the modal is opened again.
+  const reactId = useId();
+  const idempotencyKey = `tratativa-${lead.id}-${sessionNumber}-${reactId}`;
   const [comment, setComment] = useState("");
   const draftIsValid = validateTreatmentDraft({
     comment,
@@ -151,6 +149,7 @@ export function LeadTreatmentModal({
   const [historyMessage, setHistoryMessage] = useState<string | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [treatmentSession, setTreatmentSession] = useState(0);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const dialogRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -169,6 +168,7 @@ export function LeadTreatmentModal({
   }, [lead.id]);
   const openModal = useCallback(() => {
     setSuccessMessage(null);
+    setTreatmentSession((current) => current + 1);
     setOpen(true);
     refreshHistory();
   }, [refreshHistory]);
@@ -264,7 +264,9 @@ export function LeadTreatmentModal({
               </button>
             </header>
 
-            {mode === "write" ? <TreatmentForm lead={lead} onSuccess={onSuccess} /> : null}
+            {mode === "write" ? (
+              <TreatmentForm lead={lead} onSuccess={onSuccess} sessionNumber={treatmentSession} />
+            ) : null}
 
             <section className="treatment-history" aria-label="Histórico de tratativas">
               <h4>Histórico de tratativas</h4>
