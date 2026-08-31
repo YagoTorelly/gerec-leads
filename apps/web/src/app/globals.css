@@ -532,6 +532,31 @@ button:disabled {
   overflow-x: hidden;
   overflow-y: auto;
 }
+.seller-queue-card table {
+  min-width: 0;
+  table-layout: fixed;
+}
+.seller-queue-card th,
+.seller-queue-card td {
+  padding: 12px 14px;
+  overflow-wrap: anywhere;
+}
+.seller-queue-card th:nth-child(1),
+.seller-queue-card td:nth-child(1) {
+  width: 30%;
+}
+.seller-queue-card th:nth-child(2),
+.seller-queue-card td:nth-child(2) {
+  width: 23%;
+}
+.seller-queue-card th:nth-child(3),
+.seller-queue-card td:nth-child(3) {
+  width: 23%;
+}
+.seller-queue-card th:nth-child(4),
+.seller-queue-card td:nth-child(4) {
+  width: 24%;
+}
 .lead-table-card table {
   min-width: 0;
   table-layout: fixed;
