@@ -61,6 +61,7 @@ class ContractOperationsService(OperationsService):
             commercial_status=command.commercial_status,
             is_disqualified=command.is_disqualified,
             comment_count=1,
+            last_updated_at=datetime(2026, 8, 28, 16, 3, 4, tzinfo=UTC),
             reminder_at=None,
             due_at=None,
         )

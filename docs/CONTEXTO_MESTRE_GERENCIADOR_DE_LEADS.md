@@ -1,6 +1,6 @@
 ﻿# Contexto Mestre - Gerenciador de Leads WTG
 
-> Gerado em 2026-08-28 21:03:14 UTC por `scripts/generate-master-context.ps1`.
+> Gerado em 2026-08-31 15:47:28 UTC por `scripts/generate-master-context.ps1`.
 
 ## Como usar este documento
 
@@ -7458,11 +7458,14 @@ CMD ["sh", "-c", "uvicorn gerec_api.main:create_app --factory --host 0.0.0.0 --p
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.6",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.3.3",
+    "jsdom": "^30.0.1",
     "tailwindcss": "^4",
     "typescript": "^5",
     "vitest": "4.1.11"
@@ -7597,17 +7600,23 @@ def verify_unknown_password(password: str) -> None:
 ## Snapshot de código: `apps/api/src/gerec_api/auth/permissions.py`
 
 ````python
-"""Centralized authorization and read-scope policies for the API."""
+"""Centralized authorization and role-specific operational read models."""
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Mapping
 
 from bson import ObjectId
 
 from gerec_api.auth.sessions import CurrentUser
+from gerec_api.domain.queue import QueueSnapshot
 from gerec_api.infrastructure.mongo.collections import MongoCollections
+from gerec_api.infrastructure.mongo.queue_repository import QueueRepository
 from gerec_api.infrastructure.mongo.serialization import serialize_bson
+
+
+NOT_INFORMED = "Não informado"
 
 
 class PermissionDenied(PermissionError):
@@ -7631,15 +7640,11 @@ class PermissionService:
 
     @classmethod
     def scope_query(cls, user: CurrentUser | None, resource: str) -> dict[str, Any]:
-        """Return an immutable server-side Mongo filter for a read resource.
-
-        Seller identity is always derived from the session. A caller cannot pass a
-        seller id to widen this filter.
-        """
+        """Return a server-side Mongo filter; seller identity only comes from session."""
         current = cls.require_current_user(user)
         if resource not in {
             "leads", "history", "queue", "skip_balance", "companies", "campaigns",
-            "users", "audit",
+            "users", "audit", "treatments",
         }:
             raise ValueError(f"unknown protected resource: {resource}")
         if current.role == "admin":
@@ -7647,52 +7652,151 @@ class PermissionService:
         ids = _identity_values(current.id)
         if resource == "leads":
             return {"assigneeId": {"$in": ids}}
-        if resource == "companies":
-            return {"ownerId": {"$in": ids}}
-        if resource == "history":
+        if resource in {"history", "treatments"}:
             return {"sellerId": {"$in": ids}}
         if resource in {"queue", "skip_balance"}:
             return {"sellerId": {"$in": ids}}
-        # Sellers must not receive user, campaign or audit data.
         raise PermissionDenied(f"seller cannot read {resource}")
 
 
 class DashboardService:
-    """Paginated dashboard reads with scope applied before every collection query."""
+    """Read-model boundary with intentionally different contracts for each role.
 
-    def __init__(self, database: Any, *, page_size: int = 50) -> None:
+    The service contains no command logic. Queue availability is delegated to the
+    Task 5 repository snapshot so the read model cannot invent an eligibility rule.
+    """
+
+    def __init__(
+        self,
+        database: Any,
+        *,
+        page_size: int = 50,
+        queue_snapshot: Any | None = None,
+    ) -> None:
         self._database = database
         self._page_size = max(1, min(page_size, 200))
+        self._queue_snapshot = queue_snapshot or QueueRepository(database).snapshot
 
-    def for_user(self, user: CurrentUser | None, *, page: int = 1, limit: int | None = None) -> dict[str, Any]:
+    def for_user(
+        self,
+        user: CurrentUser | None,
+        *,
+        page: int = 1,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
         current = PermissionService.require_current_user(user)
-        page = _page_number(page)
-        page_size = _page_limit(self._page_size if limit is None else limit)
-        leads = self._page(MongoCollections.LEADS, PermissionService.scope_query(current, "leads"), page, page_size)
-        history = self._page(
-            MongoCollections.ASSIGNMENTS,
-            PermissionService.scope_query(current, "history"), page, page_size,
+        return (
+            self.for_admin(current, page=page, limit=limit)
+            if current.role == "admin"
+            else self.for_seller(current, page=page, limit=limit)
         )
-        queue = self._page(
-            MongoCollections.SELLER_QUEUE,
-            PermissionService.scope_query(current, "queue"), page, page_size,
-        )
-        state = self._database[MongoCollections.QUEUE_STATE].find_one({"_id": "global"})
-        next_seller = self._find_by_id(MongoCollections.USERS, (state or {}).get("nextSellerId"))
-        queue["nextSellerName"] = _display_name(next_seller)
-        balance = self._first(
-            MongoCollections.SKIP_BALANCES,
-            PermissionService.scope_query(current, "skip_balance"),
-        )
+
+    def for_admin(
+        self,
+        user: CurrentUser | None,
+        *,
+        page: int = 1,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        PermissionService.require_admin(user)
+        current = PermissionService.require_current_user(user)
+        page, page_size = self._pagination(page, limit)
         return {
-            "user": {"id": current.id, "email": current.email, "role": current.role},
-            "leads": leads,
-            "history": history,
-            "queue": queue,
-            "skipBalance": balance,
+            "user": _public_user(current),
+            "leads": self._lead_page({}, page, page_size),
+            "history": self._treatment_page({}, page, page_size, include_lead_name=True),
+            "queue": self._admin_queue(),
         }
 
-    def _page(self, collection_name: str, query: Mapping[str, Any], page: int, page_size: int) -> dict[str, Any]:
+    def for_seller(
+        self,
+        user: CurrentUser | None,
+        *,
+        page: int = 1,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        current = PermissionService.require_current_user(user)
+        if current.role != "seller":
+            raise PermissionDenied("seller role is required")
+        page, page_size = self._pagination(page, limit)
+        return {
+            "user": _public_user(current),
+            "leads": self._lead_page(PermissionService.scope_query(current, "leads"), page, page_size),
+            "history": self._treatment_page(
+                PermissionService.scope_query(current, "treatments"),
+                page,
+                page_size,
+                include_lead_name=True,
+            ),
+            "queue": self._seller_queue(current),
+        }
+
+    def queue_for_user(self, user: CurrentUser | None) -> dict[str, Any]:
+        current = PermissionService.require_current_user(user)
+        return self._admin_queue() if current.role == "admin" else self._seller_queue(current)
+
+    def lead_treatments_for_user(
+        self,
+        lead_id: str,
+        user: CurrentUser | None,
+        *,
+        page: int = 1,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        current = PermissionService.require_current_user(user)
+        page, page_size = self._pagination(page, limit)
+        lead = self._find_by_id(MongoCollections.LEADS, lead_id)
+        if lead is None:
+            raise PermissionDenied("lead is outside current user scope")
+
+        query: dict[str, Any] = {"leadId": {"$in": _identity_values(lead_id)}}
+        if current.role == "seller":
+            seller_query = PermissionService.scope_query(current, "treatments")
+            own_treatments = self._database[MongoCollections.LEAD_TREATMENTS].find_one(
+                {**query, **seller_query}
+            )
+            current_owner = lead.get("assigneeId") in _identity_values(current.id)
+            if not current_owner and own_treatments is None:
+                raise PermissionDenied("lead is outside current user scope")
+            query.update(seller_query)
+        return self._treatment_page(query, page, page_size, include_lead_name=False)
+
+    def _pagination(self, page: int, limit: int | None) -> tuple[int, int]:
+        return _page_number(page), _page_limit(self._page_size if limit is None else limit)
+
+    def _lead_page(self, query: Mapping[str, Any], page: int, page_size: int) -> dict[str, Any]:
+        return self._page(
+            MongoCollections.LEADS,
+            query,
+            page,
+            page_size,
+            self._lead_projection,
+        )
+
+    def _treatment_page(
+        self,
+        query: Mapping[str, Any],
+        page: int,
+        page_size: int,
+        *,
+        include_lead_name: bool,
+    ) -> dict[str, Any]:
+        return self._page(
+            MongoCollections.LEAD_TREATMENTS,
+            query,
+            page,
+            page_size,
+            lambda treatment: self._treatment_projection(treatment, include_lead_name=include_lead_name),
+        )
+
+    def _page(
+        self,
+        collection_name: str,
+        query: Mapping[str, Any],
+        page: int,
+        page_size: int,
+        projection: Any,
+    ) -> dict[str, Any]:
         collection = self._database[collection_name]
         cursor = collection.find(dict(query))
         if hasattr(cursor, "sort"):
@@ -7701,76 +7805,156 @@ class DashboardService:
             cursor = cursor.skip((page - 1) * page_size)
         if hasattr(cursor, "limit"):
             cursor = cursor.limit(page_size)
-        raw_items = list(cursor)
-        if collection_name == MongoCollections.SELLER_QUEUE:
-            state = self._database[MongoCollections.QUEUE_STATE].find_one({"_id": "global"})
-            next_id = (state or {}).get("nextSellerId")
-            if next_id is not None:
-                positions = {item.get("sellerId"): item.get("position", 0) for item in raw_items}
-                start = positions.get(next_id)
-                if start is not None:
-                    raw_items.sort(key=lambda item: (item.get("position", 0) - start) % max(len(raw_items), 1))
-        items = [self._enrich(collection_name, item) for item in raw_items]
+        items = [projection(item) for item in cursor]
         total = collection.count_documents(dict(query)) if hasattr(collection, "count_documents") else len(items)
         return {"items": items, "page": page, "pageSize": page_size, "total": total}
 
-    def _enrich(self, collection_name: str, document: Mapping[str, Any]) -> dict[str, Any]:
-        """Expose human-readable names while retaining IDs for internal actions."""
-        result = dict(document)
-        if collection_name == MongoCollections.SELLER_QUEUE:
-            seller = self._find_by_id(MongoCollections.USERS, result.get("sellerId"))
-            result["sellerName"] = _display_name(seller, result.get("sellerId"))
-        elif collection_name == MongoCollections.ASSIGNMENTS:
-            seller = self._find_by_id(MongoCollections.USERS, result.get("sellerId"))
-            lead = self._find_by_id(MongoCollections.LEADS, result.get("leadId"))
-            result["sellerName"] = _display_name(seller, result.get("sellerId"))
-            result["leadName"] = (lead or {}).get("contactName") or (lead or {}).get("email") or "Lead sem nome"
-            if lead:
-                company = self._find_by_id(MongoCollections.COMPANIES, lead.get("companyId"))
-                campaign = self._find_by_id(MongoCollections.CAMPAIGNS, lead.get("campaignId"))
-                result["companyName"] = _display_name(company, lead.get("companyId"))
-                result["campaignName"] = _campaign_name(campaign, lead.get("campaignId"))
-        elif collection_name == MongoCollections.LEADS:
-            result["email"] = result.get("email") or result.get("emailNormalized")
-            result["commercialStatus"] = _commercial_status(result)
-            company = self._find_by_id(MongoCollections.COMPANIES, result.get("companyId"))
-            campaign = self._find_by_id(MongoCollections.CAMPAIGNS, result.get("campaignId"))
-            result["companyName"] = _display_name(company, result.get("companyId"))
-            result["campaignName"] = _campaign_name(campaign, result.get("campaignId"))
-            seller = self._find_by_id(MongoCollections.USERS, result.get("assigneeId"))
-            result["sellerName"] = _display_name(seller, result.get("assigneeId"))
-        return _public_document(result)
+    def _lead_projection(self, lead: Mapping[str, Any]) -> dict[str, Any]:
+        company = self._find_by_id(MongoCollections.COMPANIES, lead.get("companyId"))
+        campaign = self._find_by_id(MongoCollections.CAMPAIGNS, lead.get("campaignId"))
+        seller = self._find_by_id(MongoCollections.USERS, lead.get("assigneeId"))
+        return _serialize_read_model(
+            {
+                "id": str(lead["_id"]),
+                "contactName": _text_or_fallback(lead.get("contactName")),
+                "sellerName": _name_or_fallback(seller),
+                "companyName": _company_name(company),
+                "campaignName": _campaign_name(campaign),
+                "phoneDisplay": _phone_without_country_code(lead.get("phoneNormalized")),
+                "email": _text_or_fallback(lead.get("email") or lead.get("emailNormalized")),
+                "commercialStatus": _commercial_status(lead),
+                "isDisqualified": bool(lead.get("isDisqualified", False)),
+                "commentCount": int(lead.get("commentCount", 0)),
+                "assignedAt": lead.get("assignedAt"),
+                "feedbackDueAt": lead.get("feedbackDueAt"),
+                "lastUpdatedAt": lead.get("lastCommentAt")
+                or lead.get("updatedAt")
+                or lead.get("assignedAt"),
+            }
+        )
+
+    def _treatment_projection(
+        self, treatment: Mapping[str, Any], *, include_lead_name: bool
+    ) -> dict[str, Any]:
+        seller = self._find_by_id(MongoCollections.USERS, treatment.get("sellerId"))
+        lead = self._find_by_id(MongoCollections.LEADS, treatment.get("leadId"))
+        result: dict[str, Any] = {
+            "leadId": str(treatment.get("leadId")),
+            "sellerName": _name_or_fallback(seller),
+            "comment": _text_or_fallback(treatment.get("comment")),
+            "commercialStatus": _commercial_status(treatment),
+            "isDisqualified": bool(treatment.get("isDisqualified", False)),
+            "assignedAt": (lead or {}).get("assignedAt"),
+            "createdAt": treatment.get("createdAt"),
+            "lastUpdatedAt": (
+                (lead or {}).get("lastCommentAt")
+                or (lead or {}).get("updatedAt")
+                or (lead or {}).get("assignedAt")
+            ),
+        }
+        if include_lead_name:
+            result["leadName"] = _text_or_fallback((lead or {}).get("contactName"))
+        return _serialize_read_model(result)
+
+    def _admin_queue(self) -> dict[str, Any]:
+        snapshot = self._snapshot()
+        entries = []
+        for position, entry in enumerate(snapshot.entries, start=1):
+            seller = self._find_by_id(MongoCollections.USERS, entry.seller_id)
+            entries.append(
+                {
+                    "sellerName": _name_or_fallback(seller),
+                    "position": position,
+                    "availability": entry.availability.status,
+                    "reason": entry.availability.reason,
+                    "skipBalance": entry.skip_balance,
+                }
+            )
+        return {
+            "items": entries,
+            "total": len(entries),
+            "nextSellerName": entries[0]["sellerName"] if entries else NOT_INFORMED,
+            "cursorSellerName": _name_or_fallback(
+                self._find_by_id(MongoCollections.USERS, snapshot.cursor_seller_id)
+            ),
+        }
+
+    def _seller_queue(self, user: CurrentUser) -> dict[str, Any]:
+        for position, entry in enumerate(self._snapshot().entries, start=1):
+            if entry.seller_id in _identity_values(user.id):
+                return {
+                    "position": position,
+                    "availability": entry.availability.status,
+                    "skipBalance": entry.skip_balance,
+                }
+        # A seller can remain authenticated while an administrative migration or
+        # deactivation has removed it from the queue. This is its own state, not
+        # a reason to disclose the global queue or fail the complete dashboard.
+        return {"position": None, "availability": "paused", "skipBalance": 0}
+
+    def _snapshot(self) -> QueueSnapshot:
+        return self._queue_snapshot()
 
     def _find_by_id(self, collection_name: str, value: Any) -> Mapping[str, Any] | None:
         if value is None:
             return None
         collection = self._database[collection_name]
-        item = collection.find_one({"_id": value})
-        if item is None and isinstance(value, str) and ObjectId.is_valid(value):
-            item = collection.find_one({"_id": ObjectId(value)})
-        return item
-
-    def _first(self, collection_name: str, query: Mapping[str, Any]) -> dict[str, Any] | None:
-        item = self._database[collection_name].find_one(dict(query))
-        return _public_document(item) if item is not None else None
+        for candidate in _identity_values(value):
+            item = collection.find_one({"_id": candidate})
+            if item is not None:
+                return item
+        return None
 
 
-def _identity_values(value: str) -> list[Any]:
+def _identity_values(value: Any) -> list[Any]:
     values: list[Any] = [value]
-    if ObjectId.is_valid(value):
+    if isinstance(value, str) and ObjectId.is_valid(value):
         values.append(ObjectId(value))
     return values
 
 
-def _display_name(document: Mapping[str, Any] | None, identifier: Any = None) -> str:
-    """Resolve a human label at the read seam; never make the UI know Mongo IDs."""
+def _public_user(user: CurrentUser) -> dict[str, str]:
+    return {"id": user.id, "email": user.email, "role": user.role}
+
+
+def _text_or_fallback(value: Any) -> str:
+    text = str(value).strip() if value is not None else ""
+    return text or NOT_INFORMED
+
+
+def _name_or_fallback(document: Mapping[str, Any] | None) -> str:
     value = (document or {}).get("fullName") or (document or {}).get("name") or (document or {}).get("email")
-    return str(value) if value else "Não identificado"
+    return _text_or_fallback(value)
 
 
-def _campaign_name(document: Mapping[str, Any] | None, identifier: Any = None) -> str:
-    value = (document or {}).get("displayName") or (document or {}).get("sourceName") or (document or {}).get("name")
-    return str(value) if value else "Campanha não identificada"
+def _company_name(document: Mapping[str, Any] | None) -> str:
+    return _text_or_fallback((document or {}).get("name") or (document or {}).get("legalName"))
+
+
+def _campaign_name(document: Mapping[str, Any] | None) -> str:
+    return _text_or_fallback(
+        (document or {}).get("displayName")
+        or (document or {}).get("sourceName")
+        or (document or {}).get("name")
+    )
+
+
+def _phone_without_country_code(value: Any) -> str:
+    digits = "".join(character for character in str(value or "") if character.isdigit())
+    if digits.startswith("55") and len(digits) in {12, 13}:
+        digits = digits[2:]
+    return digits or NOT_INFORMED
+
+
+def _commercial_status(document: Mapping[str, Any]) -> str:
+    direct = document.get("commercialStatus")
+    if direct in {"undefined", "negotiation", "won"}:
+        return str(direct)
+    if document.get("conversionStatus") == "won":
+        return "won"
+    if document.get("qualificationStatus") in {"qualified", "in_negotiation", "negotiation"}:
+        return "negotiation"
+    return "undefined"
 
 
 def _page_number(value: int) -> int:
@@ -7779,27 +7963,19 @@ def _page_number(value: int) -> int:
     return value
 
 
-def _commercial_status(document: Mapping[str, Any]) -> str:
-    if document.get("conversionStatus") == "won":
-        return "won"
-    if document.get("conversionStatus") == "disqualified":
-        return "disqualified"
-    if document.get("qualificationStatus") in {"qualified", "in_negotiation", "negotiation"}:
-        return "negotiation"
-    return "undefined"
-
-
 def _page_limit(value: int) -> int:
     if value < 1 or value > 200:
         raise ValueError("limit must be between 1 and 200")
     return value
 
 
-def _public_document(document: Mapping[str, Any]) -> dict[str, Any]:
-    result = dict(document)
-    if "_id" in result:
-        result["id"] = str(result.pop("_id"))
-    return serialize_bson(result)
+def _serialize_read_model(value: Mapping[str, Any]) -> dict[str, Any]:
+    return serialize_bson(
+        {
+            key: item.isoformat() if isinstance(item, datetime) else item
+            for key, item in value.items()
+        }
+    )
 ````
 
 ## Snapshot de código: `apps/api/src/gerec_api/auth/sessions.py`
@@ -7905,6 +8081,10 @@ class AuthService:
             {"$set": {"revokedAt": now, "updatedAt": now}},
         )
 
+    def revoke_all_for_user(self, user_id: Any) -> None:
+        """Invalidate every currently active session for one account."""
+        revoke_sessions_for_user(self._sessions, user_id, now=_as_utc(self._now()))
+
     def current_user(self, raw_token: str) -> CurrentUser:
         """Resolve a current user only from an unrevoked, unexpired opaque session."""
         if not raw_token:
@@ -7937,6 +8117,22 @@ def _normalize_email(email: str) -> str:
 
 def _token_hash(raw_token: str) -> str:
     return sha256(raw_token.encode("utf-8")).hexdigest()
+
+
+def revoke_sessions_for_user(
+    sessions: Any,
+    user_id: Any,
+    *,
+    now: datetime,
+    session: Any | None = None,
+) -> None:
+    """Revoke all active sessions, optionally in the caller's Mongo transaction."""
+    options = {} if session is None else {"session": session}
+    sessions.update_many(
+        {"userId": user_id, "revokedAt": None},
+        {"$set": {"revokedAt": now, "updatedAt": now}},
+        **options,
+    )
 
 
 def _current_user_from_document(user: Mapping[str, Any]) -> CurrentUser:
@@ -8817,6 +9013,8 @@ from zoneinfo import ZoneInfo
 
 
 SAO_PAULO = ZoneInfo("America/Sao_Paulo")
+BUSINESS_DAY_START = time(9)
+BUSINESS_DAY_END = time(18)
 
 
 class HolidayRepository(Protocol):
@@ -8848,33 +9046,78 @@ class BusinessClock:
         if hours < 0:
             raise ValueError("hours must be non-negative")
 
-        current = start.astimezone(SAO_PAULO)
-        if hours == 0:
-            return current
+        current = self._normalize_forward(start.astimezone(SAO_PAULO))
         remaining = timedelta(hours=hours)
 
         while remaining:
-            if not self.is_business_day(current.date()):
-                current = self._next_midnight(current)
-                continue
-
-            next_midnight = self._next_midnight(current)
-            available = next_midnight - current
-            if remaining < available:
+            business_day_end = self._at_business_day_end(current.date())
+            available = business_day_end - current
+            if remaining <= available:
                 return current + remaining
             remaining -= available
-            current = next_midnight
+            current = self._next_business_day_start(current.date())
 
-        while not self.is_business_day(current.date()):
-            current = self._next_midnight(current)
+        return current
+
+    def subtract_business_hours(self, deadline: datetime, hours: int) -> datetime:
+        if deadline.tzinfo is None or deadline.utcoffset() is None:
+            raise ValueError("deadline datetime must include a timezone")
+        if hours < 0:
+            raise ValueError("hours must be non-negative")
+
+        current = self._normalize_backward(deadline.astimezone(SAO_PAULO))
+        remaining = timedelta(hours=hours)
+
+        while remaining:
+            business_day_start = self._at_business_day_start(current.date())
+            available = current - business_day_start
+            if remaining <= available:
+                return current - remaining
+            remaining -= available
+            current = self._previous_business_day_end(current.date())
+
         return current
 
     def is_business_day(self, day: date) -> bool:
         return day.weekday() < 5 and not self._holidays.is_holiday(day)
 
+    def _normalize_forward(self, value: datetime) -> datetime:
+        if not self.is_business_day(value.date()):
+            return self._next_business_day_start(value.date())
+        if value.time() < BUSINESS_DAY_START:
+            return self._at_business_day_start(value.date())
+        if value.time() >= BUSINESS_DAY_END:
+            return self._next_business_day_start(value.date())
+        return value
+
+    def _normalize_backward(self, value: datetime) -> datetime:
+        if not self.is_business_day(value.date()):
+            return self._previous_business_day_end(value.date())
+        if value.time() < BUSINESS_DAY_START:
+            return self._previous_business_day_end(value.date())
+        if value.time() > BUSINESS_DAY_END:
+            return self._at_business_day_end(value.date())
+        return value
+
+    def _next_business_day_start(self, day: date) -> datetime:
+        next_day = day + timedelta(days=1)
+        while not self.is_business_day(next_day):
+            next_day += timedelta(days=1)
+        return self._at_business_day_start(next_day)
+
+    def _previous_business_day_end(self, day: date) -> datetime:
+        previous_day = day - timedelta(days=1)
+        while not self.is_business_day(previous_day):
+            previous_day -= timedelta(days=1)
+        return self._at_business_day_end(previous_day)
+
     @staticmethod
-    def _next_midnight(value: datetime) -> datetime:
-        return datetime.combine(value.date() + timedelta(days=1), time.min, tzinfo=SAO_PAULO)
+    def _at_business_day_start(day: date) -> datetime:
+        return datetime.combine(day, BUSINESS_DAY_START, tzinfo=SAO_PAULO)
+
+    @staticmethod
+    def _at_business_day_end(day: date) -> datetime:
+        return datetime.combine(day, BUSINESS_DAY_END, tzinfo=SAO_PAULO)
 ````
 
 ## Snapshot de código: `apps/api/src/gerec_api/domain/documents.py`
@@ -9313,7 +9556,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
-from typing import Any, Mapping, Protocol
+from typing import Any, Literal, Mapping, Protocol
 from zoneinfo import ZoneInfo
 
 from gerec_api.domain.business_time import BusinessClock
@@ -9324,6 +9567,8 @@ OUTCOMES = frozenset(
     {"qualified_follow_up", "qualified_closed_no_conversion", "disqualified", "won"}
 )
 DISQUALIFICATION_REASONS = frozenset({"no_answer_after_5_attempts", "no_cnpj", "outside_sp"})
+COMMERCIAL_STATUSES = frozenset({"undefined", "negotiation", "won"})
+CommercialStatus = Literal["undefined", "negotiation", "won"]
 
 
 @dataclass(frozen=True)
@@ -9352,6 +9597,15 @@ class OutcomeCommand:
     idempotency_key: str
     disqualification_reason: str | None = None
     response_confirmed: bool = False
+
+
+@dataclass(frozen=True)
+class TreatmentCommand:
+    lead_id: Any
+    comment: str
+    commercial_status: CommercialStatus
+    is_disqualified: bool
+    idempotency_key: str
 
 
 @dataclass(frozen=True)
@@ -9446,6 +9700,46 @@ class OutcomeResult:
         )
 
 
+@dataclass(frozen=True)
+class TreatmentResult:
+    lead_id: str
+    treatment_id: str
+    status: str
+    commercial_status: CommercialStatus
+    is_disqualified: bool
+    comment_count: int
+    last_updated_at: datetime
+    reminder_at: datetime | None
+    due_at: datetime | None
+
+    def to_document(self) -> dict[str, Any]:
+        return {
+            "leadId": self.lead_id,
+            "treatmentId": self.treatment_id,
+            "status": self.status,
+            "commercialStatus": self.commercial_status,
+            "isDisqualified": self.is_disqualified,
+            "commentCount": self.comment_count,
+            "lastUpdatedAt": self.last_updated_at,
+            "reminderAt": self.reminder_at,
+            "dueAt": self.due_at,
+        }
+
+    @classmethod
+    def from_document(cls, value: Mapping[str, Any]) -> "TreatmentResult":
+        return cls(
+            lead_id=str(value["leadId"]),
+            treatment_id=str(value["treatmentId"]),
+            status=str(value["status"]),
+            commercial_status=str(value["commercialStatus"]),  # type: ignore[arg-type]
+            is_disqualified=bool(value["isDisqualified"]),
+            comment_count=int(value["commentCount"]),
+            last_updated_at=value["lastUpdatedAt"],
+            reminder_at=value.get("reminderAt"),
+            due_at=value.get("dueAt"),
+        )
+
+
 class Clock(Protocol):
     def now(self, session: Any | None = None) -> datetime: ...
 
@@ -9456,6 +9750,17 @@ class SystemClock:
 
 
 class OperationsPersistence(Protocol):
+    def register_treatment(
+        self,
+        command: TreatmentCommand,
+        *,
+        actor_id: Any,
+        actor_role: str,
+        now: datetime,
+        reminder_at: datetime,
+        due_at: datetime,
+    ) -> TreatmentResult: ...
+
     def register_feedback(
         self,
         command: FeedbackCommand,
@@ -9534,9 +9839,35 @@ class OperationsService:
                 raise ValueError("seller feedback requires a seller actor")
             if not command.contact_started:
                 raise ValueError("feedback requires an explicit contact action")
-            reminder_at = self._business_clock.add_business_hours(now, 20)
             due_at = self._business_clock.add_business_hours(now, 24)
+            reminder_at = self._business_clock.subtract_business_hours(due_at, 4)
         return self._persistence.register_feedback(
+            command,
+            actor_id=self._actor_id,
+            actor_role=self._actor_role,
+            now=now,
+            reminder_at=reminder_at,
+            due_at=due_at,
+        )
+
+    def register_treatment(self, command: TreatmentCommand) -> TreatmentResult:
+        if self._actor_role != "seller":
+            raise ValueError("treatments require a seller actor")
+        if command.commercial_status not in COMMERCIAL_STATUSES:
+            raise ValueError("commercial status is invalid")
+        if not isinstance(command.is_disqualified, bool):
+            raise ValueError("is disqualified must be a boolean")
+        command = TreatmentCommand(
+            command.lead_id,
+            _comment(command.comment),
+            command.commercial_status,
+            command.is_disqualified,
+            _required(command.idempotency_key, "idempotency key"),
+        )
+        now = self._aware_now()
+        due_at = self._business_clock.add_business_hours(now, 24)
+        reminder_at = self._business_clock.subtract_business_hours(due_at, 4)
+        return self._persistence.register_treatment(
             command,
             actor_id=self._actor_id,
             actor_role=self._actor_role,
@@ -9628,7 +9959,9 @@ def _comment(value: str) -> str:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Mapping, Protocol, Sequence
+from typing import Any, Literal, Mapping, Protocol, Sequence
+
+from bson import ObjectId
 
 
 @dataclass(frozen=True)
@@ -9638,6 +9971,27 @@ class SellerState:
     paused: bool
     has_overdue_feedback: bool
     skip_balance: int
+    position: int = 0
+
+
+@dataclass(frozen=True)
+class SellerAvailability:
+    status: Literal["active", "paused", "blocked_overdue"]
+    reason: str | None
+
+
+@dataclass(frozen=True)
+class QueueEntry:
+    seller_id: Any
+    position: int
+    availability: SellerAvailability
+    skip_balance: int
+
+
+@dataclass(frozen=True)
+class QueueSnapshot:
+    cursor_seller_id: ObjectId | None
+    entries: list[QueueEntry]
 
 
 @dataclass(frozen=True)
@@ -9650,20 +10004,45 @@ class QueueDecision:
 
 class QueueRules:
     @staticmethod
+    def availability(seller: SellerState) -> SellerAvailability:
+        if seller.paused:
+            return SellerAvailability("paused", "Pausa manual ativa.")
+        if not seller.active:
+            return SellerAvailability("paused", "Vendedor inativo.")
+        if seller.has_overdue_feedback:
+            return SellerAvailability("blocked_overdue", "Possui ciclo de SLA vencido.")
+        return SellerAvailability("active", None)
+
+    @classmethod
+    def snapshot(cls, sellers: Sequence[SellerState], next_seller_id: Any) -> QueueSnapshot:
+        if not sellers:
+            return QueueSnapshot(cursor_seller_id=None, entries=[])
+        decision = cls.select_normal(sellers, next_seller_id)
+        start_seller_id = decision.seller_id or next_seller_id
+        ordered = cls._circular_from_cursor(sellers, start_seller_id)
+        return QueueSnapshot(
+            cursor_seller_id=next_seller_id,
+            entries=[
+                QueueEntry(
+                    seller_id=seller.seller_id,
+                    position=seller.position,
+                    availability=cls.availability(seller),
+                    skip_balance=seller.skip_balance,
+                )
+                for seller in ordered
+            ],
+        )
+
+    @staticmethod
     def select_normal(sellers: Sequence[SellerState], next_seller_id: Any) -> QueueDecision:
         if not sellers:
             raise ValueError("seller queue cannot be empty")
-        try:
-            cursor = next(
-                index for index, seller in enumerate(sellers) if seller.seller_id == next_seller_id
-            )
-        except StopIteration as error:
-            raise ValueError("queue cursor does not reference a seller") from error
+        cursor = QueueRules._cursor_index(sellers, next_seller_id)
 
         operational = [
             seller
             for seller in sellers
-            if seller.active and not seller.paused and not seller.has_overdue_feedback
+            if QueueRules.availability(seller).status == "active"
         ]
         if not operational:
             return QueueDecision(seller_id=None, next_seller_id=next_seller_id)
@@ -9677,7 +10056,7 @@ class QueueRules:
         while True:
             seller = sellers[cursor]
             cursor = (cursor + 1) % len(sellers)
-            if not seller.active or seller.paused or seller.has_overdue_feedback:
+            if QueueRules.availability(seller).status != "active":
                 unavailable.append(seller.seller_id)
                 continue
             if balances[seller.seller_id] > 0:
@@ -9686,10 +10065,34 @@ class QueueRules:
                 continue
             return QueueDecision(
                 seller_id=seller.seller_id,
-                next_seller_id=sellers[cursor].seller_id,
+                next_seller_id=QueueRules._next_eligible_seller_id(sellers, cursor),
                 consumed_credit_seller_ids=tuple(consumed),
                 unavailable_seller_ids=tuple(unavailable),
             )
+
+    @staticmethod
+    def _cursor_index(sellers: Sequence[SellerState], seller_id: Any) -> int:
+        try:
+            return next(
+                index for index, seller in enumerate(sellers) if seller.seller_id == seller_id
+            )
+        except StopIteration as error:
+            raise ValueError("queue cursor does not reference a seller") from error
+
+    @classmethod
+    def _circular_from_cursor(
+        cls, sellers: Sequence[SellerState], next_seller_id: Any
+    ) -> list[SellerState]:
+        cursor = cls._cursor_index(sellers, next_seller_id)
+        return [*sellers[cursor:], *sellers[:cursor]]
+
+    @classmethod
+    def _next_eligible_seller_id(cls, sellers: Sequence[SellerState], start_index: int) -> Any:
+        for offset in range(len(sellers)):
+            seller = sellers[(start_index + offset) % len(sellers)]
+            if cls.availability(seller).status == "active":
+                return seller.seller_id
+        raise ValueError("queue does not have an eligible seller")
 
 
 @dataclass(frozen=True)
@@ -9864,6 +10267,149 @@ def _required(value: str, label: str) -> str:
     return normalized
 ````
 
+## Snapshot de código: `apps/api/src/gerec_api/domain/user_administration.py`
+
+````python
+"""Application commands for administrative user management."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Literal, Protocol
+
+from gerec_api.auth.passwords import hash_password
+
+
+UserRole = Literal["admin", "seller"]
+
+
+class UserAdministrationError(RuntimeError):
+    """Base error raised when an administrative user command cannot complete."""
+
+
+class UserAlreadyExistsError(UserAdministrationError):
+    """Raised when an e-mail is already owned by an account."""
+
+
+class UserNotFoundError(UserAdministrationError):
+    """Raised when the command target does not exist."""
+
+
+@dataclass(frozen=True)
+class CreateUserCommand:
+    full_name: str
+    email: str
+    role: UserRole
+    password: str
+
+
+@dataclass(frozen=True)
+class ManagedUser:
+    id: str
+    full_name: str
+    email: str
+    role: UserRole
+    active: bool
+    paused: bool | None
+
+    def to_public(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "id": self.id,
+            "fullName": self.full_name,
+            "email": self.email,
+            "role": self.role,
+            "active": self.active,
+        }
+        if self.paused is not None:
+            payload["paused"] = self.paused
+        return payload
+
+
+class UserAdministrationPersistence(Protocol):
+    def create_user(
+        self,
+        command: CreateUserCommand,
+        *,
+        password_hash: str,
+        actor_id: Any,
+    ) -> ManagedUser: ...
+
+    def set_manual_pause(
+        self, user_id: Any, *, paused: bool, actor_id: Any
+    ) -> ManagedUser: ...
+
+    def reset_password(
+        self, user_id: Any, *, password_hash: str, actor_id: Any
+    ) -> ManagedUser: ...
+
+
+class UserAdministrationService:
+    """Validates commands before delegating every state change to persistence."""
+
+    def __init__(self, persistence: UserAdministrationPersistence, *, actor_id: Any = "system") -> None:
+        self._persistence = persistence
+        self._actor_id = actor_id
+
+    def with_actor(self, actor_id: Any) -> "UserAdministrationService":
+        if actor_id is None or (isinstance(actor_id, str) and not actor_id.strip()):
+            raise ValueError("actor id is required")
+        return UserAdministrationService(self._persistence, actor_id=actor_id)
+
+    def create_user(self, command: CreateUserCommand) -> ManagedUser:
+        normalized = CreateUserCommand(
+            full_name=_required(command.full_name, "full name"),
+            email=_email(command.email),
+            role=_role(command.role),
+            password=_password(command.password),
+        )
+        return self._persistence.create_user(
+            normalized,
+            password_hash=hash_password(normalized.password),
+            actor_id=self._actor_id,
+        )
+
+    def set_manual_pause(self, user_id: Any, paused: bool) -> ManagedUser:
+        if not isinstance(paused, bool):
+            raise ValueError("paused must be a boolean")
+        return self._persistence.set_manual_pause(
+            user_id,
+            paused=paused,
+            actor_id=self._actor_id,
+        )
+
+    def reset_password(self, user_id: Any, password: str) -> ManagedUser:
+        return self._persistence.reset_password(
+            user_id,
+            password_hash=hash_password(_password(password)),
+            actor_id=self._actor_id,
+        )
+
+
+def _required(value: str, label: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{label} is required")
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError(f"{label} is required")
+    return normalized
+
+
+def _email(value: str) -> str:
+    return _required(value, "email").casefold()
+
+
+def _role(value: str) -> UserRole:
+    if value not in {"admin", "seller"}:
+        raise ValueError("role is invalid")
+    return value
+
+
+def _password(value: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("password is required")
+    return value
+````
+
 ## Snapshot de código: `apps/api/src/gerec_api/infrastructure/__init__.py`
 
 ````python
@@ -9888,6 +10434,7 @@ from pymongo.database import Database
 
 from gerec_api.infrastructure.mongo.collections import MongoCollections, collection
 from gerec_api.infrastructure.mongo.indexes import INDEXES
+from gerec_api.infrastructure.mongo.migrations.runner import run_migrations
 
 
 SCHEMA_VALIDATORS: Final[dict[str, dict[str, Any]]] = {
@@ -9931,6 +10478,24 @@ SCHEMA_VALIDATORS: Final[dict[str, dict[str, Any]]] = {
                 "companyId": {"bsonType": "objectId"},
                 "campaignId": {"bsonType": "objectId"},
                 "archivedAt": {"bsonType": ["date", "null"]},
+                "commercialStatus": {"enum": ["undefined", "negotiation", "won"]},
+                "isDisqualified": {"bsonType": "bool"},
+                "commentCount": {"bsonType": "int", "minimum": 0},
+                "lastCommentAt": {"bsonType": ["date", "null"]},
+                "feedbackDueAt": {"bsonType": ["date", "null"]},
+                "feedbackReminderAt": {"bsonType": ["date", "null"]},
+            },
+        }
+    },
+    MongoCollections.LEAD_TREATMENTS: {
+        "$jsonSchema": {
+            "bsonType": "object",
+            "required": ["leadId", "comment", "createdAt", "idempotencyKey"],
+            "properties": {
+                "leadId": {"bsonType": "objectId"},
+                "comment": {"bsonType": "string", "minLength": 6},
+                "createdAt": {"bsonType": "date"},
+                "idempotencyKey": {"bsonType": "string", "minLength": 1},
             },
         }
     },
@@ -9974,6 +10539,8 @@ def ensure_schema(db: Database) -> None:
             _ensure_collection(db, name)
         else:
             _ensure_collection_validator(db, name, validator)
+
+    run_migrations(db)
 
     for index in INDEXES:
         index.apply(collection(db, index.collection_name))
@@ -10088,6 +10655,8 @@ class MongoCollections:
     AUDIT_LOG: Final = "audit_log"
     SYSTEM_SETTINGS: Final = "system_settings"
     COMMAND_RESULTS: Final = "command_results"
+    LEAD_TREATMENTS: Final = "lead_treatments"
+    SCHEMA_MIGRATIONS: Final = "schema_migrations"
 
     ALL: Final = (
         USERS,
@@ -10115,6 +10684,8 @@ class MongoCollections:
         AUDIT_LOG,
         SYSTEM_SETTINGS,
         COMMAND_RESULTS,
+        LEAD_TREATMENTS,
+        SCHEMA_MIGRATIONS,
     )
 
 
@@ -10305,6 +10876,30 @@ INDEXES: Final[tuple[MongoIndex, ...]] = (
         (("idempotencyKey", ASCENDING),),
         "command_results_idempotency_key_unique",
         unique=True,
+    ),
+    MongoIndex(
+        MongoCollections.LEAD_TREATMENTS,
+        (("leadId", ASCENDING), ("createdAt", ASCENDING)),
+        "lead_treatments_lead_created_at",
+    ),
+    MongoIndex(
+        MongoCollections.LEAD_TREATMENTS,
+        (("leadId", ASCENDING), ("idempotencyKey", ASCENDING)),
+        "lead_treatments_lead_idempotency_key_unique",
+        unique=True,
+    ),
+    MongoIndex(
+        MongoCollections.SELLER_QUEUE,
+        (("sellerId", ASCENDING),),
+        "seller_queue_seller_unique",
+        unique=True,
+    ),
+    MongoIndex(
+        MongoCollections.SELLER_QUEUE,
+        (("position", ASCENDING),),
+        "seller_queue_position_present_unique",
+        unique=True,
+        partial_filter={"position": {"$exists": True}},
     ),
     MongoIndex(
         MongoCollections.NOTIFICATION_OUTBOX,
@@ -10783,6 +11378,311 @@ def _campaign_identity(row: NormalizedSourceRow) -> str:
     return f"name:{' '.join(row.campaign_name.casefold().split())}"
 ````
 
+## Snapshot de código: `apps/api/src/gerec_api/infrastructure/mongo/migrations/__init__.py`
+
+````python
+"""Versioned, idempotent MongoDB schema migrations."""
+````
+
+## Snapshot de código: `apps/api/src/gerec_api/infrastructure/mongo/migrations/20260828_operacao_comercial.py`
+
+````python
+"""Materialize GOV-004 commercial-operation projections from immutable legacy history."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from typing import Any
+
+from gerec_api.domain.business_time import BusinessClock, MongoHolidayRepository
+from gerec_api.infrastructure.mongo.collections import MongoCollections
+
+
+VERSION = "20260828_operacao_comercial"
+_COMMERCIAL_STATUSES = frozenset({"undefined", "negotiation", "won"})
+
+
+def apply(database: Any, *, session: Any | None = None) -> None:
+    """Rebuild mutable lead projections without altering legacy events or sessions."""
+    options = _session_options(session)
+    business_clock = BusinessClock(
+        MongoHolidayRepository(database[MongoCollections.HOLIDAYS])
+    )
+    _rebuild_queue_positions(database, session)
+    for lead in database[MongoCollections.LEADS].find({}, **options):
+        _migrate_lead(database, lead, business_clock, session)
+
+
+def _migrate_lead(
+    database: Any,
+    lead: dict[str, Any],
+    business_clock: BusinessClock,
+    session: Any | None,
+) -> None:
+    options = _session_options(session)
+    lead_id = lead["_id"]
+    feedbacks = _valid_feedbacks(database, lead_id, options)
+    outcomes = list(
+        database[MongoCollections.QUALIFICATION_EVENTS].find({"leadId": lead_id}, **options)
+    )
+    commercial_status = _commercial_status(lead, outcomes)
+    is_disqualified = _is_disqualified(lead, outcomes)
+    last_comment_at = feedbacks[-1].get("createdAt") if feedbacks else None
+
+    _copy_legacy_feedbacks_as_treatments(
+        database,
+        lead_id,
+        feedbacks,
+        session,
+    )
+    update: dict[str, Any] = {
+        "commercialStatus": commercial_status,
+        "isDisqualified": is_disqualified,
+        "commentCount": len(feedbacks),
+        "lastCommentAt": last_comment_at,
+    }
+    if is_disqualified:
+        closed_at = _disqualification_closed_at(outcomes, feedbacks, lead)
+        database[MongoCollections.FEEDBACK_CYCLES].update_many(
+            {"leadId": lead_id, "closedAt": None},
+            {"$set": {"closedAt": closed_at, "closedByMigration": VERSION}},
+            **options,
+        )
+        update.update({"feedbackDueAt": None, "feedbackReminderAt": None})
+    else:
+        due_at, reminder_at = _recalculate_open_cycles(
+            database, lead, business_clock, session
+        )
+        update.update({"feedbackDueAt": due_at, "feedbackReminderAt": reminder_at})
+    database[MongoCollections.LEADS].update_one({"_id": lead_id}, {"$set": update}, **options)
+
+
+def _valid_feedbacks(database: Any, lead_id: Any, options: dict[str, Any]) -> list[dict[str, Any]]:
+    feedbacks = database[MongoCollections.FEEDBACKS].find({"leadId": lead_id}, **options)
+    valid = [
+        feedback
+        for feedback in feedbacks
+        if feedback.get("kind") == "seller_feedback"
+        and feedback.get("contactStarted") is True
+        and len(str(feedback.get("comment", "")).strip()) >= 6
+    ]
+    return sorted(valid, key=lambda feedback: (feedback.get("createdAt") or _EPOCH, str(feedback["_id"])))
+
+
+def _copy_legacy_feedbacks_as_treatments(
+    database: Any,
+    lead_id: Any,
+    feedbacks: list[dict[str, Any]],
+    session: Any | None,
+) -> None:
+    options = _session_options(session)
+    treatments = database[MongoCollections.LEAD_TREATMENTS]
+    for feedback in feedbacks:
+        legacy_id = feedback["_id"]
+        treatment_status, treatment_disqualification, status_unavailable = _legacy_treatment_status(
+            feedback
+        )
+        treatments.update_one(
+            {"leadId": lead_id, "idempotencyKey": f"legacy-feedback:{legacy_id}"},
+            {
+                "$setOnInsert": {
+                    "leadId": lead_id,
+                    "sellerId": feedback.get("sellerId"),
+                    "comment": str(feedback["comment"]).strip(),
+                    "commercialStatus": treatment_status,
+                    "isDisqualified": treatment_disqualification,
+                    "legacyStatusUnavailable": status_unavailable,
+                    "createdAt": feedback.get("createdAt") or _EPOCH,
+                    "idempotencyKey": f"legacy-feedback:{legacy_id}",
+                    "legacyFeedbackId": legacy_id,
+                }
+            },
+            upsert=True,
+            **options,
+        )
+
+
+def _legacy_treatment_status(feedback: dict[str, Any]) -> tuple[str, bool, bool]:
+    status = feedback.get("commercialStatus")
+    if status in _COMMERCIAL_STATUSES:
+        return str(status), bool(feedback.get("isDisqualified")), False
+    return "undefined", False, True
+
+
+def _rebuild_queue_positions(database: Any, session: Any | None) -> None:
+    options = _session_options(session)
+    entries = list(database[MongoCollections.SELLER_QUEUE].find({}, **options))
+    entries.sort(key=_queue_position_sort_key)
+    for position, entry in enumerate(entries, start=1):
+        database[MongoCollections.SELLER_QUEUE].update_one(
+            {"_id": entry["_id"]}, {"$set": {"position": position}}, **options
+        )
+
+
+def _queue_position_sort_key(entry: dict[str, Any]) -> tuple[int, int, datetime, str]:
+    position = entry.get("position")
+    valid_position = isinstance(position, int) and not isinstance(position, bool) and position > 0
+    created_at = entry.get("createdAt")
+    return (
+        0 if valid_position else 1,
+        int(position) if valid_position else 0,
+        created_at if isinstance(created_at, datetime) else _EPOCH,
+        str(entry["_id"]),
+    )
+
+
+def _recalculate_open_cycles(
+    database: Any,
+    lead: dict[str, Any],
+    business_clock: BusinessClock,
+    session: Any | None,
+) -> tuple[datetime | None, datetime | None]:
+    options = _session_options(session)
+    cycles = list(
+        database[MongoCollections.FEEDBACK_CYCLES].find(
+            {"leadId": lead["_id"], "closedAt": None}, **options
+        )
+    )
+    recalculated: list[dict[str, Any]] = []
+    for cycle in cycles:
+        start_at = cycle.get("startAt") or lead.get("assignedAt")
+        if not isinstance(start_at, datetime):
+            continue
+        due_at = business_clock.add_business_hours(start_at, 24)
+        reminder_at = business_clock.subtract_business_hours(due_at, 4)
+        database[MongoCollections.FEEDBACK_CYCLES].update_one(
+            {"_id": cycle["_id"], "closedAt": None},
+            {"$set": {"startAt": start_at, "dueAt": due_at, "reminderAt": reminder_at}},
+            **options,
+        )
+        recalculated.append({"startAt": start_at, "dueAt": due_at, "reminderAt": reminder_at})
+    if not recalculated:
+        return None, None
+    latest = max(recalculated, key=lambda cycle: (cycle["startAt"], cycle["dueAt"]))
+    return latest["dueAt"], latest["reminderAt"]
+
+
+def _commercial_status(lead: dict[str, Any], outcomes: list[dict[str, Any]]) -> str:
+    if lead.get("conversionStatus") == "won" or any(
+        outcome.get("outcome") == "won" for outcome in outcomes
+    ):
+        return "won"
+    existing = lead.get("commercialStatus")
+    if existing in _COMMERCIAL_STATUSES:
+        return str(existing)
+    if lead.get("qualificationStatus") in {"qualified", "in_negotiation", "negotiation"} or any(
+        outcome.get("outcome") in {"qualified_follow_up", "negotiation"} for outcome in outcomes
+    ):
+        return "negotiation"
+    return "undefined"
+
+
+def _is_disqualified(lead: dict[str, Any], outcomes: list[dict[str, Any]]) -> bool:
+    return bool(
+        lead.get("isDisqualified")
+        or lead.get("qualificationStatus") == "disqualified"
+        or lead.get("conversionStatus") == "disqualified"
+        or any(outcome.get("outcome") == "disqualified" for outcome in outcomes)
+    )
+
+
+def _disqualification_closed_at(
+    outcomes: list[dict[str, Any]], feedbacks: list[dict[str, Any]], lead: dict[str, Any]
+) -> datetime:
+    timestamps = [
+        event.get("createdAt")
+        for event in outcomes
+        if event.get("outcome") == "disqualified" and isinstance(event.get("createdAt"), datetime)
+    ]
+    timestamps.extend(
+        feedback.get("createdAt")
+        for feedback in feedbacks
+        if isinstance(feedback.get("createdAt"), datetime)
+    )
+    if isinstance(lead.get("assignedAt"), datetime):
+        timestamps.append(lead["assignedAt"])
+    return max(timestamps, default=_EPOCH)
+
+
+def _session_options(session: Any | None) -> dict[str, Any]:
+    return {} if session is None else {"session": session}
+
+
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+````
+
+## Snapshot de código: `apps/api/src/gerec_api/infrastructure/mongo/migrations/runner.py`
+
+````python
+"""Transactional runner for versioned MongoDB migrations."""
+
+from __future__ import annotations
+
+from importlib import import_module
+from typing import Any, Callable, Final
+
+from pymongo.errors import DuplicateKeyError
+
+from gerec_api.infrastructure.mongo.collections import MongoCollections
+
+
+Migration = tuple[str, Callable[..., None]]
+
+_operacao_comercial = import_module(
+    "gerec_api.infrastructure.mongo.migrations.20260828_operacao_comercial"
+)
+MIGRATIONS: Final[tuple[Migration, ...]] = (
+    (_operacao_comercial.VERSION, _operacao_comercial.apply),
+)
+
+
+class ReplicaSetRequiredError(RuntimeError):
+    """Raised when a migration cannot be protected by a MongoDB transaction."""
+
+
+def run_migrations(database: Any) -> list[str]:
+    """Apply each pending migration once, preserving historical documents on replay."""
+    applied: list[str] = []
+    for version, migration in MIGRATIONS:
+        if database[MongoCollections.SCHEMA_MIGRATIONS].find_one({"_id": version}) is not None:
+            continue
+        if _apply_once(database, version, migration):
+            applied.append(version)
+    return applied
+
+
+def _apply_once(database: Any, version: str, migration: Callable[..., None]) -> bool:
+    def operation(session: Any | None) -> bool:
+        migrations = database[MongoCollections.SCHEMA_MIGRATIONS]
+        if migrations.find_one({"_id": version}, **_session_options(session)) is not None:
+            return False
+        migration(database, session=session)
+        migrations.insert_one({"_id": version}, **_session_options(session))
+        return True
+
+    _require_replica_set(database)
+    try:
+        with database.client.start_session() as session:
+            return session.with_transaction(operation)
+    except DuplicateKeyError:
+        if database[MongoCollections.SCHEMA_MIGRATIONS].find_one({"_id": version}) is not None:
+            return False
+        raise
+
+
+def _require_replica_set(database: Any) -> None:
+    """Reject standalone MongoDB before a migration can mutate data without a transaction."""
+    hello = database.client.admin.command("hello")
+    if not hello.get("setName"):
+        raise ReplicaSetRequiredError(
+            "MongoDB replica set is required to apply schema migrations transactionally"
+        )
+
+
+def _session_options(session: Any | None) -> dict[str, Any]:
+    return {} if session is None else {"session": session}
+````
+
 ## Snapshot de código: `apps/api/src/gerec_api/infrastructure/mongo/operations_repository.py`
 
 ````python
@@ -10804,6 +11704,8 @@ from gerec_api.domain.operations import (
     FeedbackResult,
     OutcomeCommand,
     OutcomeResult,
+    TreatmentCommand,
+    TreatmentResult,
     Clock,
     SystemClock,
 )
@@ -10814,12 +11716,17 @@ from gerec_api.infrastructure.mongo.collections import MongoCollections
 FEEDBACK_COMMAND = "operations.register_feedback"
 ATTEMPT_COMMAND = "operations.register_attempt"
 OUTCOME_COMMAND = "operations.register_outcome"
+TREATMENT_COMMAND = "operations.register_treatment"
 TERMINAL_CONVERSIONS = frozenset({"closed_no_conversion", "won"})
-ResultT = TypeVar("ResultT", FeedbackResult, AttemptResult, OutcomeResult)
+ResultT = TypeVar("ResultT", FeedbackResult, AttemptResult, OutcomeResult, TreatmentResult)
 
 
 class OperationsStateError(RuntimeError):
     """Raised when an operations command would violate a domain invariant."""
+
+
+class OperationsPermissionError(OperationsStateError, PermissionError):
+    """Raised when an authenticated actor is outside a command's allowed scope."""
 
 
 class MongoOperationsRepository:
@@ -10860,6 +11767,34 @@ class MongoOperationsRepository:
                 due_at,
                 session,
             ),
+        )
+
+    def register_treatment(
+        self,
+        command: TreatmentCommand,
+        *,
+        actor_id: Any,
+        actor_role: str,
+        now: datetime,
+        reminder_at: datetime,
+        due_at: datetime,
+    ) -> TreatmentResult:
+        return self._execute(
+            TREATMENT_COMMAND,
+            command.idempotency_key,
+            TreatmentResult,
+            now,
+            lambda session, transaction_now: self._register_treatment(
+                command,
+                actor_id,
+                actor_role,
+                transaction_now,
+                reminder_at,
+                due_at,
+                session,
+            ),
+            actor_id=actor_id,
+            aggregate_id=command.lead_id,
         )
 
     def register_attempt(
@@ -10906,15 +11841,28 @@ class MongoOperationsRepository:
         result_type: type[ResultT],
         now: datetime,
         operation: Callable[[Any, datetime], ResultT],
+        *,
+        actor_id: Any | None = None,
+        aggregate_id: Any | None = None,
     ) -> ResultT:
         receipt = self._receipt(command_name, idempotency_key)
         if receipt is not None:
-            return result_type.from_document(receipt["result"])
+            return self._replay_result(
+                receipt,
+                result_type,
+                actor_id=actor_id,
+                aggregate_id=aggregate_id,
+            )
 
         def callback(session: Any) -> ResultT:
             existing = self._receipt(command_name, idempotency_key, session=session)
             if existing is not None:
-                return result_type.from_document(existing["result"])
+                return self._replay_result(
+                    existing,
+                    result_type,
+                    actor_id=actor_id,
+                    aggregate_id=aggregate_id,
+                )
             # `now` is MongoDB server time captured once before the transaction.
             # Reusing it avoids the forbidden `hello` command inside a transaction
             # and gives retryable callbacks one stable timestamp.
@@ -10926,6 +11874,8 @@ class MongoOperationsRepository:
                     "idempotencyKey": idempotency_key,
                     "result": result.to_document(),
                     "createdAt": transaction_now,
+                    **({"actorId": actor_id} if actor_id is not None else {}),
+                    **({"aggregateId": aggregate_id} if aggregate_id is not None else {}),
                 },
                 session=session,
             )
@@ -10938,7 +11888,29 @@ class MongoOperationsRepository:
             receipt = self._receipt(command_name, idempotency_key)
             if receipt is None:
                 raise OperationsStateError("operation conflicted with a concurrent command") from None
-            return result_type.from_document(receipt["result"])
+            return self._replay_result(
+                receipt,
+                result_type,
+                actor_id=actor_id,
+                aggregate_id=aggregate_id,
+            )
+
+    @staticmethod
+    def _replay_result(
+        receipt: dict[str, Any],
+        result_type: type[ResultT],
+        *,
+        actor_id: Any | None,
+        aggregate_id: Any | None,
+    ) -> ResultT:
+        if actor_id is not None:
+            if "actorId" not in receipt or "aggregateId" not in receipt:
+                raise OperationsStateError("idempotency receipt lacks actor binding")
+            if receipt["actorId"] != actor_id:
+                raise OperationsPermissionError("idempotency receipt belongs to another actor")
+            if receipt["aggregateId"] != aggregate_id:
+                raise OperationsStateError("idempotency key belongs to another aggregate")
+        return result_type.from_document(receipt["result"])
 
     def _receipt(
         self,
@@ -11011,8 +11983,8 @@ class MongoOperationsRepository:
 
         if self._business_clock is None:
             raise OperationsStateError("business clock is required for seller feedback")
-        reminder_at = self._business_clock.add_business_hours(now, 20)
         due_at = self._business_clock.add_business_hours(now, 24)
+        reminder_at = self._business_clock.subtract_business_hours(due_at, 4)
         self._require_current_seller(lead, actor_id, actor_role)
         self._require_active(lead)
         cycle = self._feedback_cycles.find_one(
@@ -11095,6 +12067,133 @@ class MongoOperationsRepository:
             "recorded",
             reminder_at,
             due_at,
+        )
+
+    def _register_treatment(
+        self,
+        command: TreatmentCommand,
+        actor_id: Any,
+        actor_role: str,
+        now: datetime,
+        reminder_at: datetime,
+        due_at: datetime,
+        session: Any,
+    ) -> TreatmentResult:
+        lead = self._lead(command.lead_id, session)
+        self._require_current_seller(lead, actor_id, actor_role)
+        lead_before = deepcopy(lead)
+        cycle = self._feedback_cycles.find_one(
+            {"leadId": command.lead_id, "closedAt": None}, session=session
+        )
+        cycle_before = deepcopy(cycle)
+        treatment_id = ObjectId()
+        effective_disqualification = bool(lead.get("isDisqualified")) or command.is_disqualified
+        comment_count = int(lead.get("commentCount", 0)) + 1
+
+        self._lead_treatments.insert_one(
+            {
+                "_id": treatment_id,
+                "leadId": command.lead_id,
+                "sellerId": actor_id,
+                "comment": command.comment,
+                "commercialStatus": command.commercial_status,
+                "isDisqualified": command.is_disqualified,
+                "idempotencyKey": command.idempotency_key,
+                "createdAt": now,
+            },
+            session=session,
+        )
+
+        update: dict[str, Any] = {
+            "commercialStatus": command.commercial_status,
+            "isDisqualified": effective_disqualification,
+            "commentCount": comment_count,
+            "lastCommentAt": now,
+            "updatedAt": now,
+        }
+        after_cycle = None
+        scheduled_cycle_id = None
+        if effective_disqualification:
+            update.update({"feedbackDueAt": None, "feedbackReminderAt": None})
+            if cycle is not None:
+                closed = self._feedback_cycles.update_one(
+                    {"_id": cycle["_id"], "closedAt": None},
+                    {"$set": {"closedAt": now, "closedByTreatmentId": treatment_id}},
+                    session=session,
+                )
+                if closed.matched_count != 1:
+                    raise OperationsStateError("feedback cycle changed concurrently")
+                self._cancel_cycle_reminder(cycle["_id"], now, session)
+                after_cycle = self._feedback_cycles.find_one({"_id": cycle["_id"]}, session=session)
+        else:
+            if cycle is not None:
+                closed = self._feedback_cycles.update_one(
+                    {"_id": cycle["_id"], "closedAt": None},
+                    {"$set": {"closedAt": now, "closedByTreatmentId": treatment_id}},
+                    session=session,
+                )
+                if closed.matched_count != 1:
+                    raise OperationsStateError("feedback cycle changed concurrently")
+                self._cancel_cycle_reminder(cycle["_id"], now, session)
+            cycle_id = ObjectId()
+            self._feedback_cycles.insert_one(
+                {
+                    "_id": cycle_id,
+                    "leadId": command.lead_id,
+                    "startAt": now,
+                    "reminderAt": reminder_at,
+                    "dueAt": due_at,
+                    "closedAt": None,
+                },
+                session=session,
+            )
+            update.update(
+                {
+                    "feedbackCycleId": cycle_id,
+                    "feedbackReminderAt": reminder_at,
+                    "feedbackDueAt": due_at,
+                }
+            )
+            after_cycle = self._feedback_cycles.find_one({"_id": cycle_id}, session=session)
+            scheduled_cycle_id = cycle_id
+
+        changed = self._leads.update_one(
+            {"_id": command.lead_id}, {"$set": update}, session=session
+        )
+        if changed.matched_count != 1:
+            raise OperationsStateError("lead changed concurrently")
+        lead_after = self._leads.find_one({"_id": command.lead_id}, session=session)
+        self._record_event(
+            "lead.treatment_recorded",
+            command.lead_id,
+            actor_id,
+            command.idempotency_key,
+            {"lead": lead_before, "cycle": cycle_before},
+            {"lead": lead_after, "cycle": after_cycle, "treatmentId": treatment_id},
+            now,
+            session,
+        )
+        if scheduled_cycle_id is not None:
+            self._schedule_reminder(
+                command.lead_id,
+                scheduled_cycle_id,
+                reminder_at,
+                due_at,
+                actor_id,
+                command.idempotency_key,
+                now,
+                session,
+            )
+        return TreatmentResult(
+            str(command.lead_id),
+            str(treatment_id),
+            "recorded",
+            command.commercial_status,
+            effective_disqualification,
+            comment_count,
+            lead_after["updatedAt"],
+            lead_after.get("feedbackReminderAt"),
+            lead_after.get("feedbackDueAt"),
         )
 
     def _register_attempt(
@@ -11283,7 +12382,7 @@ class MongoOperationsRepository:
     @staticmethod
     def _require_current_seller(lead: dict[str, Any], actor_id: Any, actor_role: str) -> None:
         if actor_role != "seller" or lead.get("assigneeId") != actor_id:
-            raise OperationsStateError("seller is not the current lead assignee")
+            raise OperationsPermissionError("seller is not the current lead assignee")
         if lead.get("assignmentStatus") != "assigned":
             raise OperationsStateError("lead is not currently assigned")
 
@@ -11445,6 +12544,10 @@ class MongoOperationsRepository:
     @property
     def _command_results(self):
         return self._database[MongoCollections.COMMAND_RESULTS]
+
+    @property
+    def _lead_treatments(self):
+        return self._database[MongoCollections.LEAD_TREATMENTS]
 ````
 
 ## Snapshot de código: `apps/api/src/gerec_api/infrastructure/mongo/queue_repository.py`
@@ -11464,7 +12567,9 @@ from pymongo.errors import DuplicateKeyError
 from gerec_api.domain.business_time import BusinessClock
 from gerec_api.domain.queue import (
     AssignmentResult,
+    QueueSnapshot,
     QueueRules,
+    SellerAvailability,
     SellerState,
     TransferResult,
 )
@@ -11522,6 +12627,14 @@ class QueueRepository:
                 if attempt < 99:
                     sleep(0.01)
         raise QueueStateError(str(pending_error))
+
+    def snapshot(self) -> QueueSnapshot:
+        queue_state = self._queue_state.find_one({"_id": QUEUE_STATE_ID})
+        if queue_state is None:
+            return QueueSnapshot(cursor_seller_id=None, entries=[])
+        return QueueRules.snapshot(
+            self._seller_states(self._now(), None), queue_state["nextSellerId"]
+        )
 
     def distribute_ready(
         self, lead_id: Any, command_id: str, *, actor_id: Any
@@ -11758,7 +12871,7 @@ class QueueRepository:
         owner_id = None if company is None else company.get("ownerId")
         if owner_id is None:
             raise QueueStateError("recurring company does not have an owner")
-        if not self._seller_operational(owner_id, now, session):
+        if self._seller_availability(owner_id, now, session).status != "active":
             self._leads.update_one(
                 {"_id": lead_id, "currentAssignmentId": None},
                 {
@@ -11822,7 +12935,7 @@ class QueueRepository:
             raise QueueStateError("temporary assignment requires a previous owner")
         if owner_id == seller_id:
             raise QueueStateError("temporary seller must differ from the company owner")
-        if not self._seller_operational(seller_id, now, session):
+        if self._seller_availability(seller_id, now, session).status != "active":
             raise QueueStateError("temporary seller is not operational")
         self._credit(seller_id, command_id, actor_id, now, session)
         return self._assign_effective(
@@ -11916,8 +13029,8 @@ class QueueRepository:
         }
         if self._business_clock is not None:
             cycle_id = ObjectId()
-            reminder_at = self._business_clock.add_business_hours(now, 20)
             due_at = self._business_clock.add_business_hours(now, 24)
+            reminder_at = self._business_clock.subtract_business_hours(due_at, 4)
             self._feedback_cycles.insert_one(
                 {
                     "_id": cycle_id,
@@ -12012,42 +13125,48 @@ class QueueRepository:
             key=lambda value: value["position"],
         )
         return [
-            SellerState(
-                seller_id=item["sellerId"],
-                active=(
-                    self._users.find_one(
-                        {"_id": item["sellerId"], "active": True}, session=session
-                    )
-                    is not None
-                ),
-                paused=bool(item.get("paused", False)),
-                has_overdue_feedback=self._seller_has_overdue(item["sellerId"], now, session),
-                skip_balance=self._balance(item["sellerId"], session),
-            )
+            self._seller_state(item, now, session)
             for item in queue_documents
         ]
 
-    def _seller_operational(self, seller_id: Any, now: datetime, session: Any) -> bool:
-        user = self._users.find_one({"_id": seller_id, "active": True}, session=session)
-        queue = self._seller_queue.find_one({"sellerId": seller_id}, session=session)
-        return bool(
-            user is not None
-            and queue is not None
-            and not queue.get("paused", False)
-            and not self._seller_has_overdue(seller_id, now, session)
+    def _seller_state(self, queue: dict[str, Any], now: datetime, session: Any) -> SellerState:
+        seller_id = queue["sellerId"]
+        return SellerState(
+            seller_id=seller_id,
+            active=self._users.find_one({"_id": seller_id, "active": True}, session=session)
+            is not None,
+            paused=bool(queue.get("paused", False)),
+            has_overdue_feedback=self._seller_has_overdue(seller_id, now, session),
+            skip_balance=self._balance(seller_id, session),
+            position=int(queue["position"]),
         )
 
+    def _seller_availability(
+        self, seller_id: Any, now: datetime, session: Any
+    ) -> SellerAvailability:
+        queue = self._seller_queue.find_one({"sellerId": seller_id}, session=session)
+        if queue is None:
+            return SellerAvailability("paused", "Vendedor não participa da fila.")
+        return QueueRules.availability(self._seller_state(queue, now, session))
+
     def _seller_has_overdue(self, seller_id: Any, now: datetime, session: Any) -> bool:
-        return (
-            self._leads.find_one(
-                {
-                    "assigneeId": seller_id,
-                    "assignmentStatus": "assigned",
-                    "feedbackDueAt": {"$lt": now},
-                },
+        for cycle in self._feedback_cycles.find(
+            {"closedAt": None, "dueAt": {"$lt": now}}, session=session
+        ):
+            lead = self._leads.find_one(
+                {"_id": cycle["leadId"], "assigneeId": seller_id, "archivedAt": None},
                 session=session,
             )
-            is not None
+            if lead is not None and not self._lead_sla_closed(lead):
+                return True
+        return False
+
+    @staticmethod
+    def _lead_sla_closed(lead: dict[str, Any]) -> bool:
+        return bool(
+            lead.get("isDisqualified")
+            or lead.get("qualificationStatus") == "disqualified"
+            or lead.get("conversionStatus") == "disqualified"
         )
 
     def _balance(self, seller_id: Any, session: Any) -> int:
@@ -12242,6 +13361,307 @@ def serialize_bson(value: Any) -> Any:
     return value
 ````
 
+## Snapshot de código: `apps/api/src/gerec_api/infrastructure/mongo/user_repository.py`
+
+````python
+"""Transactional MongoDB persistence for administrative user commands."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from typing import Any, Callable
+
+from bson import ObjectId
+from pymongo.errors import DuplicateKeyError
+
+from gerec_api.auth.sessions import revoke_sessions_for_user
+from gerec_api.domain.user_administration import (
+    CreateUserCommand,
+    ManagedUser,
+    UserAdministrationError,
+    UserAlreadyExistsError,
+    UserNotFoundError,
+)
+from gerec_api.infrastructure.mongo.collections import MongoCollections
+
+
+QUEUE_STATE_ID = "global"
+
+
+class _ConcurrentQueueChange(UserAdministrationError):
+    """Abort a transaction whose queue version changed before the insert committed."""
+
+
+class UserRepository:
+    """Keep user, queue, audit and session changes inside one Mongo transaction."""
+
+    def __init__(self, database: Any, *, now: Callable[[], datetime] | None = None) -> None:
+        self._database = database
+        self._now = now or (lambda: datetime.now(UTC))
+
+    def create_user(
+        self,
+        command: CreateUserCommand,
+        *,
+        password_hash: str,
+        actor_id: Any,
+    ) -> ManagedUser:
+        for _ in range(3):
+            try:
+                return self._run_transaction(
+                    lambda session: self._create_user(command, password_hash, actor_id, session)
+                )
+            except _ConcurrentQueueChange:
+                continue
+            except DuplicateKeyError as error:
+                if self._users.find_one({"emailNormalized": command.email}) is not None:
+                    raise UserAlreadyExistsError("email is already registered") from error
+                raise
+        raise UserAdministrationError("queue changed concurrently; retry user creation")
+
+    def set_manual_pause(
+        self, user_id: Any, *, paused: bool, actor_id: Any
+    ) -> ManagedUser:
+        return self._run_transaction(
+            lambda session: self._set_manual_pause(user_id, paused, actor_id, session)
+        )
+
+    def reset_password(self, user_id: Any, *, password_hash: str, actor_id: Any) -> ManagedUser:
+        return self._run_transaction(
+            lambda session: self._reset_password(user_id, password_hash, actor_id, session)
+        )
+
+    def _create_user(
+        self,
+        command: CreateUserCommand,
+        password_hash: str,
+        actor_id: Any,
+        session: Any,
+    ) -> ManagedUser:
+        if self._users.find_one({"emailNormalized": command.email}, session=session) is not None:
+            raise UserAlreadyExistsError("email is already registered")
+        now = self._aware_now()
+        user_id = ObjectId()
+        document = {
+            "_id": user_id,
+            "fullName": command.full_name,
+            "emailNormalized": command.email,
+            "passwordHash": password_hash,
+            "role": command.role,
+            "active": True,
+            "createdAt": now,
+            "updatedAt": now,
+        }
+        self._users.insert_one(document, session=session)
+        paused: bool | None = None
+        if command.role == "seller":
+            position = self._append_seller(user_id, now, session)
+            paused = False
+            self._seller_queue.insert_one(
+                {
+                    "sellerId": user_id,
+                    "position": position,
+                    "paused": False,
+                    "createdAt": now,
+                    "updatedAt": now,
+                },
+                session=session,
+            )
+            self._skip_balances.update_one(
+                {"sellerId": user_id},
+                {
+                    "$setOnInsert": {
+                        "sellerId": user_id,
+                        "balance": 0,
+                        "createdAt": now,
+                    },
+                    "$set": {"updatedAt": now},
+                },
+                upsert=True,
+                session=session,
+            )
+        result = ManagedUser(
+            id=str(user_id),
+            full_name=command.full_name,
+            email=command.email,
+            role=command.role,
+            active=True,
+            paused=paused,
+        )
+        self._audit(
+            action="user.created",
+            actor_id=actor_id,
+            entity_id=user_id,
+            before=None,
+            after=result.to_public(),
+            now=now,
+            session=session,
+        )
+        return result
+
+    def _set_manual_pause(
+        self, user_id: Any, paused: bool, actor_id: Any, session: Any
+    ) -> ManagedUser:
+        user = self._user_or_error(user_id, session)
+        if user.get("role") != "seller":
+            raise UserAdministrationError("only sellers have manual availability")
+        queue = self._seller_queue.find_one({"sellerId": user["_id"]}, session=session)
+        if queue is None:
+            raise UserAdministrationError("seller is not in the queue")
+        now = self._aware_now()
+        self._seller_queue.update_one(
+            {"_id": queue["_id"]},
+            {"$set": {"paused": paused, "updatedAt": now}},
+            session=session,
+        )
+        result = _managed_user(user, paused=paused)
+        self._audit(
+            action="user.availability_changed",
+            actor_id=actor_id,
+            entity_id=user["_id"],
+            before={"paused": bool(queue.get("paused", False))},
+            after={"paused": paused},
+            now=now,
+            session=session,
+        )
+        return result
+
+    def _reset_password(
+        self, user_id: Any, password_hash: str, actor_id: Any, session: Any
+    ) -> ManagedUser:
+        user = self._user_or_error(user_id, session)
+        now = self._aware_now()
+        self._users.update_one(
+            {"_id": user["_id"]},
+            {"$set": {"passwordHash": password_hash, "updatedAt": now}},
+            session=session,
+        )
+        revoke_sessions_for_user(self._sessions, user["_id"], now=now, session=session)
+        queue = self._seller_queue.find_one({"sellerId": user["_id"]}, session=session)
+        result = _managed_user(user, paused=(bool(queue.get("paused", False)) if queue else None))
+        self._audit(
+            action="user.password_reset",
+            actor_id=actor_id,
+            entity_id=user["_id"],
+            before={"passwordChanged": False},
+            after={"passwordChanged": True},
+            now=now,
+            session=session,
+        )
+        return result
+
+    def _append_seller(self, user_id: ObjectId, now: datetime, session: Any) -> int:
+        """Reserve a final queue position while holding the queue-state version."""
+        state = self._queue_state.find_one({"_id": QUEUE_STATE_ID}, session=session)
+        entries = self._seller_queue.find({}, session=session)
+        positions = [
+            int(entry["position"])
+            for entry in entries
+            if isinstance(entry.get("position"), int) and not isinstance(entry["position"], bool)
+        ]
+        position = max(positions, default=0) + 1
+        if state is None:
+            self._queue_state.insert_one(
+                {
+                    "_id": QUEUE_STATE_ID,
+                    "nextSellerId": user_id,
+                    "version": 0,
+                    "createdAt": now,
+                    "updatedAt": now,
+                },
+                session=session,
+            )
+            return position
+        updated = self._queue_state.update_one(
+            {"_id": QUEUE_STATE_ID, "version": state.get("version", 0)},
+            {"$set": {"updatedAt": now}, "$inc": {"version": 1}},
+            session=session,
+        )
+        if updated.matched_count != 1:
+            raise _ConcurrentQueueChange("queue changed while appending seller")
+        return position
+
+    def _user_or_error(self, user_id: Any, session: Any) -> dict[str, Any]:
+        candidate_ids = [user_id]
+        if isinstance(user_id, str) and ObjectId.is_valid(user_id):
+            candidate_ids.append(ObjectId(user_id))
+        for candidate in candidate_ids:
+            user = self._users.find_one({"_id": candidate}, session=session)
+            if user is not None:
+                return user
+        raise UserNotFoundError("user not found")
+
+    def _run_transaction(self, callback: Callable[[Any], ManagedUser]) -> ManagedUser:
+        with self._database.client.start_session() as session:
+            return session.with_transaction(callback)
+
+    def _audit(
+        self,
+        *,
+        action: str,
+        actor_id: Any,
+        entity_id: Any,
+        before: dict[str, Any] | None,
+        after: dict[str, Any],
+        now: datetime,
+        session: Any,
+    ) -> None:
+        self._audit_log.insert_one(
+            {
+                "actorId": actor_id,
+                "action": action,
+                "entityType": "user",
+                "entityId": entity_id,
+                "before": before,
+                "after": after,
+                "createdAt": now,
+            },
+            session=session,
+        )
+
+    def _aware_now(self) -> datetime:
+        value = self._now()
+        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+    @property
+    def _users(self):
+        return self._database[MongoCollections.USERS]
+
+    @property
+    def _seller_queue(self):
+        return self._database[MongoCollections.SELLER_QUEUE]
+
+    @property
+    def _queue_state(self):
+        return self._database[MongoCollections.QUEUE_STATE]
+
+    @property
+    def _skip_balances(self):
+        return self._database[MongoCollections.SKIP_BALANCES]
+
+    @property
+    def _sessions(self):
+        return self._database[MongoCollections.SESSIONS]
+
+    @property
+    def _audit_log(self):
+        return self._database[MongoCollections.AUDIT_LOG]
+
+
+def _managed_user(user: dict[str, Any], *, paused: bool | None) -> ManagedUser:
+    role = str(user.get("role", "seller"))
+    if role not in {"admin", "seller"}:
+        raise UserAdministrationError("user role is invalid")
+    return ManagedUser(
+        id=str(user["_id"]),
+        full_name=str(user.get("fullName") or user.get("name") or user["emailNormalized"]),
+        email=str(user["emailNormalized"]),
+        role=role,  # type: ignore[arg-type]
+        active=bool(user.get("active", True)),
+        paused=paused,
+    )
+````
+
 ## Snapshot de código: `apps/api/src/gerec_api/main.py`
 
 ````python
@@ -12258,6 +13678,7 @@ from gerec_api.domain.business_time import BusinessClock, MongoHolidayRepository
 from gerec_api.domain.leads import LeadService
 from gerec_api.domain.operations import OperationsService
 from gerec_api.domain.queue import QueueService
+from gerec_api.domain.user_administration import UserAdministrationService
 from gerec_api.infrastructure.mongo.client import MongoClientFactory
 from gerec_api.infrastructure.mongo import bootstrap
 from gerec_api.infrastructure.mongo.clock import MongoClock
@@ -12265,6 +13686,7 @@ from gerec_api.infrastructure.mongo.collections import MongoCollections
 from gerec_api.infrastructure.mongo.lead_repository import LeadRepository
 from gerec_api.infrastructure.mongo.operations_repository import MongoOperationsRepository
 from gerec_api.infrastructure.mongo.queue_repository import QueueRepository
+from gerec_api.infrastructure.mongo.user_repository import UserRepository
 from gerec_api.routes.auth import router as auth_router
 from gerec_api.routes.leads import router as leads_router
 from gerec_api.routes.operations import router as operations_router
@@ -12311,6 +13733,9 @@ def create_app(
         business_clock=business_clock,
         clock=database_clock,
     )
+    app.state.user_administration_service = UserAdministrationService(
+        UserRepository(database)
+    )
 
     @app.middleware("http")
     async def add_contract_version(request: Request, call_next):
@@ -12340,17 +13765,26 @@ def create_app(
 ## Snapshot de código: `apps/api/src/gerec_api/routes/admin.py`
 
 ````python
-"""Administrative read endpoints; mutations remain explicit domain commands."""
+"""Administrative read endpoints and thin user-command HTTP boundaries."""
 
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from pydantic import BaseModel, Field
 
 from gerec_api.auth.dependencies import get_current_user
 from gerec_api.auth.permissions import PermissionDenied, PermissionService
 from gerec_api.auth.sessions import CurrentUser
 from gerec_api.infrastructure.mongo.collections import MongoCollections
 from gerec_api.infrastructure.mongo.serialization import serialize_bson
+from gerec_api.domain.user_administration import (
+    CreateUserCommand,
+    ManagedUser,
+    UserAdministrationError,
+    UserAdministrationService,
+    UserAlreadyExistsError,
+    UserNotFoundError,
+)
 
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -12363,6 +13797,54 @@ def _admin(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
     except PermissionDenied as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden") from error
     return user
+
+
+class CreateUserRequest(BaseModel):
+    full_name: str = Field(alias="fullName", min_length=1, max_length=200)
+    email: str = Field(min_length=1, max_length=320)
+    role: str
+    password: str
+
+
+class AvailabilityRequest(BaseModel):
+    paused: bool
+
+
+class PasswordResetRequest(BaseModel):
+    password: str
+
+
+class ManagedUserResponse(BaseModel):
+    id: str
+    full_name: str = Field(alias="fullName")
+    email: str
+    role: str
+    active: bool
+    paused: bool | None = None
+
+    model_config = {"populate_by_name": True}
+
+
+def _user_administration_service(request: Request) -> UserAdministrationService:
+    service = getattr(request.app.state, "user_administration_service", None)
+    if not isinstance(service, UserAdministrationService):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="User administration unavailable",
+        )
+    return service
+
+
+def _response(user: ManagedUser) -> ManagedUserResponse:
+    return ManagedUserResponse.model_validate(user.to_public())
+
+
+def _command_error(error: UserAdministrationError | ValueError) -> HTTPException:
+    if isinstance(error, UserAlreadyExistsError):
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
+    if isinstance(error, UserNotFoundError):
+        return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error))
 
 
 def _page(request: Request, current_user: CurrentUser, collection_name: str, query: dict[str, Any], page: int, limit: int) -> dict[str, Any]:
@@ -12390,6 +13872,53 @@ def _page(request: Request, current_user: CurrentUser, collection_name: str, que
 @router.get("/users")
 def users(request: Request, current_user: CurrentUser = Depends(_admin), page: int = Query(1, ge=1), limit: int = Query(50, ge=1, le=200)) -> dict[str, Any]:
     return _page(request, current_user, MongoCollections.USERS, PermissionService.scope_query(current_user, "users"), page, limit)
+
+
+@router.post("/users", response_model=ManagedUserResponse, status_code=status.HTTP_201_CREATED)
+def create_user(
+    payload: CreateUserRequest,
+    request: Request,
+    current_user: CurrentUser = Depends(_admin),
+) -> ManagedUserResponse:
+    try:
+        user = _user_administration_service(request).with_actor(current_user.id).create_user(
+            CreateUserCommand(payload.full_name, payload.email, payload.role, payload.password)
+        )
+    except (UserAdministrationError, ValueError) as error:
+        raise _command_error(error) from error
+    return _response(user)
+
+
+@router.patch("/users/{user_id}/availability", response_model=ManagedUserResponse)
+def set_user_availability(
+    user_id: str,
+    payload: AvailabilityRequest,
+    request: Request,
+    current_user: CurrentUser = Depends(_admin),
+) -> ManagedUserResponse:
+    try:
+        user = _user_administration_service(request).with_actor(current_user.id).set_manual_pause(
+            user_id, payload.paused
+        )
+    except (UserAdministrationError, ValueError) as error:
+        raise _command_error(error) from error
+    return _response(user)
+
+
+@router.patch("/users/{user_id}/password", response_model=ManagedUserResponse)
+def reset_user_password(
+    user_id: str,
+    payload: PasswordResetRequest,
+    request: Request,
+    current_user: CurrentUser = Depends(_admin),
+) -> ManagedUserResponse:
+    try:
+        user = _user_administration_service(request).with_actor(current_user.id).reset_password(
+            user_id, payload.password
+        )
+    except (UserAdministrationError, ValueError) as error:
+        raise _command_error(error) from error
+    return _response(user)
 
 
 @router.get("/audit")
@@ -12515,6 +14044,8 @@ def dashboard(
         return service.for_user(current_user, page=page, limit=limit)
     except PermissionDenied as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden") from error
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
 ````
 
 ## Snapshot de código: `apps/api/src/gerec_api/routes/leads.py`
@@ -12526,14 +14057,18 @@ from dataclasses import replace
 from hmac import compare_digest
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
+from gerec_api.auth.dependencies import get_current_user
+from gerec_api.auth.permissions import DashboardService, PermissionDenied
+from gerec_api.auth.sessions import CurrentUser
 from gerec_api.domain.leads import LeadService
 from gerec_api.domain.normalization import normalize_source_row
 
 
-router = APIRouter(prefix="/api/internal/imports/google-sheets", tags=["lead-imports"])
+router = APIRouter(tags=["lead-imports", "lead-read"])
+internal_router = APIRouter(prefix="/api/internal/imports/google-sheets", tags=["lead-imports"])
 
 
 class SyncRequest(BaseModel):
@@ -12561,7 +14096,7 @@ def require_internal_key(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
 
 
-@router.post("/sync", dependencies=[Depends(require_internal_key)])
+@internal_router.post("/sync", dependencies=[Depends(require_internal_key)])
 def sync_rows(
     payload: SyncRequest,
     service: LeadService = Depends(get_lead_service),
@@ -12581,15 +14116,43 @@ def sync_rows(
         )
     archive = service.archive_missing(payload.source_snapshot_id)
     return {"rows": results, "archive": archive.to_document()}
+
+
+def get_dashboard_service(request: Request) -> DashboardService:
+    service = getattr(request.app.state, "dashboard_service", None)
+    if not isinstance(service, DashboardService):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Operational read model unavailable",
+        )
+    return service
+
+
+@router.get("/api/leads/{lead_id}/treatments")
+def lead_treatments(
+    lead_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+    service: DashboardService = Depends(get_dashboard_service),
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=200),
+) -> dict[str, Any]:
+    """Return immutable treatments visible to the authenticated role only."""
+    try:
+        return service.lead_treatments_for_user(lead_id, current_user, page=page, limit=limit)
+    except PermissionDenied as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden") from error
+
+
+router.include_router(internal_router)
 ````
 
 ## Snapshot de código: `apps/api/src/gerec_api/routes/operations.py`
 
 ````python
-"""HTTP boundaries for seller operations and administrative notes."""
+"""HTTP boundaries for seller operational commands."""
 
 from datetime import date
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from bson import ObjectId
 from bson.errors import InvalidId
@@ -12603,6 +14166,7 @@ from gerec_api.domain.operations import (
     FeedbackCommand,
     OperationsService,
     OutcomeCommand,
+    TreatmentCommand,
 )
 from gerec_api.infrastructure.mongo.operations_repository import OperationsStateError
 
@@ -12630,9 +14194,13 @@ class OutcomeRequest(BaseModel):
     response_confirmed: bool = False
 
 
-class AdministrativeNoteRequest(BaseModel):
-    comment: str = Field(min_length=1, max_length=2_000)
-    idempotency_key: str = Field(min_length=1, max_length=200)
+class TreatmentRequest(BaseModel):
+    comment: str = Field(min_length=6, max_length=2_000)
+    commercial_status: Literal["undefined", "negotiation", "won"] = Field(
+        alias="commercialStatus"
+    )
+    is_disqualified: bool = Field(alias="isDisqualified")
+    idempotency_key: str = Field(alias="idempotencyKey", min_length=1, max_length=200)
 
 
 def get_operations_service(request: Request) -> OperationsService:
@@ -12643,12 +14211,6 @@ def get_operations_service(request: Request) -> OperationsService:
             detail="Operations service unavailable",
         )
     return service
-
-
-def require_admin(current_user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
-    if current_user.role != "admin":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
-    return current_user
 
 
 @router.post("/api/leads/{lead_id}/feedbacks")
@@ -12689,6 +14251,34 @@ def register_attempt(
     )
 
 
+@router.post(
+    "/api/leads/{lead_id}/treatments",
+    status_code=status.HTTP_201_CREATED,
+)
+def register_treatment(
+    lead_id: str,
+    payload: TreatmentRequest,
+    service: OperationsService = Depends(get_operations_service),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Record the current seller's immutable commercial treatment only."""
+    if current_user.role != "seller":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    return _run_treatment(
+        lambda: service.with_actor(
+            _object_id(current_user.id), current_user.role
+        ).register_treatment(
+            TreatmentCommand(
+                _object_id(lead_id),
+                payload.comment,
+                payload.commercial_status,
+                payload.is_disqualified,
+                payload.idempotency_key,
+            )
+        )
+    )
+
+
 @router.post("/api/leads/{lead_id}/outcome")
 def register_outcome(
     lead_id: str,
@@ -12705,26 +14295,6 @@ def register_outcome(
                 payload.idempotency_key,
                 payload.disqualification_reason,
                 payload.response_confirmed,
-            )
-        )
-    )
-
-
-@router.post("/api/admin/leads/{lead_id}/notes")
-def register_administrative_note(
-    lead_id: str,
-    payload: AdministrativeNoteRequest,
-    service: OperationsService = Depends(get_operations_service),
-    current_user: CurrentUser = Depends(require_admin),
-) -> dict[str, Any]:
-    return _run(
-        lambda: service.with_actor(_object_id(current_user.id), current_user.role).register_feedback(
-            FeedbackCommand(
-                _object_id(lead_id),
-                payload.comment,
-                False,
-                payload.idempotency_key,
-                administrative_note=True,
             )
         )
     )
@@ -12749,6 +14319,19 @@ def _run(operation: Callable[[], Any]) -> dict[str, Any]:
         ) from error
     except OperationsStateError as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+
+
+def _run_treatment(operation: Callable[[], Any]) -> dict[str, Any]:
+    try:
+        return operation().to_document()
+    except PermissionError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden") from error
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)
+        ) from error
+    except OperationsStateError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
 ````
 
 ## Snapshot de código: `apps/api/src/gerec_api/routes/queue.py`
@@ -12764,6 +14347,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from gerec_api.auth.dependencies import get_current_user
+from gerec_api.auth.permissions import DashboardService, PermissionDenied
 from gerec_api.auth.sessions import CurrentUser
 from gerec_api.domain.queue import QueueService
 from gerec_api.infrastructure.mongo.queue_repository import QueueStateError
@@ -12798,10 +14382,32 @@ def get_queue_service(request: Request) -> QueueService:
     return service
 
 
+def get_dashboard_service(request: Request) -> DashboardService:
+    service = getattr(request.app.state, "dashboard_service", None)
+    if not isinstance(service, DashboardService):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Operational read model unavailable",
+        )
+    return service
+
+
 def require_admin(current_user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
     if current_user.role != "admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
     return current_user
+
+
+@router.get("/api/queue")
+def queue_snapshot(
+    current_user: CurrentUser = Depends(get_current_user),
+    service: DashboardService = Depends(get_dashboard_service),
+) -> dict[str, Any]:
+    """Expose global queue only to admin and the caller's own state to sellers."""
+    try:
+        return service.queue_for_user(current_user)
+    except PermissionDenied as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden") from error
 
 
 @router.post(
@@ -12902,34 +14508,48 @@ def _run(operation):
 
 ````tsx
 import { redirect } from "next/navigation";
+
+import { AdminDashboard } from "../../components/admin-dashboard";
 import { AppShell } from "../../components/app-shell";
-import { Pagination } from "../../components/pagination";
-import { ResourceTable } from "../../components/resource-table";
+import { SellerDashboard } from "../../components/seller-dashboard";
 import { getSessionContext } from "../../lib/auth/session";
-import { getDashboardData, pageNumber } from "../../lib/dashboard/queries";
+import { getDashboardData, isAdminDashboard, pageNumber } from "../../lib/dashboard/queries";
 
 export const dynamic = "force-dynamic";
-const dateLabel = (value: unknown) => { const date = new Date(String(value)); return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" }); };
-export default async function DashboardPage({ searchParams }: { searchParams: Promise<{ page?: string }> }) {
+
+export default async function DashboardPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ page?: string }>;
+}) {
   const session = await getSessionContext();
   if (session.status !== "authenticated") redirect("/login");
+
   const page = pageNumber((await searchParams).page ?? "1");
-  const data = await getDashboardData(session.sessionToken, page);
-  return <AppShell profile={session.profile} activePath="/dashboard" heading="Visão geral">
-    <section className="metrics" aria-label="Resumo operacional">
-      <div className="metric green"><span>Total de leads</span><strong>{data.leads.total}</strong></div>
-      <div className="metric"><span>Leads exibidos</span><strong>{data.leads.items.length}</strong></div>
-      <div className="metric amber"><span>Posições na fila</span><strong>{data.queue.total}</strong></div>
-      <div className="metric"><span>Atribuições</span><strong>{data.history.total}</strong></div>
-      <div className="metric"><span>Próximo vendedor</span><strong className="metric-text">{String(data.queue.nextSellerName ?? "Não identificado")}</strong></div>
-    </section>
-    <div className="panel-stack">
-      <section className="panel-card"><div className="panel-head"><div><p className="eyebrow">Distribuição</p><h2>Fila comercial</h2></div><a className="inline-link" href="/fila">Ver fila</a></div><div className="queue-grid">{data.queue.items.map((item, index) => <div className="queue-item" key={String(item.id ?? index)}><div className="queue-item-head"><span className="queue-position">#{String(item.position ?? index + 1)}</span><span className={`queue-state ${item.paused ? "paused" : "ready"}`}>{item.paused ? "Pausado" : "Ativo"}</span></div><strong>{String(item.sellerName ?? "Não identificado")}</strong><small>{item.paused ? "Fora da distribuição" : "Recebe novos leads"}</small></div>)}</div></section>
-      <section className="panel-card"><div className="panel-head"><div><p className="eyebrow">Atividade</p><h2>Últimas atribuições</h2></div><a className="inline-link" href="/historico">Ver histórico</a></div>{data.history.items.slice(0, 5).map((item, index) => <div className="history-item" key={String(item.id ?? index)}><div><strong>{String(item.leadName ?? "Lead não identificado")}</strong><small>Vendedor: {String(item.sellerName ?? "Não identificado")}</small></div><div className="history-meta"><span>{String(item.type ?? "Normal")}</span><small>{dateLabel(item.startedAt)}</small></div></div>)}</section>
-    </div>
-    <ResourceTable title="Leads" items={data.leads.items} allowAttempts={session.profile.role === "seller"} />
-    <Pagination href="/dashboard" page={data.leads} />
-  </AppShell>;
+  let dashboard: Awaited<ReturnType<typeof getDashboardData>> | null = null;
+  try {
+    dashboard = await getDashboardData(session.sessionToken, page);
+  } catch {
+    // A tela não expõe detalhes internos da falha da API.
+  }
+
+  if (dashboard === null) {
+    return (
+      <AppShell profile={session.profile} activePath="/dashboard" heading="Visão geral">
+        <section className="dashboard-panel unavailable-state" aria-live="polite">
+          <p className="eyebrow">Dados indisponíveis</p>
+          <h2>Não foi possível carregar a visão geral.</h2>
+          <p className="dashboard-copy">Tente atualizar a página em alguns instantes.</p>
+        </section>
+      </AppShell>
+    );
+  }
+
+  return (
+    <AppShell profile={session.profile} activePath="/dashboard" heading="Visão geral">
+      {isAdminDashboard(dashboard) ? <AdminDashboard dashboard={dashboard} /> : <SellerDashboard dashboard={dashboard} />}
+    </AppShell>
+  );
 }
 ````
 
@@ -12937,22 +14557,30 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
 
 ````tsx
 import { redirect } from "next/navigation";
+
 import { AppShell } from "../../components/app-shell";
+import { LeadTable } from "../../components/lead-table";
 import { Pagination } from "../../components/pagination";
-import { ResourceTable } from "../../components/resource-table";
+import { QueueTable } from "../../components/queue-table";
 import { getSessionContext } from "../../lib/auth/session";
-import { getDashboardData, pageNumber } from "../../lib/dashboard/queries";
+import { getDashboardData, isAdminDashboard, pageNumber } from "../../lib/dashboard/queries";
 
 export const dynamic = "force-dynamic";
+
 export default async function QueuePage({
   searchParams,
 }: {
   searchParams: Promise<{ page?: string }>;
 }) {
+  const params = await searchParams;
   const session = await getSessionContext();
   if (session.status !== "authenticated") redirect("/login");
-  const page = pageNumber((await searchParams).page ?? "1");
+  if (session.profile.role !== "admin") redirect("/dashboard");
+
+  const page = pageNumber(params.page ?? "1");
   const data = await getDashboardData(session.sessionToken, page);
+  if (!isAdminDashboard(data)) redirect("/dashboard");
+
   return (
     <AppShell
       profile={session.profile}
@@ -12960,8 +14588,9 @@ export default async function QueuePage({
       eyebrow="Fila comercial"
       heading="Fila de leads"
     >
-      <ResourceTable title="Fila" items={data.queue.items} />
-      <Pagination href="/fila" page={data.queue} />
+      <QueueTable queue={data.queue} />
+      <LeadTable leads={data.leads.items} role="admin" />
+      <Pagination href="/fila" page={data.leads} searchParams={params} />
     </AppShell>
   );
 }
@@ -12971,57 +14600,97 @@ export default async function QueuePage({
 
 ````css
 @import "tailwindcss";
+
 :root {
-  --ink: #17201d;
-  --muted: #68736e;
-  --paper: #f3f6f4;
-  --card: #fff;
-  --line: #dce4e0;
-  --green: #1557d6;
-  --mint: #e7efff;
-  --red: #b4413f;
-  --amber: #a56b16;
+  --wtg-navy: #082b5b;
+  --wtg-navy-strong: #061e43;
+  --wtg-blue: #1458d4;
+  --wtg-blue-hover: #0f47af;
+  --wtg-blue-soft: #e9f0ff;
+  --page: #f4f7f6;
+  --surface: #ffffff;
+  --surface-muted: #f7f9fb;
+  --text-strong: #0d1b2a;
+  --text: #1f2d3d;
+  --muted: #5e6d7a;
+  --line: #d7e0e5;
+  --line-strong: #becbd4;
+  --focus: #e89b1d;
+  --status-undefined-bg: #fde8e7;
+  --status-undefined-text: #9d2420;
+  --status-negotiation-bg: #fff0c8;
+  --status-negotiation-text: #7a4c00;
+  --status-won-bg: #ddf3e6;
+  --status-won-text: #075d3f;
+  --status-disqualified-bg: #e7eaed;
+  --status-disqualified-text: #414a54;
+  --status-overdue-bg: #fde8e7;
+  --status-overdue-text: #9d2420;
+  --status-today-bg: #fff0c8;
+  --status-today-text: #7a4c00;
+  --status-scheduled-bg: #e7f2ff;
+  --status-scheduled-text: #174c9e;
+  --status-active-bg: #e7f2ff;
+  --status-active-text: #174c9e;
+  --status-paused-bg: #fde8e7;
+  --status-paused-text: #9d2420;
+  --status-blocked-bg: #fff0c8;
+  --status-blocked-text: #7a4c00;
+  --shadow-modal: 0 20px 60px rgb(9 29 53 / 28%);
 }
+
 * {
   box-sizing: border-box;
 }
+
 html {
   min-width: 1280px;
-  background: var(--paper);
+  background: var(--page);
 }
+
 body {
-  margin: 0;
   min-height: 100vh;
-  background: var(--paper);
-  color: var(--ink);
+  margin: 0;
+  background: var(--page);
+  color: var(--text);
   font-family: Arial, Helvetica, sans-serif;
+  font-size: 14px;
+  line-height: 1.45;
 }
+
 button,
-input {
+input,
+select,
+textarea {
   font: inherit;
 }
+button {
+  cursor: pointer;
+}
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
 :focus-visible {
-  outline: 3px solid #d39c42;
+  outline: 3px solid var(--focus);
   outline-offset: 3px;
 }
+
 .app-shell {
   display: grid;
-  grid-template-columns: 240px minmax(0, 1fr);
+  grid-template-columns: 252px minmax(0, 1fr);
   min-height: 100vh;
 }
 .sidebar {
   display: flex;
   flex-direction: column;
-  padding: 28px 20px;
-  background: #102653;
-  color: #e8f2ee;
+  padding: 32px 22px 26px;
+  background: var(--wtg-navy);
+  color: #eaf1ff;
 }
 .brand {
   display: flex;
   align-items: center;
-  gap: 11px;
-  font-weight: 800;
-  letter-spacing: 0.03em;
 }
 .brand-logo {
   position: relative;
@@ -13029,93 +14698,77 @@ input {
   width: 180px;
   height: 132px;
   overflow: hidden;
-  flex: 0 0 auto;
 }
 .brand-logo img {
   position: absolute;
-  left: -78px;
   top: -106px;
+  left: -78px;
+  display: block;
   width: 343px;
   height: 343px;
   max-width: none;
-  display: block;
-}
-.brand > img {
-  width: 180px;
-  height: 108px;
-  display: block;
-  object-fit: contain;
-  object-position: center;
-  /* O PNG original tem fundo branco. A composição transforma o fundo em
-     preto (transparente no modo screen) e a marca em branco no sidebar. */
-  background: transparent;
-}
-.brand-mark {
-  display: grid;
-  place-items: center;
-  width: 34px;
-  height: 34px;
-  border: 1px solid #8fb0ff;
-  border-radius: 9px;
-  color: #d5e1ff;
-}
-.brand small {
-  font-size: 9px;
-  letter-spacing: 0.16em;
-  color: #a9bdf0;
 }
 .sidebar nav {
   display: grid;
-  gap: 7px;
-  margin-top: 58px;
+  gap: 6px;
+  margin-top: 52px;
 }
 .sidebar nav a {
-  padding: 12px 13px;
-  border-radius: 8px;
-  color: #c3d1f2;
+  padding: 13px 15px;
+  border-radius: 9px;
+  color: #c9d8f7;
+  font-weight: 700;
   text-decoration: none;
-  font-size: 14px;
 }
 .sidebar nav a:hover,
-.nav-active {
-  background: #244b9b;
-  color: #fff !important;
+.sidebar nav a:focus-visible,
+.sidebar .nav-active {
+  background: #2254a5;
+  color: #fff;
 }
 .sidebar-foot {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   margin-top: auto;
-  color: #9eb5e8;
+  color: #c9d8f7;
   font-size: 12px;
 }
 .status-dot {
-  display: inline-block;
-  width: 7px;
-  height: 7px;
-  margin-right: 6px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
-  background: #6f9cff;
+  background: #5ed499;
 }
+
 .workspace {
-  padding: 30px 42px 54px;
+  width: 100%;
+  max-width: 1680px;
+  padding: 32px 42px 60px;
 }
 .topbar {
   display: flex;
-  justify-content: space-between;
   align-items: center;
+  justify-content: space-between;
+  min-height: 88px;
+  padding-bottom: 28px;
   border-bottom: 1px solid var(--line);
-  padding-bottom: 26px;
 }
 .eyebrow {
-  margin: 0 0 7px;
-  color: var(--green);
+  margin: 0 0 8px;
+  color: var(--wtg-blue);
   font-size: 11px;
   font-weight: 800;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
 }
-.topbar h1 {
+.topbar h1,
+.page-heading h1 {
   margin: 0;
-  font-size: 30px;
-  letter-spacing: -0.04em;
+  color: var(--text-strong);
+  font-size: 34px;
+  font-weight: 650;
+  letter-spacing: -0.045em;
 }
 .user-menu {
   display: flex;
@@ -13124,11 +14777,11 @@ input {
 }
 .avatar {
   display: grid;
+  width: 40px;
+  height: 40px;
   place-items: center;
-  width: 36px;
-  height: 36px;
   border-radius: 50%;
-  background: var(--green);
+  background: var(--wtg-blue);
   color: #fff;
   font-weight: 800;
 }
@@ -13136,396 +14789,654 @@ input {
 .user-menu small {
   display: block;
 }
+.user-menu strong {
+  color: var(--text-strong);
+}
 .user-menu small {
   margin-top: 2px;
   color: var(--muted);
   font-size: 12px;
 }
 .logout {
+  margin-left: 12px;
+  padding: 8px 10px;
   border: 0;
-  background: none;
+  border-radius: 7px;
+  background: transparent;
   color: var(--muted);
-  cursor: pointer;
-  margin-left: 18px;
 }
-.notice {
-  margin: 24px 0 18px;
-  padding: 12px 15px;
-  border: 1px solid #cfe2da;
-  border-radius: 8px;
-  background: var(--mint);
-  color: #275e4d;
-  font-size: 13px;
+.logout:hover {
+  background: var(--wtg-blue-soft);
+  color: var(--wtg-navy);
 }
-.metrics {
+
+.metric-grid {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
-  margin-bottom: 26px;
+  margin: 26px 0;
 }
-.panel-stack {
-  display: grid;
-  grid-template-columns: 1.15fr 0.85fr;
-  gap: 16px;
-  margin-bottom: 24px;
-}
-.panel-card {
+.metric-card {
+  min-height: 116px;
+  padding: 19px 20px;
   border: 1px solid var(--line);
   border-radius: 12px;
-  background: var(--card);
-  padding: 22px 24px;
+  background: var(--surface);
 }
-.panel-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 12px;
-  margin-bottom: 18px;
-}
-.panel-head h2 {
-  margin: 0;
-  font-size: 20px;
-  letter-spacing: -0.03em;
-}
-.inline-link {
-  color: var(--green);
-  text-decoration: none;
-  font-size: 13px;
-  font-weight: 700;
-}
-.queue-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
-.queue-item {
-  padding: 16px;
-  border: 1px solid #e6ece8;
-  border-radius: 10px;
-  background: #fbfcfb;
-}
-.queue-item strong,
-.queue-item small {
+.metric-card span {
   display: block;
-}
-.queue-item small {
-  margin-top: 4px;
   color: var(--muted);
   font-size: 12px;
 }
-.queue-item-head {
+.metric-card strong {
+  display: block;
+  margin-top: 16px;
+  color: var(--text-strong);
+  font-size: 30px;
+  letter-spacing: -0.05em;
+}
+.metric-card--accent strong {
+  color: var(--wtg-blue);
+}
+.metric-card--next {
+  border-top: 3px solid var(--wtg-blue);
+}
+.metric-card--next strong,
+.metric-card__text {
+  font-size: 17px !important;
+  letter-spacing: -0.025em !important;
+  line-height: 1.3;
+}
+
+.dashboard-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.16fr) minmax(420px, 0.84fr);
+  gap: 16px;
+  margin-bottom: 18px;
+}
+.dashboard-layout--seller {
+  grid-template-columns: minmax(320px, 0.7fr) minmax(520px, 1.3fr);
+}
+.dashboard-panel,
+.panel-card {
+  min-width: 0;
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--surface);
+}
+.dashboard-panel h2,
+.panel-head h2 {
+  margin: 0;
+  color: var(--text-strong);
+  font-size: 21px;
+  letter-spacing: -0.035em;
+}
+.dashboard-panel__header,
+.panel-head {
   display: flex;
+  align-items: flex-start;
   justify-content: space-between;
-  align-items: center;
-  margin-bottom: 14px;
+  gap: 16px;
+  margin-bottom: 18px;
 }
-.queue-position {
-  font-size: 22px;
-  font-weight: 800;
-  letter-spacing: -0.04em;
+.text-link,
+.inline-link {
+  color: var(--wtg-blue);
+  font-size: 13px;
+  font-weight: 750;
+  text-decoration: none;
 }
-.queue-state {
+.text-link:hover,
+.inline-link:hover {
+  text-decoration: underline;
+}
+.queue-cursor {
   display: inline-flex;
   align-items: center;
-  padding: 5px 9px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 800;
+  gap: 5px;
+  margin: -2px 0 16px;
+  padding: 7px 10px;
+  border-radius: 7px;
+  background: var(--wtg-blue-soft);
+  color: #163d86;
+  font-size: 12px;
 }
-.queue-state.ready {
-  background: var(--mint);
-  color: var(--green);
-}
-.queue-state.paused {
-  background: #fbe7e6;
-  color: var(--red);
-}
-.queue-item dl {
+
+.queue-list,
+.activity-list,
+.user-list,
+.treatment-history ol {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
   gap: 10px;
-  margin: 16px 0 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
-.queue-item dt {
-  color: var(--muted);
-  font-size: 11px;
+.queue-list {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
-.queue-item dd {
-  margin: 6px 0 0;
-  font-size: 18px;
-  font-weight: 800;
+.queue-card {
+  display: block;
+  min-height: 126px;
+  padding: 15px;
+  border: 1px solid #dfe7ed;
+  border-radius: 10px;
+  background: var(--surface-muted);
 }
-.history-list {
-  display: grid;
-  gap: 12px;
-}
-.history-item {
+.queue-card__header {
   display: flex;
+  align-items: center;
   justify-content: space-between;
-  align-items: flex-start;
-  gap: 16px;
-  padding: 14px 0;
-  border-top: 1px solid #edf1ef;
+  margin-bottom: 17px;
 }
-.history-item:first-child {
+.queue-card__position {
+  color: var(--wtg-blue);
+  font-size: 25px;
+  font-weight: 800;
+  letter-spacing: -0.06em;
+}
+.queue-card strong,
+.queue-card small {
+  display: block;
+}
+.queue-card small {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.status-badge,
+.commercial-status,
+.disqualification-marker,
+.sla,
+.pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 25px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.status-badge--active {
+  background: var(--status-active-bg);
+  color: var(--status-active-text);
+}
+.status-badge--blocked_overdue {
+  background: var(--status-blocked-bg);
+  color: var(--status-blocked-text);
+}
+.status-badge--paused {
+  background: var(--status-paused-bg);
+  color: var(--status-paused-text);
+}
+.commercial-status.undefined {
+  background: var(--status-undefined-bg);
+  color: var(--status-undefined-text);
+}
+.commercial-status.negotiation {
+  background: var(--status-negotiation-bg);
+  color: var(--status-negotiation-text);
+}
+.commercial-status.won {
+  background: var(--status-won-bg);
+  color: var(--status-won-text);
+}
+.disqualification-marker,
+.commercial-status.disqualified,
+.pill.disqualified {
+  background: var(--status-disqualified-bg);
+  color: var(--status-disqualified-text);
+}
+.pill.won {
+  background: var(--status-won-bg);
+  color: var(--status-won-text);
+}
+.sla.overdue {
+  background: var(--status-overdue-bg);
+  color: var(--status-overdue-text);
+}
+.sla.today {
+  background: var(--status-today-bg);
+  color: var(--status-today-text);
+}
+.sla.scheduled {
+  background: var(--status-scheduled-bg);
+  color: var(--status-scheduled-text);
+}
+.sla.none {
+  background: var(--surface-muted);
+  color: var(--muted);
+}
+
+.activity-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px 0;
+  border-top: 1px solid #e5ebef;
+}
+.activity-item:first-child {
   padding-top: 0;
   border-top: 0;
 }
-.history-item strong,
-.history-item small,
-.history-meta span,
-.history-meta small {
+.activity-item strong,
+.activity-item small,
+.activity-item__meta span {
   display: block;
 }
-.history-item small,
-.history-meta small {
-  margin-top: 4px;
+.activity-item strong {
+  color: var(--text-strong);
+  font-size: 14px;
+}
+.activity-item small {
+  margin-top: 5px;
   color: var(--muted);
   font-size: 11px;
+  line-height: 1.4;
 }
-.history-meta {
-  min-width: 140px;
+.activity-item__meta {
+  min-width: 145px;
   text-align: right;
 }
-.metric {
-  padding: 18px 19px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--card);
+.activity-item__meta span {
+  color: var(--text-strong);
+  font-size: 13px;
+  font-weight: 700;
 }
-.metric span {
-  display: block;
-  color: var(--muted);
-  font-size: 12px;
+.activity-item__meta .commercial-status,
+.activity-item__meta .disqualification-marker {
+  display: inline-flex;
+  margin-left: auto;
 }
-.metric strong {
-  display: block;
-  margin-top: 12px;
-  font-size: 31px;
-  letter-spacing: -0.05em;
-}
-
-.admin-controls {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 14px 0;
-  border-top: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
-}
-.admin-actions { display: flex; gap: 10px; }
-.admin-controls .muted { margin: 0; font-size: 12px; }
-.admin-controls button:disabled { opacity: .55; cursor: not-allowed; }
-.pagination {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 18px;
-  padding: 14px 4px 4px;
+.dashboard-copy {
+  margin: 13px 0 0;
   color: var(--muted);
   font-size: 13px;
 }
-.pagination a { color: var(--blue); font-weight: 700; text-decoration: none; }
-.pagination span[aria-disabled="true"] { opacity: .45; }
-.pagination strong { color: var(--ink); font-weight: 600; }
-.metric-text {
-  overflow: hidden;
-  font-size: 17px !important;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.empty,
+.empty-state {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
 }
-.metric.red strong {
-  color: var(--red);
+.empty {
+  padding: 48px 24px;
+  text-align: center;
 }
-.metric.amber strong {
-  color: var(--amber);
+.unavailable-state {
+  border-left: 4px solid var(--status-overdue-text);
 }
-.metric.green strong {
-  color: var(--green);
-}
+
 .table-card {
+  margin-top: 18px;
+  overflow: auto;
   border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--card);
-  overflow: hidden;
+  border-radius: 12px;
+  background: var(--surface);
 }
 .table-head {
   display: flex;
+  align-items: flex-start;
   justify-content: space-between;
-  align-items: center;
-  padding: 23px 24px 18px;
+  gap: 24px;
+  padding: 22px 24px 18px;
 }
 .table-head h2 {
   margin: 0;
-  font-size: 19px;
-  letter-spacing: -0.02em;
+  color: var(--text-strong);
+  font-size: 20px;
+  letter-spacing: -0.03em;
 }
-.data-badge {
-  padding: 6px 9px;
-  border-radius: 5px;
-  font-size: 11px;
-  font-weight: 800;
-}
-.data-badge.api {
-  background: var(--mint);
-  color: var(--green);
-}
-.data-badge.demo {
-  background: #fff3dc;
-  color: var(--amber);
-}
-table {
+.table-card table {
   width: 100%;
+  min-width: 1100px;
   border-collapse: collapse;
   text-align: left;
   font-size: 13px;
 }
-.table-card {
-  overflow-x: auto;
-}
-th {
-  padding: 11px 24px;
-  background: #f7f9f8;
+.table-card th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 12px 24px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-muted);
   color: var(--muted);
   font-size: 10px;
+  font-weight: 800;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
-td {
-  padding: 16px 24px;
-  border-top: 1px solid #edf1ef;
+.table-card td {
+  padding: 15px 24px;
+  border-bottom: 1px solid #e7edf1;
   vertical-align: middle;
 }
-td strong,
-td small {
-  display: block;
+.table-card tbody tr:last-child td {
+  border-bottom: 0;
 }
-td small {
-  margin-top: 5px;
-  color: var(--muted);
-  font-size: 11px;
+.table-card tbody tr:hover {
+  background: #fbfdff;
 }
-.sla,
-.pill {
-  display: inline-block;
-  padding: 5px 8px;
-  border-radius: 5px;
-  font-size: 11px;
-  font-weight: 800;
+.table-card td strong {
+  color: var(--text-strong);
 }
-.sla.overdue {
-  background: #fbe7e6;
-  color: var(--red);
+.lead-table-card td:nth-child(3),
+.lead-table-card td:nth-child(4),
+.lead-table-card td:nth-child(6) {
+  max-width: 240px;
+  overflow-wrap: anywhere;
 }
-.sla.today {
-  background: #fff1d4;
-  color: var(--amber);
-}
-.sla.scheduled {
-  background: var(--mint);
-  color: var(--green);
-}
-.pill.won {
-  background: var(--mint);
-  color: var(--green);
-}
-.pill.closed_no_conversion,
-.pill.disqualified {
-  background: #f0f2f1;
-  color: #68736e;
-}
-.empty {
-  padding: 50px;
-  text-align: center;
-  color: var(--muted);
-}
-.empty.compact {
-  padding: 18px 0 0;
-}
-.admin-form {
+.queue-table-summary {
   display: grid;
-  grid-template-columns: 1.2fr 1fr 120px 1fr auto auto auto;
-  gap: 10px;
-  align-items: center;
-}
-.admin-form.compact {
-  grid-template-columns: 1.2fr 1fr 90px 1fr auto auto;
-}
-.admin-form input {
-  width: 100%;
-  padding: 11px 12px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #fff;
-}
-.admin-form button,
-.ghost {
-  padding: 11px 14px;
-  border: 0;
-  border-radius: 8px;
-  background: var(--green);
-  color: #fff;
-  font-weight: 800;
-  cursor: pointer;
-}
-.ghost {
-  background: #ecf2ef;
-  color: var(--ink);
-}
-.ghost.danger {
-  background: #fbe7e6;
-  color: var(--red);
-}
-.check-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--muted);
-  font-size: 12px;
-  white-space: nowrap;
-}
-.check-row input {
-  width: auto;
+  grid-template-columns: repeat(2, minmax(120px, 1fr));
+  gap: 18px;
   margin: 0;
 }
-.user-stack {
-  display: grid;
-  gap: 14px;
+.queue-table-summary dt {
+  color: var(--muted);
+  font-size: 11px;
+}
+.queue-table-summary dd {
+  margin: 4px 0 0;
+  color: var(--text-strong);
+  font-weight: 750;
+}
+
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 14px 2px 4px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.pagination form {
+  margin: 0;
+}
+.pagination button {
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--wtg-blue);
+  font-weight: 700;
+}
+.pagination button:not(:disabled):hover {
+  border-color: var(--wtg-blue);
+  background: var(--wtg-blue-soft);
+}
+.pagination strong {
+  color: var(--text-strong);
+  font-weight: 750;
+}
+
+.panel-head .muted {
+  max-width: 620px;
+  margin: 8px 0 0;
+}
+.muted {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
 }
 .user-card {
-  padding: 16px;
-  border: 1px solid #e6ece8;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 17px;
+  border: 1px solid #dfe7ed;
   border-radius: 10px;
-  background: #fbfcfb;
+  background: var(--surface-muted);
+}
+.user-card > div:first-child > strong {
+  display: block;
+  color: var(--text-strong);
 }
 .user-card-meta {
   display: flex;
-  gap: 16px;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-top: 5px;
   color: var(--muted);
   font-size: 12px;
 }
 .user-card-actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
-  margin-top: 10px;
+  gap: 8px;
 }
-.user-card-actions.split {
-  justify-content: flex-start;
-  margin-top: 12px;
+.table-action,
+.secondary-button {
+  min-height: 34px;
+  padding: 8px 11px;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 800;
 }
-.login-shell {
+.table-action {
+  border: 1px solid var(--wtg-blue);
+  background: var(--wtg-blue);
+  color: #fff;
+}
+.table-action:not(:disabled):hover {
+  border-color: var(--wtg-blue-hover);
+  background: var(--wtg-blue-hover);
+}
+.secondary-button {
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--text-strong);
+}
+.secondary-button:not(:disabled):hover {
+  border-color: var(--wtg-blue);
+  color: var(--wtg-blue);
+}
+
+.modal-backdrop {
+  position: fixed;
+  z-index: 20;
+  inset: 0;
   display: grid;
   place-items: center;
+  padding: 32px;
+  background: rgb(6 30 67 / 52%);
+}
+.modal-card {
+  width: min(560px, calc(100vw - 64px));
+  max-height: calc(100vh - 64px);
+  overflow: auto;
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow-modal);
+}
+.modal-card h3 {
+  margin: 0;
+  color: var(--text-strong);
+  font-size: 22px;
+  letter-spacing: -0.03em;
+}
+.modal-card h4 {
+  margin: 0;
+  color: var(--text-strong);
+  font-size: 15px;
+}
+.modal-card label {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 14px 0;
+  color: var(--text-strong);
+  font-size: 12px;
+  font-weight: 750;
+}
+.modal-card input,
+.modal-card select,
+.modal-card textarea {
+  width: 100%;
+  padding: 10px 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--text-strong);
+}
+.modal-card textarea {
+  min-height: 116px;
+  resize: vertical;
+}
+.modal-card input:focus,
+.modal-card select:focus,
+.modal-card textarea:focus {
+  border-color: var(--wtg-blue);
+  outline: 2px solid #bad0ff;
+  outline-offset: 1px;
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+.treatment-modal__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+.treatment-history {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+}
+.treatment-conversations {
+  display: grid;
+  gap: 14px;
+  padding: 0 24px 24px;
+}
+.treatment-conversation-card {
+  padding: 18px;
+  border: 1px solid #dfe7ed;
+  border-radius: 10px;
+  background: var(--surface-muted);
+}
+.treatment-conversation-card h3 {
+  margin: 0;
+  color: var(--text-strong);
+  font-size: 18px;
+  letter-spacing: -0.03em;
+}
+.treatment-conversation-card__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+.treatment-conversation-card__meta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(120px, 1fr));
+  gap: 16px;
+  margin: 0;
+}
+.treatment-conversation-card__meta dt {
+  color: var(--muted);
+  font-size: 11px;
+}
+.treatment-conversation-card__meta dd {
+  margin: 4px 0 0;
+  color: var(--text-strong);
+  font-weight: 700;
+}
+.treatment-history ol {
+  margin-top: 14px;
+}
+.treatment-history__item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding-top: 13px;
+  border-top: 1px solid #e7edf1;
+}
+.treatment-history__item:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+.treatment-history__item strong {
+  color: var(--text-strong);
+}
+.treatment-history__item p {
+  margin: 4px 0 0;
+  color: var(--text);
+  white-space: pre-wrap;
+}
+.treatment-history__meta {
+  min-width: 135px;
+  text-align: right;
+}
+.treatment-history__meta .commercial-status,
+.treatment-history__meta .disqualification-marker {
+  margin-left: auto;
+}
+.treatment-history__meta small {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.check-row {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 8px !important;
+  color: var(--text) !important;
+  font-weight: 650 !important;
+}
+.check-row input {
+  width: auto;
+  margin: 0;
+  accent-color: var(--wtg-blue);
+}
+.form-error,
+.form-success {
+  margin: 14px 0 0;
+  padding: 10px 12px;
+  border-radius: 7px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.form-error {
+  background: var(--status-undefined-bg);
+  color: var(--status-undefined-text);
+}
+.form-success {
+  background: var(--status-won-bg);
+  color: var(--status-won-text);
+}
+
+.login-shell {
+  display: grid;
   min-height: 100vh;
-  background: #102653;
+  place-items: center;
+  background: var(--wtg-navy);
 }
 .login-card {
   width: 430px;
   padding: 42px;
+  border: 1px solid #d2dce6;
   border-radius: 14px;
-  background: #fff;
-  box-shadow: 0 20px 50px #09173555;
+  background: var(--surface);
+  box-shadow: var(--shadow-modal);
 }
 .login-logo {
   position: relative;
@@ -13535,189 +15446,104 @@ td small {
   overflow: hidden;
   margin-bottom: 8px;
   border-radius: 10px;
-  background: #102653;
+  background: var(--wtg-navy);
 }
 .login-logo img {
   position: absolute;
-  left: -91px;
   top: -124px;
+  left: -91px;
   width: 400px;
   height: 400px;
   max-width: none;
-  display: block;
 }
 .login-card h1 {
   margin: 0;
-  font-size: 45px;
-  line-height: 0.98;
+  color: var(--text-strong);
+  font-size: 42px;
+  line-height: 1;
   letter-spacing: -0.06em;
 }
 .login-copy {
   margin: 18px 0 30px;
   color: var(--muted);
-  line-height: 1.5;
+  line-height: 1.55;
 }
 .login-card label {
   display: block;
   margin-top: 16px;
-  color: var(--muted);
+  color: var(--text-strong);
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 750;
 }
 .login-card input {
   display: block;
   width: 100%;
   margin-top: 7px;
   padding: 12px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-strong);
   border-radius: 7px;
 }
 .login-card button {
   width: 100%;
+  min-height: 42px;
   margin-top: 24px;
-  padding: 13px;
-  border: 0;
+  border: 1px solid var(--wtg-blue);
   border-radius: 7px;
-  background: var(--green);
+  background: var(--wtg-blue);
   color: #fff;
   font-weight: 800;
-  cursor: pointer;
 }
-.login-card button:disabled {
-  opacity: 0.6;
+.login-card button:not(:disabled):hover {
+  background: var(--wtg-blue-hover);
 }
-.login-card small {
-  display: block;
-  margin-top: 20px;
-  color: var(--muted);
-  font-size: 11px;
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
 }
-.form-error {
-  padding: 10px;
-  border-radius: 6px;
-  background: #fbe7e6;
-  color: var(--red);
-  font-size: 12px;
-}
-.page-heading {
-  margin: 30px 0 24px;
-}
-.page-heading h1 {
-  margin: 0;
-  font-size: 32px;
-  letter-spacing: -0.04em;
-}
-.page-heading p:last-child {
-  color: var(--muted);
-}
-.queue-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 14px;
-}
-.queue-card {
-  display: flex;
-  align-items: center;
-  gap: 18px;
-  padding: 22px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--card);
-}
-.queue-position {
-  font-size: 28px;
-  font-weight: 800;
-  color: var(--green);
-}
-.queue-card h2 {
-  margin: 0;
-  font-size: 18px;
-}
-.queue-card p {
-  margin: 5px 0 0;
-  color: var(--muted);
-  font-size: 13px;
-}
-.queue-state {
-  margin-left: auto;
-  padding: 5px 8px;
-  border-radius: 5px;
-  background: var(--mint);
-  color: var(--green);
-  font-size: 11px;
-  font-weight: 800;
-}
-.history-card {
-  margin-top: 10px;
-}
-.history-card .pill {
-  background: #eef3f0;
-  color: var(--green);
-}
-.users-layout {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 300px;
-  gap: 18px;
-}
-.add-user-card {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 22px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--card);
-}
-.add-user-card h2 {
-  margin: 0 0 8px;
-}
-.add-user-card input {
-  padding: 11px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-}
-.add-user-card button,
-.table-action {
-  padding: 10px;
-  border: 0;
-  border-radius: 6px;
-  background: var(--green);
-  color: #fff;
-  font-weight: 800;
-  cursor: pointer;
-}
-.attempt-form { display: flex; gap: 6px; align-items: center; }
-.attempt-form { display: none; }
-.attempt-form input { width: 150px; padding: 7px 8px; border: 1px solid var(--line); border-radius: 5px; font-size: 11px; }
-.attempt-form button { padding: 7px 9px; border: 0; border-radius: 5px; background: var(--green); color: #fff; font-size: 11px; font-weight: 700; cursor: pointer; }
-.muted { color: var(--muted); font-size: 11px; }
-.simulation-bar { display:flex; align-items:center; gap:12px; margin: 0 0 18px; padding:12px 14px; border:1px solid var(--line); border-radius:8px; background:var(--card); }
-.simulation-bar div { flex:1; display:flex; flex-direction:column; gap:3px; }
-.simulation-bar small { color:var(--muted); font-size:11px; }
-.simulation-bar input { width:58px; padding:8px; border:1px solid var(--line); border-radius:5px; }
-.simulation-bar button { padding:9px 12px; border:0; border-radius:6px; background:var(--green); color:#fff; font-weight:800; cursor:pointer; }
-.danger-button { padding:7px 9px; border:1px solid #c94b45; border-radius:5px; background:#fff3f2; color:#b33a35; font-size:11px; font-weight:800; cursor:pointer; }
-.modal-backdrop { position:fixed; inset:0; z-index:20; display:grid; place-items:center; background:rgba(10,35,29,.45); }
-.modal-card { width:min(440px, calc(100vw - 40px)); padding:22px; border-radius:10px; background:var(--card); box-shadow:0 18px 50px rgba(0,0,0,.2); }
-.modal-card h3 { margin:0 0 18px; }
-.modal-card label { display:flex; flex-direction:column; gap:6px; margin:12px 0; font-size:12px; font-weight:700; }
-.modal-card select,.modal-card textarea { padding:10px; border:1px solid var(--line); border-radius:6px; font:inherit; }
-.modal-card textarea { min-height:110px; resize:vertical; }
-.modal-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:16px; }
-.secondary-button { padding:9px 12px; border:1px solid var(--line); border-radius:6px; background:#fff; cursor:pointer; }
-.commercial-status.undefined { background:#fbe7e6; color:#b33a35; }
-.commercial-status.negotiation { background:#fff1cf; color:#a26b00; }
-.commercial-status.won { background:#dff2e9; color:#08734f; }
-.commercial-status.disqualified { background:#eceeef; color:#5d6267; }
-.commercial-status + .commercial-status { display:none; }
-.add-user-card small {
-  color: var(--muted);
-  font-size: 11px;
-}
-.table-action {
-  padding: 6px 9px;
-  font-size: 11px;
-}
+````
+
+## Snapshot de código: `apps/web/src/app/globals.test.ts`
+
+````typescript
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+
+import { describe, expect, it } from "vitest";
+
+const stylesheetPath = fileURLToPath(new URL("./globals.css", import.meta.url));
+
+describe("tokens visuais da operação", () => {
+  it("define tokens contrastantes para os quatro estados comerciais", async () => {
+    const stylesheet = await readFile(stylesheetPath, "utf8");
+
+    expect(stylesheet).toContain("--status-undefined-bg:");
+    expect(stylesheet).toContain("--status-negotiation-bg:");
+    expect(stylesheet).toContain("--status-won-bg:");
+    expect(stylesheet).toContain("--status-disqualified-bg:");
+  });
+
+  it("mantém a superfície desktop, tabelas, modais e controles indisponíveis estilizados", async () => {
+    const stylesheet = await readFile(stylesheetPath, "utf8");
+
+    expect(stylesheet).toContain("min-width: 1280px");
+    expect(stylesheet).toContain(".table-card table");
+    expect(stylesheet).toContain(".modal-backdrop");
+    expect(stylesheet).toContain("button:disabled");
+    expect(stylesheet).toContain(".empty-state");
+  });
+
+  it("preserva badges de situação nas atividades resumidas", async () => {
+    const stylesheet = await readFile(stylesheetPath, "utf8");
+
+    expect(stylesheet).toContain(".activity-item__meta .commercial-status");
+  });
+});
 ````
 
 ## Snapshot de código: `apps/web/src/app/historico/page.tsx`
@@ -13726,7 +15552,7 @@ td small {
 import { redirect } from "next/navigation";
 import { AppShell } from "../../components/app-shell";
 import { Pagination } from "../../components/pagination";
-import { ResourceTable } from "../../components/resource-table";
+import { TreatmentHistoryTable } from "../../components/treatment-history-table";
 import { getSessionContext } from "../../lib/auth/session";
 import { getDashboardData, pageNumber } from "../../lib/dashboard/queries";
 
@@ -13734,11 +15560,13 @@ export const dynamic = "force-dynamic";
 export default async function HistoryPage({
   searchParams,
 }: {
-  searchParams: Promise<{ page?: string }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const session = await getSessionContext();
   if (session.status !== "authenticated") redirect("/login");
-  const page = pageNumber((await searchParams).page ?? "1");
+  if (session.profile.role !== "admin") redirect("/dashboard");
+  const params = await searchParams;
+  const page = pageNumber(typeof params.page === "string" ? params.page : "1");
   const data = await getDashboardData(session.sessionToken, page);
   return (
     <AppShell
@@ -13747,8 +15575,8 @@ export default async function HistoryPage({
       eyebrow="Histórico auditável"
       heading="Histórico"
     >
-      <ResourceTable title="Atribuições" items={data.history.items} />
-      <Pagination href="/historico" page={data.history} />
+      <TreatmentHistoryTable treatments={data.history.items} />
+      <Pagination href="/historico" page={data.history} searchParams={params} />
     </AppShell>
   );
 }
@@ -13811,58 +15639,244 @@ export default function Home() {
 }
 ````
 
+## Snapshot de código: `apps/web/src/app/route-access.test.ts`
+
+````typescript
+import { renderToStaticMarkup } from "react-dom/server";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const { getDashboardData, getSessionContext, redirect } = vi.hoisted(() => ({
+  getDashboardData: vi.fn(),
+  getSessionContext: vi.fn(),
+  redirect: vi.fn(),
+}));
+
+vi.mock("next/navigation", () => ({ redirect }));
+vi.mock("../lib/auth/session", () => ({ getSessionContext }));
+vi.mock("../lib/dashboard/queries", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/dashboard/queries")>()),
+  getDashboardData,
+}));
+
+import DashboardPage from "./dashboard/page";
+import QueuePage from "./fila/page";
+import HistoryPage from "./historico/page";
+
+const sellerSession = {
+  status: "authenticated" as const,
+  sessionToken: "seller-session",
+  profile: {
+    id: "seller-1",
+    userId: "seller-1",
+    fullName: "Jessica",
+    email: "jessica@wtgseguros.com.br",
+    role: "seller" as const,
+  },
+};
+
+describe("proteção das rotas operacionais", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    redirect.mockImplementation((target: string) => { throw new Error(`REDIRECT:${target}`); });
+  });
+
+  it("redireciona vendedor que tenta abrir o histórico global por URL", async () => {
+    getSessionContext.mockResolvedValue(sellerSession);
+
+    await expect(HistoryPage({ searchParams: Promise.resolve({}) })).rejects.toThrow("REDIRECT:/dashboard");
+    expect(redirect).toHaveBeenCalledWith("/dashboard");
+    expect(getDashboardData).not.toHaveBeenCalled();
+  });
+
+  it("redireciona vendedor que tenta abrir a fila global por URL antes da consulta", async () => {
+    getSessionContext.mockResolvedValue(sellerSession);
+
+    await expect(QueuePage({ searchParams: Promise.resolve({}) })).rejects.toThrow("REDIRECT:/dashboard");
+    expect(redirect).toHaveBeenCalledWith("/dashboard");
+    expect(getDashboardData).not.toHaveBeenCalled();
+  });
+
+  it("renderiza um estado seguro quando a API não disponibiliza o dashboard", async () => {
+    getSessionContext.mockResolvedValue({
+      ...sellerSession,
+      profile: { ...sellerSession.profile, role: "admin" as const },
+    });
+    getDashboardData.mockRejectedValue(new Error("INTERNAL_DETAIL_X"));
+
+    const markup = renderToStaticMarkup(await DashboardPage({ searchParams: Promise.resolve({}) }));
+
+    expect(markup).toContain("Não foi possível carregar a visão geral.");
+    expect(markup).toContain("Tente atualizar a página em alguns instantes.");
+    expect(markup).not.toContain("INTERNAL_DETAIL_X");
+  });
+});
+````
+
 ## Snapshot de código: `apps/web/src/app/usuarios/page.tsx`
 
 ````tsx
 import { redirect } from "next/navigation";
+
 import { AppShell } from "../../components/app-shell";
 import { Pagination } from "../../components/pagination";
 import { UserManagement } from "../../components/user-management";
-import { apiFetch } from "../../lib/api/client";
-import type { Page } from "../../lib/api/types";
-import { getSessionContext, SESSION_COOKIE } from "../../lib/auth/session";
+import { getManagedUsers } from "../../lib/api/client";
+import { getSessionContext } from "../../lib/auth/session";
 import { pageNumber } from "../../lib/dashboard/queries";
 
 export const dynamic = "force-dynamic";
+
 export default async function UsersPage({
   searchParams,
 }: {
   searchParams: Promise<{ page?: string }>;
 }) {
   const session = await getSessionContext();
-  if (session.status !== "authenticated" || session.profile.role !== "admin")
-    redirect("/dashboard");
+  if (session.status !== "authenticated" || session.profile.role !== "admin") redirect("/dashboard");
+
   const page = pageNumber((await searchParams).page ?? "1");
-  const users = await apiFetch<Page<Record<string, unknown>>>(
-    `/api/admin/users?page=${page}&limit=50`,
-    { cache: "no-store", headers: { Cookie: `${SESSION_COOKIE}=${session.sessionToken}` } },
-  );
+  const users = await getManagedUsers(session.sessionToken, page);
+
   return (
-    <AppShell
-      profile={session.profile}
-      activePath="/usuarios"
-      eyebrow="Administração"
-      heading="Usuários"
-    >
-      <UserManagement users={users.items} />
+    <AppShell profile={session.profile} activePath="/usuarios" eyebrow="Administração" heading="Usuários">
+      <UserManagement key={`users-page-${users.page}`} users={users.items} page={users.page} />
       <Pagination href="/usuarios" page={users} />
     </AppShell>
   );
 }
 ````
 
-## Snapshot de código: `apps/web/src/components/admin-controls.tsx`
+## Snapshot de código: `apps/web/src/components/admin-dashboard.tsx`
 
 ````tsx
-export function AdminControls() {
+import type { AdminDashboard as AdminDashboardData, QueueEntry, Treatment } from "../lib/api/types";
+import {
+  formatCommercialStatus,
+  formatDateTime,
+  formatDisqualificationMarker,
+} from "../lib/dashboard/format";
+import { LeadTable } from "./lead-table";
+
+function availabilityLabel(availability: QueueEntry["availability"]): string {
+  return {
+    active: "Ativo",
+    blocked_overdue: "Bloqueado por atraso",
+    paused: "Pausado",
+  }[availability];
+}
+
+function QueueCard({ item, currentPosition }: { item: QueueEntry; currentPosition: number }) {
+  const label = availabilityLabel(item.availability);
   return (
-    <div className="admin-controls" aria-describedby="admin-actions-unavailable">
-      <div className="admin-actions">
-        <button type="button" disabled>Simular entrada de leads</button>
-        <button className="ghost danger" type="button" disabled>Arquivar lead</button>
+    <li className="queue-card">
+      <div className="queue-card__header">
+        <span className="queue-card__position">#{currentPosition}</span>
+        <span className={`status-badge status-badge--${item.availability}`}>{label}</span>
       </div>
-      <p className="muted" id="admin-actions-unavailable">Ações administrativas indisponíveis até a API Python expor os comandos correspondentes.</p>
-    </div>
+      <strong>{item.sellerName}</strong>
+      <small>
+        Ordem base {item.position}. {item.reason ?? "Disponível para novas atribuições"}
+      </small>
+    </li>
+  );
+}
+
+function TreatmentPreview({ item }: { item: Treatment }) {
+  return (
+    <li className="activity-item">
+      <div>
+        <strong>{item.leadName ?? "Lead não informado"}</strong>
+        <small>Vendedor responsável: {item.sellerName}</small>
+      </div>
+      <div className="activity-item__meta">
+        <span className={`commercial-status ${item.commercialStatus}`}>
+          {formatCommercialStatus(item.commercialStatus)}
+        </span>
+        <small>{formatDateTime(item.createdAt)}</small>
+        {item.isDisqualified ? (
+          <span className="disqualification-marker">{formatDisqualificationMarker(true)}</span>
+        ) : null}
+      </div>
+    </li>
+  );
+}
+
+export function AdminDashboard({ dashboard }: { dashboard: AdminDashboardData }) {
+  return (
+    <>
+      <section className="metric-grid" aria-label="Resumo operacional administrativo">
+        <article className="metric-card metric-card--accent">
+          <span>Total de leads</span>
+          <strong>{dashboard.leads.total}</strong>
+        </article>
+        <article className="metric-card">
+          <span>Atribuições</span>
+          <strong>{dashboard.history.total}</strong>
+        </article>
+        <article className="metric-card">
+          <span>Posições na fila</span>
+          <strong>{dashboard.queue.total}</strong>
+        </article>
+        <article className="metric-card metric-card--next">
+          <span>Próximo vendedor</span>
+          <strong>{dashboard.queue.nextSellerName}</strong>
+        </article>
+      </section>
+
+      <section className="dashboard-layout" aria-label="Distribuição e atividade recente">
+        <section className="dashboard-panel dashboard-panel--queue">
+          <header className="dashboard-panel__header">
+            <div>
+              <p className="eyebrow">Distribuição</p>
+              <h2>Fila comercial</h2>
+            </div>
+            <a className="text-link" href="/fila">
+              Ver fila completa
+            </a>
+          </header>
+          {dashboard.queue.items.length === 0 ? (
+            <p className="empty-state">
+              Nenhum vendedor disponível na fila. Cadastre ou ative um vendedor para retomar a
+              distribuição.
+            </p>
+          ) : (
+            <>
+              <p className="queue-cursor">
+                Próxima vez: <strong>{dashboard.queue.cursorSellerName}</strong>
+              </p>
+              <ol className="queue-list" aria-label="Fila comercial completa">
+                {dashboard.queue.items.map((item, index) => (
+                  <QueueCard item={item} currentPosition={index + 1} key={item.sellerName} />
+                ))}
+              </ol>
+            </>
+          )}
+        </section>
+
+        <section className="dashboard-panel">
+          <header className="dashboard-panel__header">
+            <div>
+              <p className="eyebrow">Atividade</p>
+              <h2>Últimas tratativas</h2>
+            </div>
+            <a className="text-link" href="/historico">
+              Ver histórico
+            </a>
+          </header>
+          {dashboard.history.items.length === 0 ? (
+            <p className="empty-state">Nenhuma tratativa registrada.</p>
+          ) : (
+            <ol className="activity-list">
+              {dashboard.history.items.slice(0, 5).map((item, index) => (
+                <TreatmentPreview item={item} key={`${item.createdAt}-${index}`} />
+              ))}
+            </ol>
+          )}
+        </section>
+      </section>
+
+      <LeadTable leads={dashboard.leads.items} role="admin" />
+    </>
   );
 }
 ````
@@ -13870,6 +15884,8 @@ export function AdminControls() {
 ## Snapshot de código: `apps/web/src/components/app-shell.tsx`
 
 ````tsx
+import Image from "next/image";
+
 import { signOutAction } from "../lib/auth/actions";
 import type { SessionProfile } from "../lib/auth/session";
 
@@ -13886,49 +15902,36 @@ export function AppShell({
   heading?: string;
   children: React.ReactNode;
 }) {
+  const isAdmin = profile.role === "admin";
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <div className="brand"><span className="brand-logo"><img src="/logo-wtg.png" alt="WTG Corretora de Seguros e Benefícios" /></span></div>
-        <nav>
-          <a className={activePath === "/dashboard" ? "nav-active" : ""} href="/dashboard">
-            Visão geral
-          </a>
-          <a className={activePath === "/fila" ? "nav-active" : ""} href="/fila">
-            Fila de leads
-          </a>
-          <a className={activePath === "/historico" ? "nav-active" : ""} href="/historico">
-            Histórico
-          </a>
-          {profile.role === "admin" ? (
-            <a className={activePath === "/usuarios" ? "nav-active" : ""} href="/usuarios">
-              Usuários
-            </a>
-          ) : null}
-        </nav>
-        <div className="sidebar-foot">
-          <span className="status-dot" /> API Python
+        <div className="brand">
+          <span className="brand-logo"><Image src="/logo-wtg.png" alt="WTG Corretora de Seguros e Benefícios" width={343} height={343} priority /></span>
         </div>
+        <nav aria-label="Navegação principal">
+          <a className={activePath === "/dashboard" ? "nav-active" : ""} href="/dashboard">
+            {isAdmin ? "Visão geral" : "Minha operação"}
+          </a>
+          {isAdmin ? <>
+            <a className={activePath === "/fila" ? "nav-active" : ""} href="/fila">Fila de leads</a>
+            <a className={activePath === "/historico" ? "nav-active" : ""} href="/historico">Histórico</a>
+            <a className={activePath === "/usuarios" ? "nav-active" : ""} href="/usuarios">Usuários</a>
+          </> : null}
+        </nav>
+        <div className="sidebar-foot"><span className="status-dot" />Sistema conectado</div>
       </aside>
       <main className="workspace">
         <header className="topbar">
           <div>
-            <p className="eyebrow">
-              {eyebrow ?? (profile.role === "admin" ? "Painel administrativo" : "Minha operação")}
-            </p>
+            <p className="eyebrow">{eyebrow ?? (isAdmin ? "Painel administrativo" : "Minha operação")}</p>
             <h1>{heading}</h1>
           </div>
           <div className="user-menu">
-            <span className="avatar">{profile.fullName.slice(0, 1)}</span>
-            <span>
-              <strong>{profile.fullName}</strong>
-              <small>{profile.role === "admin" ? "Administrador" : "Vendedor"}</small>
-            </span>
-            <form action={signOutAction}>
-              <button className="logout" type="submit">
-                Sair
-              </button>
-            </form>
+            <span className="avatar" aria-hidden="true">{profile.fullName.slice(0, 1)}</span>
+            <span><strong>{profile.fullName}</strong><small>{isAdmin ? "Administrador" : "Vendedor"}</small></span>
+            <form action={signOutAction}><button className="logout" type="submit">Sair</button></form>
           </div>
         </header>
         {children}
@@ -13938,14 +15941,1089 @@ export function AppShell({
 }
 ````
 
-## Snapshot de código: `apps/web/src/components/comment-modal.tsx`
+## Snapshot de código: `apps/web/src/components/confirm-action-modal.tsx`
 
 ````tsx
 "use client";
-import { useState } from "react";
-export function CommentModal({ leadId, action }: { leadId: string; action: (formData: FormData) => void }) {
-  const [open, setOpen] = useState(false);
-  return <><button type="button" className="table-action" onClick={() => setOpen(true)}>Comentar</button>{open && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setOpen(false); }}><section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="comment-title"><h3 id="comment-title">Registrar comentário</h3><p className="muted">Descreva o contato realizado com este lead.</p><form action={action} onSubmit={() => setOpen(false)}><input type="hidden" name="leadId" value={leadId} /><label>Comentário<textarea name="comment" required minLength={6} maxLength={2000} autoFocus placeholder="Ex.: Primeiro contato realizado por telefone." /></label><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setOpen(false)}>Cancelar</button><button type="submit" className="table-action">Salvar comentário</button></div></form></section></div>}</>;
+
+import { useEffect, useRef } from "react";
+
+export function ConfirmActionModal({ title, description, confirmLabel, pending, onConfirm, onCancel }: {
+  title: string;
+  description: string;
+  confirmLabel: string;
+  pending: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  const confirmRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    confirmRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !pending) onCancel();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onCancel, pending]);
+
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
+    if (event.target === event.currentTarget && !pending) onCancel();
+  }}>
+    <section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="confirm-action-title">
+      <h3 id="confirm-action-title">{title}</h3>
+      <p className="muted">{description}</p>
+      <div className="modal-actions">
+        <button type="button" className="secondary-button" disabled={pending} onClick={onCancel}>Cancelar</button>
+        <button ref={confirmRef} type="button" className="table-action" disabled={pending} onClick={onConfirm}>{pending ? "Salvando…" : confirmLabel}</button>
+      </div>
+    </section>
+  </div>;
+}
+````
+
+## Snapshot de código: `apps/web/src/components/dashboard-components.test.ts`
+
+````typescript
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it } from "vitest";
+
+import { AdminDashboard } from "./admin-dashboard";
+import { AppShell } from "./app-shell";
+import { SellerDashboard } from "./seller-dashboard";
+
+const adminDashboard = {
+  user: { id: "admin-1", email: "yago@wtgseguros.com.br", role: "admin" as const },
+  leads: {
+    items: [],
+    page: 1,
+    pageSize: 50,
+    total: 6,
+  },
+  history: {
+    items: [
+      {
+        leadId: "lead-admin-1",
+        leadName: "Débora Souza",
+        sellerName: "Renato",
+        comment: "Primeiro contato realizado.",
+        commercialStatus: "negotiation" as const,
+        isDisqualified: false,
+        assignedAt: "2026-08-28T15:30:00.000Z",
+        createdAt: "2026-08-28T16:03:04.876Z",
+        lastUpdatedAt: "2026-08-28T16:03:04.876Z",
+      },
+    ],
+    page: 1,
+    pageSize: 50,
+    total: 4,
+  },
+  queue: {
+    items: [
+      {
+        sellerName: "Jessica",
+        position: 1,
+        availability: "active" as const,
+        reason: null,
+        skipBalance: 0,
+      },
+      {
+        sellerName: "Nelma",
+        position: 2,
+        availability: "blocked_overdue" as const,
+        reason: "Feedback vencido",
+        skipBalance: 0,
+      },
+    ],
+    total: 2,
+    nextSellerName: "Jessica",
+    cursorSellerName: "Jessica",
+  },
+};
+
+const sellerDashboard = {
+  user: { id: "seller-1", email: "jessica@wtgseguros.com.br", role: "seller" as const },
+  leads: {
+    items: [
+      {
+        id: "lead-1",
+        contactName: "Débora Souza",
+        sellerName: "Jessica",
+        companyName: "Débora Souza",
+        campaignName: "WTG formulário",
+        phoneDisplay: "(11) 98830-8029",
+        email: "debora@example.com",
+        commercialStatus: "undefined" as const,
+        isDisqualified: false,
+        commentCount: 2,
+        assignedAt: "2026-08-28T15:30:00.000Z",
+        feedbackDueAt: "2026-08-29T16:03:04.876Z",
+        lastUpdatedAt: "2026-08-28T16:03:04.876Z",
+      },
+    ],
+    page: 1,
+    pageSize: 50,
+    total: 1,
+  },
+  history: {
+    items: [
+      {
+        leadId: "lead-seller-1",
+        leadName: "Débora Souza",
+        sellerName: "Jessica",
+        comment: "Primeiro contato realizado.",
+        commercialStatus: "negotiation" as const,
+        isDisqualified: false,
+        assignedAt: "2026-08-28T15:30:00.000Z",
+        createdAt: "2026-08-28T16:03:04.876Z",
+        lastUpdatedAt: "2026-08-28T16:03:04.876Z",
+      },
+    ],
+    page: 1,
+    pageSize: 50,
+    total: 2,
+  },
+  queue: { position: 3, availability: "active" as const, skipBalance: 0 },
+};
+
+describe("dashboards por papel", () => {
+  it("renderiza os indicadores administrativos e a fila completa devolvida pela API", () => {
+    const markup = renderToStaticMarkup(
+      createElement(AdminDashboard, { dashboard: adminDashboard }),
+    );
+
+    expect(markup).toContain("Total de leads");
+    expect(markup).toContain("Atribuições");
+    expect(markup).toContain("Posições na fila");
+    expect(markup).toContain("Próximo vendedor");
+    expect(markup).toContain("Fila comercial");
+    expect(markup).toContain("Jessica");
+    expect(markup).toContain("Nelma");
+    expect(markup).toContain("Bloqueado por atraso");
+  });
+
+  it("orienta o administrador quando não há vendedores disponíveis na fila", () => {
+    const markup = renderToStaticMarkup(
+      createElement(AdminDashboard, {
+        dashboard: {
+          ...adminDashboard,
+          queue: {
+            items: [],
+            total: 0,
+            nextSellerName: "Não informado",
+            cursorSellerName: "Não informado",
+          },
+        },
+      }),
+    );
+
+    expect(markup).toContain("Nenhum vendedor disponível na fila.");
+    expect(markup).toContain("Cadastre ou ative um vendedor para retomar a distribuição.");
+  });
+
+  it("renderiza a operação própria do vendedor sem nomes ou indicadores dos colegas", () => {
+    const markup = renderToStaticMarkup(
+      createElement(SellerDashboard, { dashboard: sellerDashboard }),
+    );
+
+    expect(markup).toContain("Meus leads");
+    expect(markup).toContain("Meus comentários");
+    expect(markup).toContain("Prazo de feedback");
+    expect(markup).toContain("Minha posição na fila");
+    expect(markup).toContain("Posição 3");
+    expect(markup).toContain("Débora Souza");
+    expect(markup).not.toContain("Renato");
+    expect(markup).not.toContain("Nelma");
+    expect(markup).not.toContain("Próximo vendedor");
+  });
+
+  it("limita a navegação do vendedor à própria operação", () => {
+    const markup = renderToStaticMarkup(
+      AppShell({
+        profile: {
+          id: "seller-1",
+          userId: "seller-1",
+          fullName: "Jessica",
+          email: "jessica@wtgseguros.com.br",
+          role: "seller",
+        },
+        children: createElement("p", null, "Conteúdo"),
+      }),
+    );
+
+    expect(markup).toContain("Minha operação");
+    expect(markup).not.toContain("Fila de leads");
+    expect(markup).not.toContain("Histórico");
+    expect(markup).not.toContain("Usuários");
+  });
+});
+````
+
+## Snapshot de código: `apps/web/src/components/lead-table.tsx`
+
+````tsx
+"use client";
+
+import { useCallback, useState } from "react";
+
+import type { OperationalLead, TreatmentSubmission, UserRole } from "../lib/api/types";
+import {
+  formatCommentCount,
+  formatCommercialStatus,
+  formatDisqualificationMarker,
+  formatSlaDeadline,
+  getSlaState,
+} from "../lib/dashboard/format";
+import { LeadTreatmentModal } from "./lead-treatment-modal";
+
+type LeadTableProps = { leads: OperationalLead[]; role: UserRole };
+
+export function commentCountsAfterSubmission(
+  current: Record<string, number>,
+  submission: TreatmentSubmission,
+): Record<string, number> {
+  return { ...current, [submission.leadId]: submission.commentCount };
+}
+
+export function applySubmissionToLead(
+  lead: OperationalLead,
+  submission: TreatmentSubmission,
+): OperationalLead {
+  if (lead.id !== submission.leadId) return lead;
+  return {
+    ...lead,
+    commercialStatus: submission.commercialStatus,
+    isDisqualified: submission.isDisqualified,
+    commentCount: submission.commentCount,
+    feedbackDueAt: submission.dueAt,
+    lastUpdatedAt: submission.lastUpdatedAt,
+  };
+}
+
+function statusClass(status: OperationalLead["commercialStatus"]): string {
+  return `commercial-status ${status}`;
+}
+
+export function LeadTable({ leads, role }: LeadTableProps) {
+  const [leadOverrides, setLeadOverrides] = useState<Record<string, OperationalLead>>({});
+  const onSubmitted = useCallback(
+    (submission: TreatmentSubmission) => {
+      setLeadOverrides((current) => {
+        const original =
+          current[submission.leadId] ?? leads.find((lead) => lead.id === submission.leadId);
+        if (!original) return current;
+        return { ...current, [submission.leadId]: applySubmissionToLead(original, submission) };
+      });
+    },
+    [leads],
+  );
+
+  return (
+    <section className="table-card lead-table-card" aria-labelledby="lead-table-title">
+      <div className="table-head">
+        <div>
+          <p className="eyebrow">Dados ao vivo</p>
+          <h2 id="lead-table-title">Leads</h2>
+        </div>
+      </div>
+      {leads.length === 0 ? (
+        <p className="empty">Nenhum lead disponível.</p>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th>Nome</th>
+              {role === "admin" ? <th>Responsável</th> : null}
+              <th>Empresa</th>
+              <th>Campanha</th>
+              <th>Telefone</th>
+              <th>E-mail</th>
+              <th>Situação</th>
+              <th>Marcador</th>
+              <th>Atribuído em</th>
+              <th>Última atualização</th>
+              <th>Prazo</th>
+              <th>Comentários</th>
+              <th>Ação</th>
+            </tr>
+          </thead>
+          <tbody>
+            {leads.map((lead) => {
+              const currentLead = leadOverrides[lead.id] ?? lead;
+              const sla = getSlaState(currentLead.feedbackDueAt);
+              return (
+                <tr key={lead.id}>
+                  <td>
+                    <strong>{currentLead.contactName}</strong>
+                  </td>
+                  {role === "admin" ? <td>{currentLead.sellerName}</td> : null}
+                  <td>{currentLead.companyName}</td>
+                  <td>{currentLead.campaignName}</td>
+                  <td>{currentLead.phoneDisplay}</td>
+                  <td>{currentLead.email}</td>
+                  <td>
+                    <span className={statusClass(currentLead.commercialStatus)}>
+                      {formatCommercialStatus(currentLead.commercialStatus)}
+                    </span>
+                  </td>
+                  <td>
+                    {currentLead.isDisqualified ? (
+                      <span className="disqualification-marker">
+                        {formatDisqualificationMarker(true)}
+                      </span>
+                    ) : (
+                      "—"
+                    )}
+                  </td>
+                  <td>{formatSlaDeadline(currentLead.assignedAt)}</td>
+                  <td>{formatSlaDeadline(currentLead.lastUpdatedAt)}</td>
+                  <td>
+                    <span className={`sla ${sla}`}>
+                      {formatSlaDeadline(currentLead.feedbackDueAt)}
+                    </span>
+                  </td>
+                  <td>{formatCommentCount(currentLead.commentCount)}</td>
+                  <td>
+                    <LeadTreatmentModal
+                      lead={currentLead}
+                      mode={role === "seller" ? "write" : "read"}
+                      onSubmitted={role === "seller" ? onSubmitted : undefined}
+                    />
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+    </section>
+  );
+}
+````
+
+## Snapshot de código: `apps/web/src/components/lead-treatment-modal.dom.test.tsx`
+
+````tsx
+// @vitest-environment jsdom
+
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import type { Treatment } from "../lib/api/types";
+
+const actions = vi.hoisted(() => ({
+  loadHistory: vi.fn(async () => ({ status: "success" as const, items: [] as Treatment[] })),
+  submit: vi.fn(),
+}));
+
+vi.mock("../lib/operations/treatment-actions", () => ({
+  initialTreatmentActionState: { status: "idle", message: null, submission: null },
+  loadLeadTreatmentHistoryAction: actions.loadHistory,
+  submitLeadTreatmentAction: actions.submit,
+}));
+
+import { LeadTable } from "./lead-table";
+import { LeadTreatmentModal } from "./lead-treatment-modal";
+
+const lead = {
+  id: "lead-1",
+  contactName: "Débora Souza",
+  sellerName: "Jessica",
+  companyName: "Empresa da Débora",
+  campaignName: "Campanha WTG",
+  phoneDisplay: "(11) 98830-8029",
+  email: "debora@example.com",
+  commercialStatus: "undefined" as const,
+  isDisqualified: false,
+  commentCount: 2,
+  assignedAt: "2026-08-28T12:00:00.000Z",
+  feedbackDueAt: null,
+  lastUpdatedAt: "2026-08-28T12:00:00.000Z",
+};
+
+afterEach(() => {
+  cleanup();
+  vi.clearAllMocks();
+});
+
+describe("acessibilidade e interação do modal de tratativa", () => {
+  it("foca o primeiro controle de leitura, prende Tab e devolve foco após Escape", async () => {
+    const user = userEvent.setup();
+    render(<LeadTreatmentModal lead={lead} mode="read" />);
+    const trigger = screen.getByRole("button", { name: "Ver histórico" });
+
+    await user.click(trigger);
+    const close = screen.getByRole("button", { name: "Fechar janela" });
+    await waitFor(() => expect(document.activeElement).toBe(close));
+    await user.tab();
+    expect(document.activeElement).toBe(close);
+    await user.tab({ shift: true });
+    expect(document.activeElement).toBe(close);
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it("bloqueia a submissão com comentário menor que seis caracteres", async () => {
+    const user = userEvent.setup();
+    render(<LeadTreatmentModal lead={lead} mode="write" />);
+
+    await user.click(screen.getByRole("button", { name: "Registrar tratativa" }));
+    await user.type(screen.getByLabelText("Comentário"), "curto");
+
+    expect(
+      (screen.getByRole("button", { name: "Salvar tratativa" }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(actions.submit).not.toHaveBeenCalled();
+  });
+
+  it("mantém Tab e Shift+Tab dentro do formulário com múltiplos controles", async () => {
+    const user = userEvent.setup();
+    render(<LeadTreatmentModal lead={lead} mode="write" />);
+
+    await user.click(screen.getByRole("button", { name: "Registrar tratativa" }));
+    await user.type(screen.getByLabelText("Comentário"), "Contato realizado por telefone.");
+    const close = screen.getByRole("button", { name: "Fechar janela" });
+    const submit = screen.getByRole("button", { name: "Salvar tratativa" });
+    const comment = screen.getByLabelText("Comentário");
+    close.focus();
+
+    await user.tab({ shift: true });
+    expect(document.activeElement).toBe(submit);
+    await user.tab();
+    expect(document.activeElement).toBe(close);
+    await user.tab();
+    expect(document.activeElement).toBe(comment);
+  });
+
+  it("mostra carregamento e depois renderiza o histórico devolvido pela API", async () => {
+    let resolveHistory: ((value: { status: "success"; items: Treatment[] }) => void) | undefined;
+    actions.loadHistory.mockImplementation(
+      () =>
+        new Promise<{ status: "success"; items: Treatment[] }>((resolve) => {
+          resolveHistory = resolve;
+        }),
+    );
+    const user = userEvent.setup();
+    render(<LeadTreatmentModal lead={lead} mode="read" />);
+
+    await user.click(screen.getByRole("button", { name: "Ver histórico" }));
+    expect(screen.getByText("Carregando histórico…")).toBeTruthy();
+    resolveHistory?.({
+      status: "success",
+      items: [
+        {
+          leadName: "Débora Souza",
+          sellerName: "Jessica",
+          comment: "Histórico carregado da API.",
+          commercialStatus: "negotiation",
+          isDisqualified: false,
+          createdAt: "2026-08-29T12:00:00.000Z",
+        },
+      ] as Treatment[],
+    });
+
+    expect(await screen.findByText("Histórico carregado da API.")).toBeTruthy();
+  });
+
+  it("exibe carregamento, atualiza contador/histórico e confirma após sucesso", async () => {
+    let resolveSubmission: ((value: unknown) => void) | undefined;
+    actions.submit.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveSubmission = resolve;
+        }),
+    );
+    actions.loadHistory
+      .mockResolvedValueOnce({ status: "success", items: [] })
+      .mockResolvedValueOnce({
+        status: "success",
+        items: [
+          {
+            leadName: "Débora Souza",
+            sellerName: "Jessica",
+            comment: "Contato registrado com sucesso.",
+            commercialStatus: "negotiation",
+            isDisqualified: false,
+            createdAt: "2026-08-29T12:00:00.000Z",
+          },
+        ] as Treatment[],
+      })
+      .mockResolvedValue({
+        status: "success",
+        items: [
+          {
+            leadName: "Débora Souza",
+            sellerName: "Jessica",
+            comment: "Contato registrado com sucesso.",
+            commercialStatus: "negotiation",
+            isDisqualified: false,
+            createdAt: "2026-08-29T12:00:00.000Z",
+          },
+        ] as Treatment[],
+      });
+    const user = userEvent.setup();
+    render(<LeadTable leads={[lead]} role="seller" />);
+
+    await user.click(screen.getByRole("button", { name: "Registrar tratativa" }));
+    await user.type(screen.getByLabelText("Comentário"), "Contato registrado com sucesso.");
+    await user.click(screen.getByRole("button", { name: "Salvar tratativa" }));
+    expect(screen.getByRole("button", { name: "Salvando…" })).toBeTruthy();
+
+    resolveSubmission?.({
+      status: "success",
+      message: "Tratativa registrada.",
+      submission: {
+        leadId: "lead-1",
+        treatmentId: "treatment-1",
+        status: "created",
+        commercialStatus: "negotiation",
+        isDisqualified: false,
+        commentCount: 3,
+        reminderAt: null,
+        dueAt: null,
+        lastUpdatedAt: "2026-08-29T15:00:00.000Z",
+      },
+    });
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.getByRole("status").textContent).toContain("Tratativa registrada.");
+    expect(screen.getByText("3 comentários")).toBeTruthy();
+    expect(screen.getByText("Negociação")).toBeTruthy();
+    await waitFor(() => expect(actions.loadHistory).toHaveBeenCalledTimes(2));
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "Registrar tratativa" }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Registrar tratativa" }));
+    expect(await screen.findByText("Contato registrado com sucesso.")).toBeTruthy();
+  });
+
+  it("mostra o erro 422 seguro no formulário", async () => {
+    actions.submit.mockResolvedValue({
+      status: "error",
+      message: "Revise os dados informados e tente novamente.",
+      submission: null,
+    });
+    const user = userEvent.setup();
+    render(<LeadTreatmentModal lead={lead} mode="write" />);
+
+    await user.click(screen.getByRole("button", { name: "Registrar tratativa" }));
+    await user.type(screen.getByLabelText("Comentário"), "Contato registrado com sucesso.");
+    await user.click(screen.getByRole("button", { name: "Salvar tratativa" }));
+
+    expect(await screen.findByText("Revise os dados informados e tente novamente.")).toBeTruthy();
+    expect(screen.getByRole("dialog")).toBeTruthy();
+  });
+
+  it("encerra o SLA visível quando a tratativa desqualifica o lead", async () => {
+    actions.submit.mockResolvedValue({
+      status: "success",
+      message: "Tratativa registrada.",
+      submission: {
+        leadId: "lead-1",
+        treatmentId: "treatment-2",
+        status: "created",
+        commercialStatus: "won",
+        isDisqualified: true,
+        commentCount: 3,
+        reminderAt: null,
+        dueAt: null,
+        lastUpdatedAt: "2026-08-29T15:00:00.000Z",
+      },
+    });
+    actions.loadHistory
+      .mockResolvedValueOnce({ status: "success", items: [] })
+      .mockResolvedValueOnce({
+        status: "success",
+        items: [
+          {
+            leadName: "Débora Souza",
+            sellerName: "Jessica",
+            comment: "Fora do escopo, mas com fechamento excepcional.",
+            commercialStatus: "won",
+            isDisqualified: true,
+            createdAt: "2026-08-29T13:00:00.000Z",
+          },
+        ] as Treatment[],
+      });
+    const user = userEvent.setup();
+    render(
+      <LeadTable leads={[{ ...lead, feedbackDueAt: "2026-08-29T16:03:04.876Z" }]} role="seller" />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Registrar tratativa" }));
+    await user.type(
+      screen.getByLabelText("Comentário"),
+      "Fora do escopo, mas com fechamento excepcional.",
+    );
+    await user.click(screen.getByLabelText("Marcar como Desqualificado"));
+    await user.click(screen.getByRole("button", { name: "Salvar tratativa" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.getByText("Desqualificado")).toBeTruthy();
+    expect(screen.getByText("Não informado")).toBeTruthy();
+  });
+});
+````
+
+## Snapshot de código: `apps/web/src/components/lead-treatment-modal.test.ts`
+
+````typescript
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it, vi } from "vitest";
+
+import { applySubmissionToLead, commentCountsAfterSubmission, LeadTable } from "./lead-table";
+import { LeadTreatmentModal, validateTreatmentDraft } from "./lead-treatment-modal";
+
+const lead = {
+  id: "lead-1",
+  contactName: "Débora Souza",
+  sellerName: "Renato",
+  companyName: "Empresa da Débora",
+  campaignName: "Campanha WTG",
+  phoneDisplay: "(11) 98830-8029",
+  email: "debora@example.com",
+  commercialStatus: "negotiation" as const,
+  isDisqualified: false,
+  commentCount: 2,
+  assignedAt: "2026-08-28T16:03:04.876Z",
+  feedbackDueAt: "2026-08-29T16:03:04.876Z",
+  lastUpdatedAt: "2026-08-28T16:03:04.876Z",
+};
+
+describe("tabela de leads e tratativa", () => {
+  it("mostra responsável somente na visão administrativa", () => {
+    const admin = renderToStaticMarkup(createElement(LeadTable, { leads: [lead], role: "admin" }));
+    const seller = renderToStaticMarkup(
+      createElement(LeadTable, { leads: [lead], role: "seller" }),
+    );
+
+    expect(admin).toContain("Responsável");
+    expect(admin).toContain("Renato");
+    expect(admin).toContain("Empresa da Débora");
+    expect(admin).toContain("Campanha WTG");
+    expect(admin).toContain("2 comentários");
+    expect(admin).not.toContain("Registrar tratativa");
+    expect(seller).not.toContain("Responsável");
+    expect(seller).toContain("Registrar tratativa");
+  });
+
+  it("exibe somente os campos comerciais e o histórico em modo leitura", () => {
+    const markup = renderToStaticMarkup(
+      createElement(LeadTreatmentModal, {
+        lead,
+        mode: "read",
+        defaultOpen: true,
+        treatments: [
+          {
+            leadId: "lead-1",
+            leadName: "Débora Souza",
+            sellerName: "Renato",
+            comment: "Primeiro contato por telefone.",
+            commercialStatus: "negotiation",
+            isDisqualified: false,
+            assignedAt: "2026-08-28T15:30:00.000Z",
+            createdAt: "2026-08-28T16:03:04.876Z",
+            lastUpdatedAt: "2026-08-28T16:03:04.876Z",
+          },
+        ],
+      }),
+    );
+
+    expect(markup).toContain("Histórico de tratativas");
+    expect(markup).toContain("Primeiro contato por telefone.");
+    expect(markup).not.toContain("Salvar tratativa");
+    expect(markup).not.toContain("<textarea");
+  });
+
+  it("oferece as três situações, marcador adicional e bloqueia comentário curto", () => {
+    const markup = renderToStaticMarkup(
+      createElement(LeadTreatmentModal, {
+        lead,
+        mode: "write",
+        treatments: [],
+        defaultOpen: true,
+      }),
+    );
+
+    expect(markup).toContain("Indefinido");
+    expect(markup).toContain("Negociação");
+    expect(markup).toContain("Ganho");
+    expect(markup).toContain("Desqualificado");
+    expect(markup).toContain("Salvar tratativa");
+    expect(
+      validateTreatmentDraft({
+        comment: "curto",
+        commercialStatus: "undefined",
+        isDisqualified: false,
+      }),
+    ).toEqual({
+      ok: false,
+      message: "Escreva um comentário com ao menos 6 caracteres.",
+    });
+  });
+
+  it("atualiza o contador exibido com o total devolvido pela API", () => {
+    expect(
+      commentCountsAfterSubmission(
+        { "outro-lead": 1 },
+        {
+          leadId: "lead-1",
+          treatmentId: "treatment-1",
+          status: "created",
+          commercialStatus: "won",
+          isDisqualified: false,
+          commentCount: 3,
+          reminderAt: null,
+          dueAt: null,
+          lastUpdatedAt: "2026-08-29T15:00:00.000Z",
+        },
+      ),
+    ).toEqual({ "outro-lead": 1, "lead-1": 3 });
+  });
+
+  it("reflete a tratativa salva na própria linha do lead", () => {
+    expect(
+      applySubmissionToLead(lead, {
+        leadId: "lead-1",
+        treatmentId: "treatment-1",
+        status: "created",
+        commercialStatus: "won",
+        isDisqualified: true,
+        commentCount: 3,
+        reminderAt: null,
+        dueAt: null,
+        lastUpdatedAt: "2026-08-29T15:00:00.000Z",
+      }),
+    ).toMatchObject({
+      commercialStatus: "won",
+      isDisqualified: true,
+      commentCount: 3,
+      feedbackDueAt: null,
+    });
+  });
+
+  it("exibe a última atualização persistida mesmo quando o relógio do navegador diverge", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2030-01-01T00:00:00.000Z"));
+    try {
+      const updatedLead = applySubmissionToLead(lead, {
+        leadId: "lead-1",
+        treatmentId: "treatment-1",
+        status: "created",
+        commercialStatus: "negotiation",
+        isDisqualified: false,
+        commentCount: 3,
+        reminderAt: null,
+        dueAt: null,
+        lastUpdatedAt: "2026-08-29T15:00:00.000Z",
+      });
+      const markup = renderToStaticMarkup(
+        createElement(LeadTable, { leads: [updatedLead], role: "seller" }),
+      );
+
+      expect(markup).toContain("29/08/2026, 12:00");
+      expect(markup).not.toContain("31/12/2029");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+````
+
+## Snapshot de código: `apps/web/src/components/lead-treatment-modal.tsx`
+
+````tsx
+"use client";
+
+import { useActionState, useCallback, useEffect, useRef, useState } from "react";
+
+import type {
+  CommercialStatus,
+  OperationalLead,
+  Treatment,
+  TreatmentSubmission,
+} from "../lib/api/types";
+import {
+  formatCommercialStatus,
+  formatDateTime,
+  formatDisqualificationMarker,
+} from "../lib/dashboard/format";
+import {
+  loadLeadTreatmentHistoryAction,
+  submitLeadTreatmentAction,
+} from "../lib/operations/treatment-actions";
+import { initialTreatmentActionState } from "../lib/operations/treatment-state";
+
+export type TreatmentDraft = {
+  comment: string;
+  commercialStatus: CommercialStatus;
+  isDisqualified: boolean;
+};
+
+export function validateTreatmentDraft(
+  draft: TreatmentDraft,
+): { ok: true } | { ok: false; message: string } {
+  if (draft.comment.trim().length < 6) {
+    return { ok: false, message: "Escreva um comentário com ao menos 6 caracteres." };
+  }
+  return { ok: true };
+}
+
+function historyItem(item: Treatment, index: number) {
+  return (
+    <li className="treatment-history__item" key={`${item.createdAt}-${index}`}>
+      <div>
+        <strong>{item.sellerName}</strong>
+        <p>{item.comment}</p>
+      </div>
+      <div className="treatment-history__meta">
+        <span className={`commercial-status ${item.commercialStatus}`}>
+          {formatCommercialStatus(item.commercialStatus)}
+        </span>
+        {item.isDisqualified ? (
+          <span className="disqualification-marker">{formatDisqualificationMarker(true)}</span>
+        ) : null}
+        <small>{formatDateTime(item.createdAt)}</small>
+      </div>
+    </li>
+  );
+}
+
+function newIdempotencyKey(): string {
+  return globalThis.crypto?.randomUUID?.() ?? `tratativa-${Date.now()}-${Math.random()}`;
+}
+
+function TreatmentForm({
+  lead,
+  onSuccess,
+}: {
+  lead: OperationalLead;
+  onSuccess: (submission: TreatmentSubmission) => void;
+}) {
+  const [state, formAction, pending] = useActionState(
+    submitLeadTreatmentAction,
+    initialTreatmentActionState,
+  );
+  const [idempotencyKey] = useState(newIdempotencyKey);
+  const [comment, setComment] = useState("");
+  const draftIsValid = validateTreatmentDraft({
+    comment,
+    commercialStatus: lead.commercialStatus,
+    isDisqualified: false,
+  }).ok;
+
+  useEffect(() => {
+    if (state.status === "success") onSuccess(state.submission);
+  }, [onSuccess, state]);
+
+  return (
+    <form action={formAction} className="treatment-form">
+      <input type="hidden" name="leadId" value={lead.id} />
+      <input type="hidden" name="idempotencyKey" value={idempotencyKey} />
+      <label htmlFor={`treatment-comment-${lead.id}`}>
+        Comentário
+        <textarea
+          id={`treatment-comment-${lead.id}`}
+          name="comment"
+          required
+          minLength={6}
+          maxLength={2000}
+          autoFocus
+          value={comment}
+          onChange={(event) => setComment(event.target.value)}
+          placeholder="Descreva o contato ou a evolução da negociação."
+        />
+      </label>
+      <label htmlFor={`treatment-status-${lead.id}`}>
+        Situação comercial
+        <select
+          id={`treatment-status-${lead.id}`}
+          name="commercialStatus"
+          defaultValue={lead.commercialStatus}
+        >
+          <option value="undefined">Indefinido</option>
+          <option value="negotiation">Negociação</option>
+          <option value="won">Ganho</option>
+        </select>
+      </label>
+      <label className="check-row" htmlFor={`treatment-disqualified-${lead.id}`}>
+        <input id={`treatment-disqualified-${lead.id}`} name="isDisqualified" type="checkbox" />
+        Marcar como Desqualificado
+      </label>
+      <p className="muted">Desqualificar exige o comentário registrado nesta tratativa.</p>
+      {state.status !== "idle" ? (
+        <p className={`form-${state.status}`} role="status" aria-live="polite">
+          {state.message}
+        </p>
+      ) : null}
+      <div className="modal-actions">
+        <button type="submit" className="table-action" disabled={pending || !draftIsValid}>
+          {pending ? "Salvando…" : "Salvar tratativa"}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+export function LeadTreatmentModal({
+  lead,
+  mode,
+  treatments: initialTreatments = [],
+  defaultOpen = false,
+  onSubmitted,
+}: {
+  lead: OperationalLead;
+  mode: "read" | "write";
+  treatments?: Treatment[];
+  defaultOpen?: boolean;
+  onSubmitted?: (submission: TreatmentSubmission) => void;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const [treatments, setTreatments] = useState(initialTreatments);
+  const [historyMessage, setHistoryMessage] = useState<string | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const wasOpenRef = useRef(open);
+  const refreshHistory = useCallback(() => {
+    setHistoryLoading(true);
+    setHistoryMessage(null);
+    void loadLeadTreatmentHistoryAction(lead.id).then((result) => {
+      setHistoryLoading(false);
+      if (result.status === "success") {
+        setTreatments(result.items);
+      } else {
+        setHistoryMessage(result.message);
+      }
+    });
+  }, [lead.id]);
+  const openModal = useCallback(() => {
+    setSuccessMessage(null);
+    setOpen(true);
+    refreshHistory();
+  }, [refreshHistory]);
+  const onSuccess = useCallback(
+    (submission: TreatmentSubmission) => {
+      onSubmitted?.(submission);
+      refreshHistory();
+      setSuccessMessage("Tratativa registrada.");
+      setOpen(false);
+    },
+    [onSubmitted, refreshHistory],
+  );
+  const closeModal = useCallback(() => setOpen(false), []);
+
+  useEffect(() => {
+    if (open) {
+      closeButtonRef.current?.focus();
+    } else if (wasOpenRef.current) {
+      triggerRef.current?.focus();
+    }
+    wasOpenRef.current = open;
+  }, [open]);
+
+  const trapKeyboard = useCallback(
+    (event: React.KeyboardEvent<HTMLElement>) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeModal();
+        return;
+      }
+      if (event.key !== "Tab" || !dialogRef.current) return;
+      const focusable = Array.from(
+        dialogRef.current.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), [href], input:not([type="hidden"]):not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter((element) => !element.hidden);
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    },
+    [closeModal],
+  );
+
+  const titleId = `lead-treatment-title-${lead.id}`;
+  const triggerLabel = mode === "write" ? "Registrar tratativa" : "Ver histórico";
+
+  return (
+    <>
+      <button ref={triggerRef} type="button" className="table-action" onClick={openModal}>
+        {triggerLabel}
+      </button>
+      {successMessage ? (
+        <p className="form-success" role="status" aria-live="polite">
+          {successMessage}
+        </p>
+      ) : null}
+      {open ? (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closeModal();
+          }}
+        >
+          <section
+            ref={dialogRef}
+            className="modal-card treatment-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={titleId}
+            onKeyDown={trapKeyboard}
+          >
+            <header className="treatment-modal__header">
+              <div>
+                <p className="eyebrow">Lead</p>
+                <h3 id={titleId}>{lead.contactName}</h3>
+              </div>
+              <button
+                ref={closeButtonRef}
+                type="button"
+                className="secondary-button"
+                onClick={closeModal}
+                aria-label="Fechar janela"
+              >
+                Fechar
+              </button>
+            </header>
+
+            {mode === "write" ? <TreatmentForm lead={lead} onSuccess={onSuccess} /> : null}
+
+            <section className="treatment-history" aria-label="Histórico de tratativas">
+              <h4>Histórico de tratativas</h4>
+              {historyLoading ? (
+                <p className="muted" aria-live="polite">
+                  Carregando histórico…
+                </p>
+              ) : null}
+              {historyMessage ? (
+                <p className="form-error" role="status">
+                  {historyMessage}
+                </p>
+              ) : null}
+              {!historyLoading && !historyMessage && treatments.length === 0 ? (
+                <p className="muted">Nenhuma tratativa registrada.</p>
+              ) : null}
+              {treatments.length > 0 ? <ol>{treatments.map(historyItem)}</ol> : null}
+            </section>
+          </section>
+        </div>
+      ) : null}
+    </>
+  );
 }
 ````
 
@@ -13995,66 +17073,1078 @@ export function LoginForm() {
 }
 ````
 
+## Snapshot de código: `apps/web/src/components/pagination.test.tsx`
+
+````tsx
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it } from "vitest";
+
+import { Pagination } from "./pagination";
+
+describe("Pagination", () => {
+  it("usa botões acessíveis, mantém a query e desabilita limites", () => {
+    const markup = renderToStaticMarkup(
+      createElement(Pagination, {
+        href: "/historico",
+        page: { items: [], page: 1, pageSize: 10, total: 20 },
+        searchParams: { campaign: "campanha-1", page: "1" },
+      }),
+    );
+
+    expect(markup).toMatch(
+      /<button[^>]*disabled=""[^>]*aria-label="Página anterior"[^>]*name="page"/,
+    );
+    expect(markup).toMatch(/<button[^>]*value="2"[^>]*aria-label="Próxima página"[^>]*name="page"/);
+    expect(markup).toContain('name="campaign" value="campanha-1"');
+    expect(markup).toContain("Página 1 de 2");
+    expect(markup).not.toContain("AnteriorPágina");
+  });
+
+  it("desabilita a próxima página no fim da coleção", () => {
+    const markup = renderToStaticMarkup(
+      createElement(Pagination, {
+        href: "/historico",
+        page: { items: [], page: 2, pageSize: 10, total: 20 },
+      }),
+    );
+
+    expect(markup).toMatch(
+      /<button[^>]*value="2"[^>]*disabled=""[^>]*aria-label="Próxima página"[^>]*name="page"/,
+    );
+  });
+});
+````
+
 ## Snapshot de código: `apps/web/src/components/pagination.tsx`
 
 ````tsx
 import type { Page } from "../lib/api/types";
 
-export function Pagination({ href, page }: { href: string; page: Page<unknown> }) {
-  const query = (number: number) => `${href}?page=${number}`;
+type SearchParams = Record<string, string | string[] | undefined>;
+
+function preservedParams(searchParams: SearchParams): Array<[string, string]> {
+  return Object.entries(searchParams).flatMap(([key, value]) => {
+    if (key === "page" || value === undefined) return [];
+    return Array.isArray(value)
+      ? value.map((entry) => [key, entry] as [string, string])
+      : [[key, value]];
+  });
+}
+
+export function Pagination({
+  href,
+  page,
+  searchParams = {},
+}: {
+  href: string;
+  page: Page<unknown>;
+  searchParams?: SearchParams;
+}) {
   const lastPage = Math.max(1, Math.ceil(page.total / page.pageSize));
+  const previousPage = Math.max(1, page.page - 1);
+  const nextPage = Math.min(lastPage, page.page + 1);
+  const params = preservedParams(searchParams);
   return (
     <nav className="pagination" aria-label="Paginação">
-      {page.page > 1 ? <a href={query(page.page - 1)}>Anterior</a> : <span aria-disabled="true">Anterior</span>}
-      <strong>Página {page.page} de {lastPage}</strong>
-      {page.page < lastPage ? <a href={query(page.page + 1)}>Próxima</a> : <span aria-disabled="true">Próxima</span>}
+      <form action={href} method="get">
+        {params.map(([key, value], index) => (
+          <input key={`${key}-${index}`} type="hidden" name={key} value={value} />
+        ))}
+        <button
+          type="submit"
+          name="page"
+          value={previousPage}
+          disabled={page.page <= 1}
+          aria-label="Página anterior"
+        >
+          Anterior
+        </button>
+      </form>
+      <strong>
+        Página {page.page} de {lastPage}
+      </strong>
+      <form action={href} method="get">
+        {params.map(([key, value], index) => (
+          <input key={`${key}-${index}`} type="hidden" name={key} value={value} />
+        ))}
+        <button
+          type="submit"
+          name="page"
+          value={nextPage}
+          disabled={page.page >= lastPage}
+          aria-label="Próxima página"
+        >
+          Próxima
+        </button>
+      </form>
     </nav>
   );
 }
 ````
 
-## Snapshot de código: `apps/web/src/components/resource-table.tsx`
+## Snapshot de código: `apps/web/src/components/queue-table.test.tsx`
 
 ````tsx
-import { registerContactAttemptAction } from "../lib/operations/actions";
-import { CommentModal } from "./comment-modal";
-const labels: Record<string,string>={contactName:"Nome",phoneNormalized:"Telefone",email:"E-mail",sellerName:"Vendedor",position:"Posição",paused:"Status",companyName:"Empresa",campaignName:"Campanha",commercialStatus:"Status comercial",leadName:"Lead",type:"Tipo",startedAt:"Início"};
-const statusLabels: Record<string,string>={undefined:"Indefinido",negotiation:"Negociação",won:"Ganho",disqualified:"Desqualificado"};
-function display(key:string,value:unknown){if(value==null||value==="")return "—";if(key==="phoneNormalized"){const d=String(value).replace(/\D/g,"").replace(/^55(?=\d{10,11}$)/,"");return d.length===11?`(${d.slice(0,2)}) ${d.slice(2,7)}-${d.slice(7)}`:d.length===10?`(${d.slice(0,2)}) ${d.slice(2,6)}-${d.slice(6)}`:d}if(key==="paused")return value?"Pausado":"Ativo";if(key.endsWith("At")||key.endsWith("Date")){const date=new Date(String(value));return Number.isNaN(date.getTime())?"—":date.toLocaleString("pt-BR",{dateStyle:"short",timeStyle:"short"})}return String(value)}
-export function ResourceTable({title,items,allowAttempts=false}:{title:string;items:Record<string,unknown>[];allowAttempts?:boolean}){const columns=title==="Fila"?["sellerName","paused","position"]:title.includes("Atrib")?["leadName","sellerName","type","startedAt"]:["contactName","sellerName","companyName","campaignName","phoneNormalized","email","commercialStatus"];return <section className="table-card"><div className="table-head"><div><p className="eyebrow">Dados ao vivo</p><h2>{title}</h2></div></div>{items.length===0?<p className="empty">Nenhum registro disponível.</p>:<table><thead><tr>{columns.map(k=><th key={k}>{labels[k]??k}</th>)}{allowAttempts&&<th>Ação</th>}</tr></thead><tbody>{items.map((item,i)=><tr key={String(item.id??i)}>{columns.map(k=><td key={k}>{k==="commercialStatus"?<span className={`commercial-status ${String(item[k]??"undefined")}`}>{statusLabels[String(item[k]??"undefined")]}</span>:display(k,item[k])}</td>)}{allowAttempts&&<td><CommentModal leadId={String(item.id??"")} action={registerContactAttemptAction}/></td>}</tr>)}</tbody></table>}</section>}
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it } from "vitest";
+
+import { QueueTable } from "./queue-table";
+
+describe("QueueTable", () => {
+  it("exibe a ordem operacional atual em vez da posição fixa do cadastro", () => {
+    const markup = renderToStaticMarkup(
+      createElement(QueueTable, {
+        queue: {
+          cursorSellerName: "Renato",
+          nextSellerName: "Jessica",
+          total: 3,
+          items: [
+            {
+              sellerName: "Jessica",
+              position: 3,
+              availability: "active",
+              reason: null,
+              skipBalance: 0,
+            },
+            {
+              sellerName: "Nelma",
+              position: 4,
+              availability: "blocked_overdue",
+              reason: "Feedback vencido",
+              skipBalance: 0,
+            },
+            {
+              sellerName: "Renato",
+              position: 1,
+              availability: "paused",
+              reason: "Pausado manualmente",
+              skipBalance: 1,
+            },
+          ],
+        },
+      }),
+    );
+
+    expect(markup).toContain("Cursor atual");
+    expect(markup).toContain("Renato");
+    expect(markup).toContain("Próximo elegível");
+    expect(markup).toContain("Jessica");
+    expect(markup).toContain("Ordem atual");
+    expect(markup).toContain("Posição base");
+    expect(markup).toContain("<td>1</td>");
+    expect(markup).toContain("<td>3</td>");
+    expect(markup).toContain("Bloqueado por atraso");
+    expect(markup).toContain("Feedback vencido");
+    expect(markup).toContain("Pausado");
+    expect(markup).toContain("Créditos de pulo");
+  });
+});
+````
+
+## Snapshot de código: `apps/web/src/components/queue-table.tsx`
+
+````tsx
+import type { AdminQueue, QueueEntry } from "../lib/api/types";
+
+function availabilityLabel(availability: QueueEntry["availability"]): string {
+  return {
+    active: "Ativo",
+    blocked_overdue: "Bloqueado por atraso",
+    paused: "Pausado",
+  }[availability];
+}
+
+function availabilityReason(item: QueueEntry): string {
+  return item.reason ?? "Disponível para novas atribuições";
+}
+
+export function QueueTable({ queue }: { queue: AdminQueue }) {
+  return (
+    <section className="table-card queue-table-card" aria-labelledby="queue-table-title">
+      <div className="table-head">
+        <div>
+          <p className="eyebrow">Dados ao vivo</p>
+          <h2 id="queue-table-title">Fila comercial</h2>
+        </div>
+        <dl className="queue-table-summary">
+          <div>
+            <dt>Cursor atual</dt>
+            <dd>{queue.cursorSellerName}</dd>
+          </div>
+          <div>
+            <dt>Próximo elegível</dt>
+            <dd>{queue.nextSellerName}</dd>
+          </div>
+        </dl>
+      </div>
+      {queue.items.length === 0 ? (
+        <p className="empty">Nenhum vendedor cadastrado na fila.</p>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th>Ordem atual</th>
+              <th>Posição base</th>
+              <th>Vendedor</th>
+              <th>Disponibilidade</th>
+              <th>Motivo</th>
+              <th>Créditos de pulo</th>
+            </tr>
+          </thead>
+          <tbody>
+            {queue.items.map((item, index) => (
+              <tr key={`${item.position}-${item.sellerName}`}>
+                <td>{index + 1}</td>
+                <td>{item.position}</td>
+                <td>
+                  <strong>{item.sellerName}</strong>
+                </td>
+                <td>
+                  <span className={`status-badge status-badge--${item.availability}`}>
+                    {availabilityLabel(item.availability)}
+                  </span>
+                </td>
+                <td>{availabilityReason(item)}</td>
+                <td>{item.skipBalance}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </section>
+  );
+}
+````
+
+## Snapshot de código: `apps/web/src/components/seller-dashboard.tsx`
+
+````tsx
+import type {
+  SellerAvailability,
+  SellerDashboard as SellerDashboardData,
+  Treatment,
+} from "../lib/api/types";
+import {
+  formatCommentCount,
+  formatCommercialStatus,
+  formatDateTime,
+  formatDisqualificationMarker,
+  formatSlaDeadline,
+} from "../lib/dashboard/format";
+import { LeadTable } from "./lead-table";
+
+function availabilityLabel(availability: SellerAvailability): string {
+  return {
+    active: "Disponível para novas atribuições",
+    blocked_overdue: "Bloqueado por atraso",
+    paused: "Pausado pelo administrador",
+  }[availability];
+}
+
+function TreatmentPreview({ item }: { item: Treatment }) {
+  return (
+    <li className="activity-item">
+      <div>
+        <strong>{item.leadName ?? "Lead não informado"}</strong>
+        <small>{item.comment}</small>
+      </div>
+      <div className="activity-item__meta">
+        <span className={`commercial-status ${item.commercialStatus}`}>
+          {formatCommercialStatus(item.commercialStatus)}
+        </span>
+        <small>{formatDateTime(item.createdAt)}</small>
+        {item.isDisqualified ? (
+          <span className="disqualification-marker">{formatDisqualificationMarker(true)}</span>
+        ) : null}
+      </div>
+    </li>
+  );
+}
+
+export function SellerDashboard({ dashboard }: { dashboard: SellerDashboardData }) {
+  const nextDeadline = dashboard.leads.items[0]?.feedbackDueAt ?? null;
+
+  return (
+    <>
+      <section className="metric-grid metric-grid--seller" aria-label="Resumo da minha operação">
+        <article className="metric-card metric-card--accent">
+          <span>Meus leads</span>
+          <strong>{dashboard.leads.total}</strong>
+        </article>
+        <article className="metric-card">
+          <span>Meus comentários</span>
+          <strong>{formatCommentCount(dashboard.history.total)}</strong>
+        </article>
+        <article className="metric-card">
+          <span>Prazo de feedback</span>
+          <strong className="metric-card__text">{formatSlaDeadline(nextDeadline)}</strong>
+        </article>
+        <article className="metric-card metric-card--next">
+          <span>Minha posição na fila</span>
+          <strong className="metric-card__text">
+            {dashboard.queue.position === null
+              ? "Não informado"
+              : `Posição ${dashboard.queue.position}`}
+          </strong>
+        </article>
+      </section>
+
+      <section
+        className="dashboard-layout dashboard-layout--seller"
+        aria-label="Minha atividade recente"
+      >
+        <section className="dashboard-panel">
+          <p className="eyebrow">Minha disponibilidade</p>
+          <h2>{availabilityLabel(dashboard.queue.availability)}</h2>
+          <p className="dashboard-copy">Saldo de pulos: {dashboard.queue.skipBalance}</p>
+        </section>
+        <section className="dashboard-panel">
+          <header className="dashboard-panel__header">
+            <div>
+              <p className="eyebrow">Minha atividade</p>
+              <h2>Últimas tratativas</h2>
+            </div>
+          </header>
+          {dashboard.history.items.length === 0 ? (
+            <p className="empty-state">Você ainda não registrou tratativas.</p>
+          ) : (
+            <ol className="activity-list">
+              {dashboard.history.items.slice(0, 5).map((item, index) => (
+                <TreatmentPreview item={item} key={`${item.createdAt}-${index}`} />
+              ))}
+            </ol>
+          )}
+        </section>
+      </section>
+
+      <LeadTable leads={dashboard.leads.items} role="seller" />
+    </>
+  );
+}
+````
+
+## Snapshot de código: `apps/web/src/components/treatment-history-table.test.tsx`
+
+````tsx
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it } from "vitest";
+
+import { TreatmentHistoryTable } from "./treatment-history-table";
+
+describe("TreatmentHistoryTable", () => {
+  it("agrupa a conversa por lead com vendedor, início, última atualização e comentários", () => {
+    const markup = renderToStaticMarkup(
+      createElement(TreatmentHistoryTable, {
+        treatments: [
+          {
+            leadId: "lead-1",
+            leadName: "Débora Souza",
+            sellerName: "Renato",
+            comment: "Primeiro contato realizado por telefone.",
+            commercialStatus: "won",
+            isDisqualified: true,
+            assignedAt: "2026-08-28T15:30:00.000Z",
+            lastUpdatedAt: "2026-08-28T16:03:04.876Z",
+            createdAt: "2026-08-28T16:03:04.876Z",
+          },
+          {
+            leadId: "lead-1",
+            leadName: "Débora Souza",
+            sellerName: "Renato",
+            comment: "Cliente pediu retorno com proposta.",
+            commercialStatus: "negotiation",
+            isDisqualified: false,
+            assignedAt: "2026-08-28T15:30:00.000Z",
+            lastUpdatedAt: "2026-08-28T16:10:00.000Z",
+            createdAt: "2026-08-28T15:40:00.000Z",
+          },
+        ],
+      }),
+    );
+
+    expect(markup).toContain("Tratativas");
+    expect(markup).toContain("Débora Souza");
+    expect(markup).toContain("Renato");
+    expect(markup).toContain("Início");
+    expect(markup).toContain("Última atualização");
+    expect(markup).toContain("Primeiro contato realizado por telefone.");
+    expect(markup).toContain("Cliente pediu retorno com proposta.");
+    expect(markup).toContain("Ganho");
+    expect(markup).toContain("Desqualificado");
+    expect(markup).toContain("28/08/2026");
+    expect(markup).not.toContain("Atribuições");
+  });
+});
+````
+
+## Snapshot de código: `apps/web/src/components/treatment-history-table.tsx`
+
+````tsx
+import type { Treatment } from "../lib/api/types";
+import {
+  formatCommercialStatus,
+  formatDateTime,
+  formatDisqualificationMarker,
+  formatText,
+} from "../lib/dashboard/format";
+
+type LeadConversation = {
+  leadId: string;
+  leadName: string;
+  sellerName: string;
+  assignedAt: string | null;
+  lastUpdatedAt: string | null;
+  items: Treatment[];
+};
+
+export function groupTreatmentsByLead(treatments: Treatment[]): LeadConversation[] {
+  const groups = new Map<string, LeadConversation>();
+  for (const treatment of treatments) {
+    const current = groups.get(treatment.leadId);
+    if (current) {
+      current.items.push(treatment);
+      current.lastUpdatedAt = treatment.lastUpdatedAt ?? current.lastUpdatedAt;
+      continue;
+    }
+    groups.set(treatment.leadId, {
+      leadId: treatment.leadId,
+      leadName: formatText(treatment.leadName),
+      sellerName: formatText(treatment.sellerName),
+      assignedAt: treatment.assignedAt,
+      lastUpdatedAt: treatment.lastUpdatedAt,
+      items: [treatment],
+    });
+  }
+  return Array.from(groups.values());
+}
+
+export function TreatmentHistoryTable({ treatments }: { treatments: Treatment[] }) {
+  const conversations = groupTreatmentsByLead(treatments);
+  return (
+    <section
+      className="table-card treatment-history-table"
+      aria-labelledby="treatment-history-title"
+    >
+      <div className="table-head">
+        <div>
+          <p className="eyebrow">Dados ao vivo</p>
+          <h2 id="treatment-history-title">Tratativas</h2>
+        </div>
+      </div>
+      {conversations.length === 0 ? (
+        <p className="empty">Nenhuma tratativa registrada.</p>
+      ) : (
+        <div className="treatment-conversations">
+          {conversations.map((conversation) => (
+            <article className="treatment-conversation-card" key={conversation.leadId}>
+              <header className="treatment-conversation-card__header">
+                <div>
+                  <p className="eyebrow">Lead</p>
+                  <h3>{conversation.leadName}</h3>
+                </div>
+                <dl className="treatment-conversation-card__meta">
+                  <div>
+                    <dt>Vendedor</dt>
+                    <dd>{conversation.sellerName}</dd>
+                  </div>
+                  <div>
+                    <dt>Início</dt>
+                    <dd>{formatDateTime(conversation.assignedAt)}</dd>
+                  </div>
+                  <div>
+                    <dt>Última atualização</dt>
+                    <dd>{formatDateTime(conversation.lastUpdatedAt)}</dd>
+                  </div>
+                </dl>
+              </header>
+              <ol className="treatment-history">
+                {conversation.items.map((treatment, index) => (
+                  <li className="treatment-history__item" key={`${treatment.createdAt}-${index}`}>
+                    <div>
+                      <strong>{formatDateTime(treatment.createdAt)}</strong>
+                      <p>{formatText(treatment.comment)}</p>
+                    </div>
+                    <div className="treatment-history__meta">
+                      <span className={`commercial-status ${treatment.commercialStatus}`}>
+                        {formatCommercialStatus(treatment.commercialStatus)}
+                      </span>
+                      {treatment.isDisqualified ? (
+                        <span className="disqualification-marker">
+                          {formatDisqualificationMarker(true)}
+                        </span>
+                      ) : null}
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            </article>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+````
+
+## Snapshot de código: `apps/web/src/components/user-form-modal.tsx`
+
+````tsx
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+
+import type { CreateManagedUserInput, ManagedUser, UserRole } from "../lib/api/types";
+import type { UserMutationResult } from "../lib/users/actions";
+
+export function UserFormModal({ onClose, onCreated, onSubmit }: {
+  onClose: () => void;
+  onCreated: (user: ManagedUser, message: string) => void;
+  onSubmit: (input: CreateManagedUserInput) => Promise<UserMutationResult>;
+}) {
+  const initialInput = useRef<HTMLInputElement>(null);
+  const [fullName, setFullName] = useState("");
+  const [email, setEmail] = useState("");
+  const [role, setRole] = useState<UserRole>("seller");
+  const [password, setPassword] = useState("");
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const canSubmit = Boolean(fullName.trim() && email.trim() && password.trim() && !pending);
+
+  useEffect(() => {
+    initialInput.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !pending) onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose, pending]);
+
+  async function submit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!canSubmit) return;
+    setPending(true);
+    setError(null);
+    try {
+      const result = await onSubmit({ fullName: fullName.trim(), email: email.trim(), role, password });
+      if (result.status === "success") {
+        setPassword("");
+        onCreated(result.user, result.message);
+      } else setError(result.message);
+    } catch {
+      setError("Não foi possível concluir a ação. Tente novamente.");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
+    if (event.target === event.currentTarget && !pending) onClose();
+  }}>
+    <section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="new-user-title">
+      <h3 id="new-user-title">Novo usuário</h3>
+      <form onSubmit={submit}>
+        <label htmlFor="new-user-name">Nome completo
+          <input ref={initialInput} id="new-user-name" value={fullName} onChange={(event) => setFullName(event.target.value)} autoComplete="name" required />
+        </label>
+        <label htmlFor="new-user-email">E-mail
+          <input id="new-user-email" type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" required />
+        </label>
+        <label htmlFor="new-user-role">Papel
+          <select id="new-user-role" value={role} onChange={(event) => setRole(event.target.value as UserRole)}>
+            <option value="seller">Vendedor</option>
+            <option value="admin">Administrador</option>
+          </select>
+        </label>
+        <label htmlFor="new-user-password">Senha inicial
+          <input id="new-user-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="new-password" required />
+        </label>
+        {error ? <p className="form-error" role="status">{error}</p> : null}
+        <div className="modal-actions">
+          <button type="button" className="secondary-button" disabled={pending} onClick={onClose}>Cancelar</button>
+          <button type="submit" className="table-action" disabled={!canSubmit}>{pending ? "Criando…" : "Criar usuário"}</button>
+        </div>
+      </form>
+    </section>
+  </div>;
+}
+````
+
+## Snapshot de código: `apps/web/src/components/user-management.test.tsx`
+
+````tsx
+// @vitest-environment jsdom
+
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import type { ManagedUser } from "../lib/api/types";
+
+const actions = vi.hoisted(() => ({
+  create: vi.fn(),
+  availability: vi.fn(),
+  resetPassword: vi.fn(),
+}));
+
+const navigation = vi.hoisted(() => ({ push: vi.fn(), refresh: vi.fn() }));
+
+vi.mock("../lib/users/actions", () => ({
+  createManagedUserAction: actions.create,
+  setManagedUserAvailabilityAction: actions.availability,
+  resetManagedUserPasswordAction: actions.resetPassword,
+}));
+
+vi.mock("next/navigation", () => ({ useRouter: () => navigation }));
+
+import { UserManagement } from "./user-management";
+
+const users: ManagedUser[] = [
+  { id: "admin-1", fullName: "Yago", email: "yago@wtgseguros.com.br", role: "admin", active: true, paused: null },
+  { id: "seller-1", fullName: "Renato", email: "renato@wtgseguros.com.br", role: "seller", active: true, paused: false },
+];
+
+const createdSeller: ManagedUser = {
+  id: "seller-2",
+  fullName: "Sandra",
+  email: "sandra@wtgseguros.com.br",
+  role: "seller",
+  active: true,
+  paused: false,
+};
+
+afterEach(() => {
+  cleanup();
+  vi.clearAllMocks();
+});
+
+describe("gestão operacional de usuários", () => {
+  it("abre o cadastro com foco inicial e exige uma senha não vazia", async () => {
+    const user = userEvent.setup();
+    render(<UserManagement users={users} />);
+
+    const trigger = screen.getByRole("button", { name: "Novo usuário" });
+    await user.click(trigger);
+
+    expect(screen.getByRole("dialog", { name: "Novo usuário" })).toBeTruthy();
+    expect(document.activeElement).toBe(screen.getByLabelText("Nome completo"));
+    expect((screen.getByRole("button", { name: "Criar usuário" }) as HTMLButtonElement).disabled).toBe(true);
+
+    await user.type(screen.getByLabelText("Nome completo"), "Sandra");
+    await user.type(screen.getByLabelText("E-mail"), "sandra@wtgseguros.com.br");
+    await user.type(screen.getByLabelText("Senha inicial"), "   ");
+    expect((screen.getByRole("button", { name: "Criar usuário" }) as HTMLButtonElement).disabled).toBe(true);
+
+    await user.clear(screen.getByLabelText("Senha inicial"));
+    await user.type(screen.getByLabelText("Senha inicial"), "senha inicial");
+    expect((screen.getByRole("button", { name: "Criar usuário" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("cria usuário, atualiza a lista e nunca apresenta a senha salva", async () => {
+    actions.create.mockResolvedValue({ status: "success", message: "Usuário criado.", user: createdSeller });
+    const user = userEvent.setup();
+    render(<UserManagement users={users} />);
+
+    await user.click(screen.getByRole("button", { name: "Novo usuário" }));
+    await user.type(screen.getByLabelText("Nome completo"), "Sandra");
+    await user.type(screen.getByLabelText("E-mail"), "sandra@wtgseguros.com.br");
+    await user.type(screen.getByLabelText("Senha inicial"), "senha confidencial");
+    await user.click(screen.getByRole("button", { name: "Criar usuário" }));
+
+    await waitFor(() => expect(actions.create).toHaveBeenCalledWith({
+      fullName: "Sandra",
+      email: "sandra@wtgseguros.com.br",
+      role: "seller",
+      password: "senha confidencial",
+    }));
+    expect((await screen.findByRole("status")).textContent).toContain("Usuário criado.");
+    expect(screen.getByText("Sandra")).toBeTruthy();
+    expect(screen.queryByText("senha confidencial")).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("mostra carregamento enquanto o cadastro aguarda a resposta", async () => {
+    let resolveCreation: ((value: unknown) => void) | undefined;
+    actions.create.mockImplementation(() => new Promise((resolve) => { resolveCreation = resolve; }));
+    const user = userEvent.setup();
+    render(<UserManagement users={users} />);
+
+    await user.click(screen.getByRole("button", { name: "Novo usuário" }));
+    await user.type(screen.getByLabelText("Nome completo"), "Sandra");
+    await user.type(screen.getByLabelText("E-mail"), "sandra@wtgseguros.com.br");
+    await user.type(screen.getByLabelText("Senha inicial"), "senha inicial");
+    await user.click(screen.getByRole("button", { name: "Criar usuário" }));
+    expect(screen.getByRole("button", { name: "Criando…" })).toBeTruthy();
+
+    resolveCreation?.({ status: "success", message: "Usuário criado.", user: createdSeller });
+    await screen.findByRole("status");
+  });
+
+  it("confirma a pausa de vendedor e atualiza seu estado visível", async () => {
+    actions.availability.mockResolvedValue({
+      status: "success",
+      message: "Vendedor pausado.",
+      user: { ...users[1], paused: true },
+    });
+    const user = userEvent.setup();
+    render(<UserManagement users={users} />);
+
+    await user.click(screen.getByRole("button", { name: "Pausar Renato" }));
+    expect(screen.getByRole("dialog", { name: "Confirmar pausa" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Confirmar pausa" }));
+
+    await waitFor(() => expect(actions.availability).toHaveBeenCalledWith("seller-1", true));
+    expect((await screen.findByRole("status")).textContent).toContain("Vendedor pausado.");
+    expect(screen.getByText("Pausado")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Ativar Renato" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Pausar Yago" })).toBeNull();
+  });
+
+  it("mostra conta inativa sem oferecer uma pausa manual inválida", () => {
+    render(<UserManagement users={[...users, {
+      id: "seller-3",
+      fullName: "Nelma",
+      email: "nelma@wtgseguros.com.br",
+      role: "seller",
+      active: false,
+      paused: false,
+    }]} />);
+
+    expect(screen.getByText("Inativo")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Pausar Nelma" })).toBeNull();
+  });
+
+  it("exige senha nova e confirma a redefinição sem expor seu conteúdo", async () => {
+    actions.resetPassword.mockResolvedValue({ status: "success", message: "Senha redefinida.", user: users[1] });
+    const user = userEvent.setup();
+    render(<UserManagement users={users} />);
+
+    await user.click(screen.getByRole("button", { name: "Redefinir senha de Renato" }));
+    expect(screen.getByRole("dialog", { name: "Redefinir senha" })).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Salvar nova senha" }) as HTMLButtonElement).disabled).toBe(true);
+    await user.type(screen.getByLabelText("Nova senha"), "nova senha secreta");
+    await user.click(screen.getByRole("button", { name: "Salvar nova senha" }));
+    expect(screen.getByRole("dialog", { name: "Confirmar redefinição de senha" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Confirmar redefinição" }));
+
+    await waitFor(() => expect(actions.resetPassword).toHaveBeenCalledWith("seller-1", "nova senha secreta"));
+    expect((await screen.findByRole("status")).textContent).toContain("Senha redefinida.");
+    expect(screen.queryByText("nova senha secreta")).toBeNull();
+  });
+
+  it("cancela e fecha modais com Escape devolvendo foco ao acionador", async () => {
+    const user = userEvent.setup();
+    render(<UserManagement users={users} />);
+    const trigger = screen.getByRole("button", { name: "Novo usuário" });
+
+    await user.click(trigger);
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it("mantém o modal aberto e apresenta erro seguro quando a ação falha", async () => {
+    actions.create.mockResolvedValue({ status: "error", message: "Revise os dados informados e tente novamente.", user: null });
+    const user = userEvent.setup();
+    render(<UserManagement users={users} />);
+
+    await user.click(screen.getByRole("button", { name: "Novo usuário" }));
+    await user.type(screen.getByLabelText("Nome completo"), "Sandra");
+    await user.type(screen.getByLabelText("E-mail"), "sandra@wtgseguros.com.br");
+    await user.type(screen.getByLabelText("Senha inicial"), "senha inicial");
+    await user.click(screen.getByRole("button", { name: "Criar usuário" }));
+
+    expect(await screen.findByText("Revise os dados informados e tente novamente.")).toBeTruthy();
+    expect(screen.getByRole("dialog", { name: "Novo usuário" })).toBeTruthy();
+  });
+
+  it("recupera rejeição do cadastro sem manter o botão em carregamento", async () => {
+    actions.create.mockRejectedValue(new Error("segredo técnico"));
+    const user = userEvent.setup();
+    render(<UserManagement users={users} />);
+
+    await user.click(screen.getByRole("button", { name: "Novo usuário" }));
+    await user.type(screen.getByLabelText("Nome completo"), "Sandra");
+    await user.type(screen.getByLabelText("E-mail"), "sandra@wtgseguros.com.br");
+    await user.type(screen.getByLabelText("Senha inicial"), "senha inicial");
+    await user.click(screen.getByRole("button", { name: "Criar usuário" }));
+
+    expect(await screen.findByText("Não foi possível concluir a ação. Tente novamente.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Criar usuário" })).toBeTruthy();
+  });
+
+  it("recupera rejeição da pausa sem deixar a confirmação bloqueada", async () => {
+    actions.availability.mockRejectedValue(new Error("segredo técnico"));
+    const user = userEvent.setup();
+    render(<UserManagement users={users} />);
+
+    await user.click(screen.getByRole("button", { name: "Pausar Renato" }));
+    await user.click(screen.getByRole("button", { name: "Confirmar pausa" }));
+
+    expect((await screen.findByRole("status")).textContent).toContain("Não foi possível concluir a ação. Tente novamente.");
+    expect(screen.queryByRole("button", { name: "Salvando…" })).toBeNull();
+  });
+
+  it("recupera rejeição da redefinição de senha no formulário", async () => {
+    actions.resetPassword.mockRejectedValue(new Error("segredo técnico"));
+    const user = userEvent.setup();
+    render(<UserManagement users={users} />);
+
+    await user.click(screen.getByRole("button", { name: "Redefinir senha de Renato" }));
+    await user.type(screen.getByLabelText("Nova senha"), "nova senha secreta");
+    await user.click(screen.getByRole("button", { name: "Salvar nova senha" }));
+    await user.click(screen.getByRole("button", { name: "Confirmar redefinição" }));
+
+    expect(await screen.findByText("Não foi possível concluir a ação. Tente novamente.")).toBeTruthy();
+    expect(screen.getByRole("dialog", { name: "Redefinir senha" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Salvar nova senha" })).toBeTruthy();
+  });
+
+  it("troca para os dados reais da primeira página após criar em uma página posterior", async () => {
+    actions.create.mockResolvedValue({ status: "success", message: "Usuário criado.", user: createdSeller });
+    const user = userEvent.setup();
+    const pageTwoUsers = [users[1]];
+    const pageOneUsers = [users[0], createdSeller];
+    const view = render(<UserManagement key="users-page-2" users={pageTwoUsers} page={2} />);
+
+    await user.click(screen.getByRole("button", { name: "Novo usuário" }));
+    await user.type(screen.getByLabelText("Nome completo"), "Sandra");
+    await user.type(screen.getByLabelText("E-mail"), "sandra@wtgseguros.com.br");
+    await user.type(screen.getByLabelText("Senha inicial"), "senha inicial");
+    await user.click(screen.getByRole("button", { name: "Criar usuário" }));
+
+    await waitFor(() => expect(navigation.push).toHaveBeenCalledWith("/usuarios"));
+    view.rerender(<UserManagement key="users-page-1" users={pageOneUsers} page={1} />);
+    expect(screen.getByText("Sandra")).toBeTruthy();
+    expect(screen.queryByText("Renato")).toBeNull();
+  });
+});
 ````
 
 ## Snapshot de código: `apps/web/src/components/user-management.tsx`
 
 ````tsx
-export function UserManagement({ users }: { users: Record<string, unknown>[] }) {
+"use client";
+
+import { useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+
+import type { ManagedUser } from "../lib/api/types";
+import {
+  createManagedUserAction,
+  resetManagedUserPasswordAction,
+  setManagedUserAvailabilityAction,
+} from "../lib/users/actions";
+
+import { ConfirmActionModal } from "./confirm-action-modal";
+import { UserFormModal } from "./user-form-modal";
+import { UserPasswordModal } from "./user-password-modal";
+
+type AvailabilityConfirmation = { user: ManagedUser; paused: boolean };
+
+function roleLabel(role: ManagedUser["role"]): string {
+  return role === "admin" ? "Administrador" : "Vendedor";
+}
+
+function availabilityLabel(user: ManagedUser): string {
+  if (!user.active) return "Inativo";
+  return user.role === "seller" && user.paused ? "Pausado" : "Ativo";
+}
+
+function replaceUser(users: ManagedUser[], updated: ManagedUser): ManagedUser[] {
+  return users.map((user) => (user.id === updated.id ? updated : user));
+}
+
+export function UserManagement({ users: initialUsers, page = 1 }: { users: ManagedUser[]; page?: number }) {
+  const router = useRouter();
+  const [users, setUsers] = useState(initialUsers);
+  const [newUserOpen, setNewUserOpen] = useState(false);
+  const [passwordUser, setPasswordUser] = useState<ManagedUser | null>(null);
+  const [availabilityConfirmation, setAvailabilityConfirmation] = useState<AvailabilityConfirmation | null>(null);
+  const [pendingAvailability, setPendingAvailability] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const newUserTrigger = useRef<HTMLButtonElement>(null);
+
+  function closeNewUser() {
+    setNewUserOpen(false);
+    newUserTrigger.current?.focus();
+  }
+
+  async function confirmAvailability() {
+    if (!availabilityConfirmation) return;
+    setPendingAvailability(true);
+    try {
+      const result = await setManagedUserAvailabilityAction(
+        availabilityConfirmation.user.id,
+        availabilityConfirmation.paused,
+      );
+      if (result.status === "success") setUsers((current) => replaceUser(current, result.user));
+      setNotice(result.message);
+    } catch {
+      setNotice("Não foi possível concluir a ação. Tente novamente.");
+    } finally {
+      setPendingAvailability(false);
+      setAvailabilityConfirmation(null);
+    }
+  }
+
   return (
-    <section className="panel-card" aria-describedby="user-management-unavailable">
+    <section className="panel-card" aria-labelledby="user-management-title">
       <div className="panel-head">
         <div>
           <p className="eyebrow">Administração</p>
-          <h2>Usuários</h2>
+          <h2 id="user-management-title">Usuários</h2>
+          <p className="muted">Crie acessos, pause vendedores e redefina senhas com confirmação.</p>
         </div>
+        <button ref={newUserTrigger} type="button" className="table-action" onClick={() => setNewUserOpen(true)}>Novo usuário</button>
       </div>
-      <p className="muted" id="user-management-unavailable">
-        Gestão de usuários indisponível até a API Python expor os comandos correspondentes.
-      </p>
-      {users.map((user, index) => (
-        <article className="user-card" key={String(user.id ?? index)}>
-          <strong>{String(user.fullName ?? user.email ?? user.id ?? "Usuário")}</strong>
-          <div className="user-card-meta"><span>{String(user.email ?? "")}</span><span className={`pill ${user.active === false ? "disqualified" : "won"}`}>{user.active === false ? "Inativo" : "Ativo"}</span><span>{user.role === "admin" ? "Administrador" : "Vendedor"}</span></div>
-          <div className="user-card-actions">
-            <button type="button" disabled>
-              Desativar
-            </button>
-            <button type="button" disabled>
-              Reativar
-            </button>
-          </div>
-        </article>
-      ))}
+      {notice ? <p className="form-success" role="status" aria-live="polite">{notice}</p> : null}
+      <div className="user-list">
+        {users.map((user) => {
+          const paused = user.role === "seller" && user.paused === true;
+          const availabilityAction = paused ? "Ativar" : "Pausar";
+          return (
+            <article className="user-card" key={user.id}>
+              <div>
+                <strong>{user.fullName}</strong>
+                <div className="user-card-meta">
+                  <span>{user.email}</span>
+                  <span className={`pill ${paused ? "disqualified" : "won"}`}>{availabilityLabel(user)}</span>
+                  <span>{roleLabel(user.role)}</span>
+                </div>
+              </div>
+              <div className="user-card-actions">
+                {user.role === "seller" && user.active ? <button
+                  type="button"
+                  className="secondary-button"
+                  aria-label={`${availabilityAction} ${user.fullName}`}
+                  onClick={() => setAvailabilityConfirmation({ user, paused: !paused })}
+                >{availabilityAction}</button> : null}
+                <button type="button" className="secondary-button" aria-label={`Redefinir senha de ${user.fullName}`} onClick={() => setPasswordUser(user)}>Redefinir senha</button>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+      {newUserOpen ? <UserFormModal
+        onClose={closeNewUser}
+        onSubmit={createManagedUserAction}
+        onCreated={(user, message) => {
+          setNotice(message);
+          closeNewUser();
+          if (page > 1) {
+            router.push("/usuarios");
+            return;
+          }
+          setUsers((current) => [...current, user]);
+        }}
+      /> : null}
+      {passwordUser ? <UserPasswordModal
+        user={passwordUser}
+        onClose={() => setPasswordUser(null)}
+        onReset={resetManagedUserPasswordAction}
+        onSuccess={(updated, message) => {
+          setUsers((current) => replaceUser(current, updated));
+          setNotice(message);
+          setPasswordUser(null);
+        }}
+      /> : null}
+      {availabilityConfirmation ? <ConfirmActionModal
+        title={availabilityConfirmation.paused ? "Confirmar pausa" : "Confirmar ativação"}
+        description={availabilityConfirmation.paused
+          ? `Pausar ${availabilityConfirmation.user.fullName} para novas atribuições? Os leads atuais permanecem com o vendedor.`
+          : `Ativar ${availabilityConfirmation.user.fullName} para voltar a receber novas atribuições.`}
+        confirmLabel={availabilityConfirmation.paused ? "Confirmar pausa" : "Confirmar ativação"}
+        pending={pendingAvailability}
+        onConfirm={() => void confirmAvailability()}
+        onCancel={() => setAvailabilityConfirmation(null)}
+      /> : null}
     </section>
   );
+}
+````
+
+## Snapshot de código: `apps/web/src/components/user-password-modal.tsx`
+
+````tsx
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+
+import type { ManagedUser } from "../lib/api/types";
+import type { UserMutationResult } from "../lib/users/actions";
+
+import { ConfirmActionModal } from "./confirm-action-modal";
+
+export function UserPasswordModal({ user, onClose, onReset, onSuccess }: {
+  user: ManagedUser;
+  onClose: () => void;
+  onReset: (userId: string, password: string) => Promise<UserMutationResult>;
+  onSuccess: (updated: ManagedUser, message: string) => void;
+}) {
+  const passwordRef = useRef<HTMLInputElement>(null);
+  const [password, setPassword] = useState("");
+  const [confirming, setConfirming] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const canContinue = Boolean(password.trim() && !pending);
+
+  useEffect(() => {
+    passwordRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !pending) onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose, pending]);
+
+  async function resetPassword() {
+    setPending(true);
+    setError(null);
+    try {
+      const result = await onReset(user.id, password);
+      if (result.status === "success") {
+        setPassword("");
+        onSuccess(result.user, result.message);
+        return;
+      }
+      setConfirming(false);
+      setError(result.message);
+    } catch {
+      setConfirming(false);
+      setError("Não foi possível concluir a ação. Tente novamente.");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return <>
+    {!confirming ? <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
+      if (event.target === event.currentTarget && !pending) onClose();
+    }}>
+      <section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="reset-password-title">
+        <h3 id="reset-password-title">Redefinir senha</h3>
+        <p className="muted">Defina a nova senha de {user.fullName}. As sessões atuais desse usuário serão encerradas.</p>
+        <label htmlFor="reset-user-password">Nova senha
+          <input ref={passwordRef} id="reset-user-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="new-password" required />
+        </label>
+        {error ? <p className="form-error" role="status">{error}</p> : null}
+        <div className="modal-actions">
+          <button type="button" className="secondary-button" disabled={pending} onClick={onClose}>Cancelar</button>
+          <button type="button" className="table-action" disabled={!canContinue} onClick={() => setConfirming(true)}>Salvar nova senha</button>
+        </div>
+      </section>
+    </div> : <ConfirmActionModal
+      title="Confirmar redefinição de senha"
+      description={`Salvar a nova senha de ${user.fullName} e encerrar as sessões atuais?`}
+      confirmLabel="Confirmar redefinição"
+      pending={pending}
+      onConfirm={() => void resetPassword()}
+      onCancel={() => setConfirming(false)}
+    />}
+  </>;
 }
 ````
 
@@ -14063,9 +18153,17 @@ export function UserManagement({ users }: { users: Record<string, unknown>[] }) 
 ````typescript
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { apiFetch } from "./client";
+import {
+  apiFetch,
+  createManagedUser,
+  getManagedUsers,
+  getLeadTreatments,
+  resetManagedUserPassword,
+  setManagedUserAvailability,
+  submitLeadTreatment,
+} from "./client";
 
-describe("apiFetch", () => {
+describe("cliente HTTP operacional", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
@@ -14085,31 +18183,257 @@ describe("apiFetch", () => {
     );
   });
 
-  it("preserva status e mensagem de validação da API", async () => {
+  it("não devolve detalhes arbitrários de validação", async () => {
     vi.stubEnv("NEXT_PUBLIC_API_URL", "https://api.wtg.example");
     vi.stubGlobal(
       "fetch",
       vi
         .fn()
-        .mockResolvedValue(
-          new Response(JSON.stringify({ detail: "Lead inválido" }), { status: 422 }),
-        ),
+        .mockResolvedValue(new Response(JSON.stringify({ detail: "Lead inválido" }), { status: 422 })),
     );
 
     await expect(apiFetch("/api/leads/inválido/attempts")).rejects.toMatchObject({
       status: 422,
-      message: "Lead inválido",
+      message: "Revise os dados informados e tente novamente.",
     });
   });
 
   it.each([
     [401, "Sessão expirada. Entre novamente."],
     [403, "Você não tem permissão para esta ação."],
-  ])("traduz HTTP %i sem expor corpo da API", async (status, message) => {
+    [409, "A operação conflita com o estado atual. Atualize os dados e tente novamente."],
+    [422, "Revise os dados informados e tente novamente."],
+  ])("traduz HTTP %i para erro legível", async (status, message) => {
     vi.stubEnv("NEXT_PUBLIC_API_URL", "https://api.wtg.example");
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status })));
 
     await expect(apiFetch("/api/dashboard")).rejects.toMatchObject({ status, message });
+  });
+
+  it.each([
+    [401, "Unauthorized", "Sessão expirada. Entre novamente."],
+    [403, "Forbidden", "Você não tem permissão para esta ação."],
+    [409, "Email already registered", "A operação conflita com o estado atual. Atualize os dados e tente novamente."],
+    [422, "Invalid object id", "Revise os dados informados e tente novamente."],
+  ])("não expõe detalhe técnico HTTP %i", async (status, detail, message) => {
+    vi.stubEnv("NEXT_PUBLIC_API_URL", "https://api.wtg.example");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail }), { status })),
+    );
+
+    await expect(apiFetch("/api/dashboard")).rejects.toMatchObject({ status, message });
+  });
+
+  it.each([
+    [409, "queue changed concurrently", "A operação conflita com o estado atual. Atualize os dados e tente novamente."],
+    [409, "retry user creation", "A operação conflita com o estado atual. Atualize os dados e tente novamente."],
+    [422, "password is required", "Revise os dados informados e tente novamente."],
+    [422, "paused must be a boolean", "Revise os dados informados e tente novamente."],
+    [422, "MONGODB_URI=mongodb://internal-secret", "Revise os dados informados e tente novamente."],
+  ])("nunca expõe detalhe operacional ou segredo HTTP %i", async (status, detail, message) => {
+    vi.stubEnv("NEXT_PUBLIC_API_URL", "https://api.wtg.example");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail }), { status })),
+    );
+
+    await expect(apiFetch("/api/dashboard")).rejects.toMatchObject({ status, message });
+  });
+
+  it("normaliza a listagem persistida de usuários para o contrato público", async () => {
+    vi.stubEnv("NEXT_PUBLIC_API_URL", "https://api.wtg.example");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            items: [
+              {
+                id: "seller-1",
+                fullName: "Sandra",
+                emailNormalized: "sandracristina@wtgseguros.com.br",
+                role: "seller",
+                active: true,
+                paused: false,
+                passwordHash: "never-expose",
+                tokenHash: "never-expose",
+              },
+            ],
+            page: 1,
+            pageSize: 50,
+            total: 1,
+          }),
+          { status: 200 },
+        ),
+      ),
+    );
+
+    await expect(getManagedUsers("sessao")).resolves.toEqual({
+      items: [
+        {
+          id: "seller-1",
+          fullName: "Sandra",
+          email: "sandracristina@wtgseguros.com.br",
+          role: "seller",
+          active: true,
+          paused: false,
+        },
+      ],
+      page: 1,
+      pageSize: 50,
+      total: 1,
+    });
+  });
+
+  it("serializa criação de usuário e não devolve a senha", async () => {
+    vi.stubEnv("NEXT_PUBLIC_API_URL", "https://api.wtg.example");
+    const request = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "seller-1",
+          fullName: "Nova Vendedora",
+          email: "nova@wtgseguros.com.br",
+          role: "seller",
+          active: true,
+          paused: false,
+        }),
+        { status: 201 },
+      ),
+    );
+    vi.stubGlobal("fetch", request);
+
+    const user = await createManagedUser(
+      {
+        fullName: "Nova Vendedora",
+        email: "nova@wtgseguros.com.br",
+        role: "seller",
+        password: "senha inicial",
+      },
+      "sessao",
+    );
+
+    expect(user).toEqual({
+      id: "seller-1",
+      fullName: "Nova Vendedora",
+      email: "nova@wtgseguros.com.br",
+      role: "seller",
+      active: true,
+      paused: false,
+    });
+    expect(user).not.toHaveProperty("password");
+    expect(request).toHaveBeenCalledWith(
+      "https://api.wtg.example/api/admin/users",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          fullName: "Nova Vendedora",
+          email: "nova@wtgseguros.com.br",
+          role: "seller",
+          password: "senha inicial",
+        }),
+        headers: expect.objectContaining({
+          "Content-Type": "application/json",
+          Cookie: "gerec_session=sessao",
+        }),
+      }),
+    );
+  });
+
+  it("envia disponibilidade e redefinição de senha sem expor a senha na resposta", async () => {
+    vi.stubEnv("NEXT_PUBLIC_API_URL", "https://api.wtg.example");
+    const response = {
+      id: "seller-1",
+      fullName: "Nova Vendedora",
+      email: "nova@wtgseguros.com.br",
+      role: "seller" as const,
+      active: true,
+      paused: true,
+    };
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(response), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(response), { status: 200 }));
+    vi.stubGlobal("fetch", request);
+
+    await expect(setManagedUserAvailability("seller-1", true, "sessao")).resolves.toEqual(response);
+    await expect(resetManagedUserPassword("seller-1", "nova senha", "sessao")).resolves.toEqual(
+      response,
+    );
+    expect(request).toHaveBeenNthCalledWith(
+      1,
+      "https://api.wtg.example/api/admin/users/seller-1/availability",
+      expect.objectContaining({ body: JSON.stringify({ paused: true }) }),
+    );
+    expect(request).toHaveBeenNthCalledWith(
+      2,
+      "https://api.wtg.example/api/admin/users/seller-1/password",
+      expect.objectContaining({ body: JSON.stringify({ password: "nova senha" }) }),
+    );
+  });
+
+  it("serializa tratativa e consulta histórico sem decidir o estado no navegador", async () => {
+    vi.stubEnv("NEXT_PUBLIC_API_URL", "https://api.wtg.example");
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            leadId: "lead-1",
+            treatmentId: "treatment-1",
+            status: "ok",
+            commercialStatus: "negotiation",
+            isDisqualified: false,
+            commentCount: 2,
+            reminderAt: "2026-08-28T16:00:00.000Z",
+            dueAt: "2026-08-28T20:00:00.000Z",
+          }),
+          { status: 201 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ items: [], page: 1, pageSize: 50, total: 0 }), {
+          status: 200,
+        }),
+      );
+    vi.stubGlobal("fetch", request);
+
+    await expect(
+      submitLeadTreatment(
+        "lead-1",
+        {
+          comment: "Cliente pediu uma nova cotação.",
+          commercialStatus: "negotiation",
+          isDisqualified: false,
+          idempotencyKey: "treatment-1",
+        },
+        "sessao",
+      ),
+    ).resolves.toMatchObject({ commentCount: 2, commercialStatus: "negotiation" });
+    await expect(getLeadTreatments("lead-1", "sessao")).resolves.toEqual({
+      items: [],
+      page: 1,
+      pageSize: 50,
+      total: 0,
+    });
+    expect(request).toHaveBeenNthCalledWith(
+      1,
+      "https://api.wtg.example/api/leads/lead-1/treatments",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          comment: "Cliente pediu uma nova cotação.",
+          commercialStatus: "negotiation",
+          isDisqualified: false,
+          idempotencyKey: "treatment-1",
+        }),
+      }),
+    );
+    expect(request).toHaveBeenNthCalledWith(
+      2,
+      "https://api.wtg.example/api/leads/lead-1/treatments?page=1&limit=50",
+      expect.objectContaining({ headers: expect.objectContaining({ Cookie: "gerec_session=sessao" }) }),
+    );
   });
 });
 ````
@@ -14117,6 +18441,15 @@ describe("apiFetch", () => {
 ## Snapshot de código: `apps/web/src/lib/api/client.ts`
 
 ````typescript
+import type {
+  CreateManagedUserInput,
+  ManagedUser,
+  Page,
+  Treatment,
+  TreatmentInput,
+  TreatmentSubmission,
+} from "./types";
+
 export class ApiRequestError extends Error {
   constructor(
     message: string,
@@ -14135,21 +18468,25 @@ function apiUrl(path: string): string {
   return `${baseUrl}/${path.replace(/^\//, "")}`;
 }
 
-async function errorMessage(response: Response): Promise<string> {
-  try {
-    const payload: unknown = await response.json();
-    if (typeof payload === "object" && payload !== null && "detail" in payload) {
-      const detail = payload.detail;
-      return typeof detail === "string" ? detail : "Dados inválidos.";
-    }
-  } catch {
-    // A API pode responder sem corpo em erros HTTP.
+function messageForStatus(status: number): string {
+  switch (status) {
+    case 401:
+      return "Sessão expirada. Entre novamente.";
+    case 403:
+      return "Você não tem permissão para esta ação.";
+    case 409:
+      return "A operação conflita com o estado atual. Atualize os dados e tente novamente.";
+    case 422:
+      return "Revise os dados informados e tente novamente.";
+    default:
+      return "Não foi possível concluir a solicitação.";
   }
-  return response.status === 401
-    ? "Sessão expirada. Entre novamente."
-    : response.status === 403
-      ? "Você não tem permissão para esta ação."
-      : "Não foi possível concluir a solicitação.";
+}
+
+async function errorMessage(response: Response): Promise<string> {
+  // O corpo de erro é um contrato técnico da API. Nunca o exponha ao usuário:
+  // pode conter termos internos, texto em outro idioma ou dados sensíveis.
+  return messageForStatus(response.status);
 }
 
 export async function apiRequest(path: string, init: RequestInit = {}): Promise<Response> {
@@ -14165,10 +18502,146 @@ export async function apiRequest(path: string, init: RequestInit = {}): Promise<
   return response;
 }
 
+/** Único ponto de entrada HTTP da interface; as regras permanecem na API. */
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await apiRequest(path, init);
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
+}
+
+function sessionHeaders(sessionToken: string, headers: HeadersInit = {}): HeadersInit {
+  return {
+    "Content-Type": "application/json",
+    Cookie: `gerec_session=${sessionToken}`,
+    ...headers,
+  };
+}
+
+function managedUser(value: unknown): ManagedUser {
+  if (typeof value !== "object" || value === null) {
+    throw new ApiRequestError("A resposta de usuários é inválida.", 502);
+  }
+  const record = value as Record<string, unknown>;
+  const email = text(record.email) ?? text(record.emailNormalized);
+  const fullName = text(record.fullName);
+  const id = text(record.id);
+  const role = record.role;
+  if (!id || !fullName || !email || (role !== "admin" && role !== "seller") || typeof record.active !== "boolean") {
+    throw new ApiRequestError("A resposta de usuários é inválida.", 502);
+  }
+  return {
+    id,
+    fullName,
+    email,
+    role,
+    active: record.active,
+    paused: typeof record.paused === "boolean" ? record.paused : null,
+  };
+}
+
+function text(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function managedUserPage(value: unknown): Page<ManagedUser> {
+  if (typeof value !== "object" || value === null) {
+    throw new ApiRequestError("A resposta de usuários é inválida.", 502);
+  }
+  const page = value as Record<string, unknown>;
+  if (
+    !Array.isArray(page.items) ||
+    typeof page.page !== "number" ||
+    !Number.isInteger(page.page) ||
+    typeof page.pageSize !== "number" ||
+    !Number.isInteger(page.pageSize) ||
+    typeof page.total !== "number" ||
+    !Number.isInteger(page.total)
+  ) {
+    throw new ApiRequestError("A resposta de usuários é inválida.", 502);
+  }
+  return {
+    items: page.items.map(managedUser),
+    page: page.page,
+    pageSize: page.pageSize,
+    total: page.total,
+  };
+}
+
+export async function getManagedUsers(sessionToken: string, page = 1, limit = 50): Promise<Page<ManagedUser>> {
+  return managedUserPage(
+    await apiFetch<unknown>(`/api/admin/users?page=${page}&limit=${limit}`, {
+      cache: "no-store",
+      headers: { Cookie: `gerec_session=${sessionToken}` },
+    }),
+  );
+}
+
+export async function createManagedUser(
+  input: CreateManagedUserInput,
+  sessionToken: string,
+): Promise<ManagedUser> {
+  return managedUser(
+    await apiFetch<unknown>("/api/admin/users", {
+      method: "POST",
+      headers: sessionHeaders(sessionToken),
+      body: JSON.stringify(input),
+    }),
+  );
+}
+
+export async function setManagedUserAvailability(
+  userId: string,
+  paused: boolean,
+  sessionToken: string,
+): Promise<ManagedUser> {
+  return managedUser(
+    await apiFetch<unknown>(`/api/admin/users/${encodeURIComponent(userId)}/availability`, {
+      method: "PATCH",
+      headers: sessionHeaders(sessionToken),
+      body: JSON.stringify({ paused }),
+    }),
+  );
+}
+
+export async function resetManagedUserPassword(
+  userId: string,
+  password: string,
+  sessionToken: string,
+): Promise<ManagedUser> {
+  return managedUser(
+    await apiFetch<unknown>(`/api/admin/users/${encodeURIComponent(userId)}/password`, {
+      method: "PATCH",
+      headers: sessionHeaders(sessionToken),
+      body: JSON.stringify({ password }),
+    }),
+  );
+}
+
+export async function submitLeadTreatment(
+  leadId: string,
+  input: TreatmentInput,
+  sessionToken: string,
+): Promise<TreatmentSubmission> {
+  return apiFetch<TreatmentSubmission>(`/api/leads/${encodeURIComponent(leadId)}/treatments`, {
+    method: "POST",
+    headers: sessionHeaders(sessionToken),
+    body: JSON.stringify(input),
+  });
+}
+
+export async function getLeadTreatments(
+  leadId: string,
+  sessionToken: string,
+  page = 1,
+  limit = 50,
+): Promise<Page<Treatment>> {
+  return apiFetch<Page<Treatment>>(
+    `/api/leads/${encodeURIComponent(leadId)}/treatments?page=${page}&limit=${limit}`,
+    {
+      cache: "no-store",
+      headers: { Cookie: `gerec_session=${sessionToken}` },
+    },
+  );
 }
 ````
 
@@ -14177,16 +18650,119 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
 ````typescript
 export type UserRole = "admin" | "seller";
 
+export type CommercialStatus = "undefined" | "negotiation" | "won";
+
+export type SellerAvailability = "active" | "paused" | "blocked_overdue";
+
 export type ApiUser = { id: string; email: string; role: UserRole };
 
 export type Page<T> = { items: T[]; page: number; pageSize: number; total: number };
 
-export type ApiDashboard = {
-  user: ApiUser;
-  leads: Page<Record<string, unknown>>;
-  history: Page<Record<string, unknown>>;
-  queue: Page<Record<string, unknown>> & { nextSellerName?: string };
-  skipBalance: Record<string, unknown> | null;
+/**
+ * Identificadores são chaves técnicas para mutações e nunca rótulos da interface.
+ * O backend já resolve nomes, status e prazos autorizados para cada perfil.
+ */
+export type OperationalLead = {
+  id: string;
+  contactName: string;
+  sellerName: string;
+  companyName: string;
+  campaignName: string;
+  phoneDisplay: string;
+  email: string;
+  commercialStatus: CommercialStatus;
+  isDisqualified: boolean;
+  commentCount: number;
+  assignedAt: string | null;
+  feedbackDueAt: string | null;
+  lastUpdatedAt: string | null;
+};
+
+export type Treatment = {
+  leadId: string;
+  leadName?: string;
+  sellerName: string;
+  comment: string;
+  commercialStatus: CommercialStatus;
+  isDisqualified: boolean;
+  assignedAt: string | null;
+  createdAt: string;
+  lastUpdatedAt: string | null;
+};
+
+export type QueueEntry = {
+  sellerName: string;
+  position: number;
+  availability: SellerAvailability;
+  reason: string | null;
+  skipBalance: number;
+};
+
+export type AdminQueue = {
+  items: QueueEntry[];
+  total: number;
+  nextSellerName: string;
+  cursorSellerName: string;
+};
+
+export type SellerQueue = {
+  position: number | null;
+  availability: SellerAvailability;
+  skipBalance: number;
+};
+
+export type AdminDashboard = {
+  user: ApiUser & { role: "admin" };
+  leads: Page<OperationalLead>;
+  history: Page<Treatment>;
+  queue: AdminQueue;
+};
+
+export type SellerDashboard = {
+  user: ApiUser & { role: "seller" };
+  leads: Page<OperationalLead>;
+  history: Page<Treatment>;
+  queue: SellerQueue;
+};
+
+export type ApiDashboard = AdminDashboard | SellerDashboard;
+
+/** Resposta pública dos comandos administrativos; não contém password ou hash. */
+export type ManagedUser = {
+  id: string;
+  fullName: string;
+  email: string;
+  role: UserRole;
+  active: boolean;
+  paused: boolean | null;
+};
+
+export type CreateManagedUserInput = {
+  fullName: string;
+  email: string;
+  role: UserRole;
+  password: string;
+};
+
+export type ResetManagedUserPasswordInput = { password: string };
+
+export type TreatmentInput = {
+  comment: string;
+  commercialStatus: CommercialStatus;
+  isDisqualified: boolean;
+  idempotencyKey: string;
+};
+
+export type TreatmentSubmission = {
+  leadId: string;
+  treatmentId: string;
+  status: string;
+  commercialStatus: CommercialStatus;
+  isDisqualified: boolean;
+  commentCount: number;
+  lastUpdatedAt: string;
+  reminderAt: string | null;
+  dueAt: string | null;
 };
 ````
 
@@ -14389,15 +18965,43 @@ export async function getSessionContext(): Promise<SessionContext> {
 ````typescript
 import { describe, expect, it } from "vitest";
 
-import { formatDateTime, getSlaState } from "./format";
+import {
+  NOT_INFORMED,
+  formatCommercialStatus,
+  formatCommentCount,
+  formatDateTime,
+  formatDisqualificationMarker,
+  formatPhone,
+  formatSlaDeadline,
+  formatText,
+  getSlaState,
+} from "./format";
 
 describe("formatDateTime", () => {
-  it("formata horarios no fuso de Sao Paulo", () => {
+  it("formata horários no fuso de São Paulo", () => {
     expect(formatDateTime("2026-08-26T15:30:00.000Z")).toBe("26/08/2026, 12:30");
   });
 
-  it("retorna texto vazio para valor ausente", () => {
-    expect(formatDateTime(null)).toBe("");
+  it("retorna fallback para valor ausente", () => {
+    expect(formatDateTime(null)).toBe(NOT_INFORMED);
+  });
+});
+
+describe("formatação de projeção operacional", () => {
+  it("traduz situação comercial e marcador sem decidir regras de negócio", () => {
+    expect(formatCommercialStatus("undefined")).toBe("Indefinido");
+    expect(formatCommercialStatus("negotiation")).toBe("Negociação");
+    expect(formatCommercialStatus("won")).toBe("Ganho");
+    expect(formatDisqualificationMarker(true)).toBe("Desqualificado");
+    expect(formatDisqualificationMarker(false)).toBe("Não desqualificado");
+  });
+
+  it("formata contador, prazo, telefone e texto ausente para o operador", () => {
+    expect(formatCommentCount(1)).toBe("1 comentário");
+    expect(formatCommentCount(2)).toBe("2 comentários");
+    expect(formatSlaDeadline("2026-08-26T15:30:00.000Z")).toBe("26/08/2026, 12:30");
+    expect(formatPhone("5511988308029")).toBe("(11) 98830-8029");
+    expect(formatText("   ")).toBe(NOT_INFORMED);
   });
 });
 
@@ -14419,7 +19023,11 @@ describe("getSlaState", () => {
 ## Snapshot de código: `apps/web/src/lib/dashboard/format.ts`
 
 ````typescript
+import type { CommercialStatus } from "../api/types";
+
 export type SlaState = "overdue" | "today" | "scheduled" | "none";
+
+export const NOT_INFORMED = "Não informado";
 
 const SAO_PAULO_TIME_ZONE = "America/Sao_Paulo";
 
@@ -14440,17 +19048,50 @@ const dateKeyFormatter = new Intl.DateTimeFormat("en-CA", {
   year: "numeric",
 });
 
-export function formatDateTime(value: string | null | undefined) {
-  if (!value) return "";
+export function formatText(value: string | null | undefined): string {
+  return value?.trim() || NOT_INFORMED;
+}
+
+export function formatDateTime(value: string | null | undefined): string {
+  if (!value || Number.isNaN(new Date(value).getTime())) return NOT_INFORMED;
   return dateTimeFormatter.format(new Date(value));
 }
 
-export function getSaoPauloDateKey(value: Date) {
+export function formatSlaDeadline(value: string | null | undefined): string {
+  return formatDateTime(value);
+}
+
+export function formatCommercialStatus(value: CommercialStatus): string {
+  return {
+    undefined: "Indefinido",
+    negotiation: "Negociação",
+    won: "Ganho",
+  }[value];
+}
+
+export function formatDisqualificationMarker(isDisqualified: boolean): string {
+  return isDisqualified ? "Desqualificado" : "Não desqualificado";
+}
+
+export function formatCommentCount(value: number): string {
+  const count = Number.isInteger(value) && value >= 0 ? value : 0;
+  return `${count} ${count === 1 ? "comentário" : "comentários"}`;
+}
+
+export function formatPhone(value: string | null | undefined): string {
+  let digits = String(value ?? "").replace(/\D/g, "");
+  if (digits.startsWith("55") && (digits.length === 12 || digits.length === 13)) digits = digits.slice(2);
+  if (digits.length === 11) return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7)}`;
+  if (digits.length === 10) return `(${digits.slice(0, 2)}) ${digits.slice(2, 6)}-${digits.slice(6)}`;
+  return digits || NOT_INFORMED;
+}
+
+export function getSaoPauloDateKey(value: Date): string {
   return dateKeyFormatter.format(value);
 }
 
 export function getSlaState(value: string | null | undefined, now = new Date()): SlaState {
-  if (!value) return "none";
+  if (!value || Number.isNaN(new Date(value).getTime())) return "none";
   const dueDate = new Date(value);
   if (dueDate.getTime() < now.getTime()) return "overdue";
   if (getSaoPauloDateKey(dueDate) === getSaoPauloDateKey(now)) return "today";
@@ -14466,7 +19107,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const { apiFetch } = vi.hoisted(() => ({ apiFetch: vi.fn() }));
 vi.mock("../api/client", () => ({ apiFetch }));
 
-import { getDashboardData, pageNumber } from "./queries";
+import { getDashboardData, isAdminDashboard, pageNumber } from "./queries";
 
 describe("getDashboardData", () => {
   beforeEach(() => vi.clearAllMocks());
@@ -14483,6 +19124,30 @@ describe("getDashboardData", () => {
   it.each(["0", "-1", "1.5", "Infinity", "não-numero"])("recusa página inválida: %s", (value) => {
     expect(() => pageNumber(value)).toThrow("Página inválida");
   });
+
+  it("separa a projeção administrativa pelo papel devolvido pela API", () => {
+    expect(
+      isAdminDashboard({
+        user: { id: "admin-1", email: "admin@wtgseguros.com.br", role: "admin" },
+        leads: { items: [], page: 1, pageSize: 50, total: 0 },
+        history: { items: [], page: 1, pageSize: 50, total: 0 },
+        queue: { items: [], total: 0, nextSellerName: "Não informado", cursorSellerName: "Não informado" },
+      }),
+    ).toBe(true);
+  });
+
+  it("mantém a fila do vendedor sem dados globais", () => {
+    const dashboard = {
+      user: { id: "seller-1", email: "seller@wtgseguros.com.br", role: "seller" as const },
+      leads: { items: [], page: 1, pageSize: 50, total: 0 },
+      history: { items: [], page: 1, pageSize: 50, total: 0 },
+      queue: { position: 2, availability: "active" as const, skipBalance: 0 },
+    };
+
+    expect(isAdminDashboard(dashboard)).toBe(false);
+    expect(dashboard.queue).not.toHaveProperty("items");
+    expect(dashboard.queue).not.toHaveProperty("nextSellerName");
+  });
 });
 ````
 
@@ -14490,7 +19155,7 @@ describe("getDashboardData", () => {
 
 ````typescript
 import { apiFetch } from "../api/client";
-import type { ApiDashboard } from "../api/types";
+import type { AdminDashboard, ApiDashboard } from "../api/types";
 import { SESSION_COOKIE } from "../auth/session";
 
 export function pageNumber(value: string | undefined): number {
@@ -14507,31 +19172,10 @@ export async function getDashboardData(sessionToken: string, page = 1): Promise<
     headers: { Cookie: `${SESSION_COOKIE}=${sessionToken}` },
   });
 }
-````
 
-## Snapshot de código: `apps/web/src/lib/operations/actions.ts`
-
-````typescript
-"use server";
-
-import { randomUUID } from "node:crypto";
-import { revalidatePath } from "next/cache";
-
-import { apiFetch } from "../api/client";
-import { getSessionContext, SESSION_COOKIE } from "../auth/session";
-
-export async function registerContactAttemptAction(formData: FormData) {
-  const session = await getSessionContext();
-  if (session.status !== "authenticated") throw new Error("Sessão expirada. Entre novamente.");
-  const leadId = String(formData.get("leadId") ?? "").trim();
-  const comment = String(formData.get("comment") ?? "").trim();
-  if (!leadId || comment.length < 6) throw new Error("Informe um comentário válido de ao menos 6 caracteres.");
-  await apiFetch(`/api/leads/${encodeURIComponent(leadId)}/attempts`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Cookie: `${SESSION_COOKIE}=${session.sessionToken}` },
-    body: JSON.stringify({ comment, idempotency_key: randomUUID() }),
-  });
-  revalidatePath("/dashboard"); revalidatePath("/fila"); revalidatePath("/historico");
+/** A API define o papel; a web apenas escolhe a composição de apresentação. */
+export function isAdminDashboard(dashboard: ApiDashboard): dashboard is AdminDashboard {
+  return dashboard.user.role === "admin";
 }
 ````
 
@@ -14581,5 +19225,297 @@ export function validateAttempt(input: {
 }) {
   const comment = input.comment.trim();
   if (comment.length < 6) throw new Error("O comentário deve ter pelo menos 6 caracteres.");
+}
+````
+
+## Snapshot de código: `apps/web/src/lib/operations/treatment-actions.test.ts`
+
+````typescript
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
+vi.mock("../auth/session", () => ({ getSessionContext: vi.fn() }));
+vi.mock("../api/client", () => {
+  class ApiRequestError extends Error {
+    constructor(
+      message: string,
+      readonly status: number,
+    ) {
+      super(message);
+    }
+  }
+  return { ApiRequestError, getLeadTreatments: vi.fn(), submitLeadTreatment: vi.fn() };
+});
+
+import { revalidatePath } from "next/cache";
+
+import { ApiRequestError, submitLeadTreatment } from "../api/client";
+import { getSessionContext } from "../auth/session";
+import { submitLeadTreatmentAction } from "./treatment-actions";
+import { initialTreatmentActionState } from "./treatment-state";
+
+const authenticatedSession = {
+  status: "authenticated" as const,
+  sessionToken: "sessao-segura",
+  profile: {
+    id: "seller-1",
+    userId: "seller-1",
+    fullName: "Jessica",
+    email: "jessica@wtgseguros.com.br",
+    role: "seller" as const,
+  },
+};
+
+function formData(values: Record<string, string>): FormData {
+  const form = new FormData();
+  Object.entries(values).forEach(([key, value]) => form.set(key, value));
+  return form;
+}
+
+describe("ação de tratativa", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getSessionContext).mockResolvedValue(authenticatedSession);
+  });
+
+  it("mantém o erro 422 legível para o formulário", async () => {
+    vi.mocked(submitLeadTreatment).mockRejectedValue(
+      new ApiRequestError("Revise os dados informados e tente novamente.", 422),
+    );
+
+    await expect(
+      submitLeadTreatmentAction(
+        initialTreatmentActionState,
+        formData({
+          leadId: "lead-1",
+          comment: "Contato realizado por telefone.",
+          commercialStatus: "negotiation",
+          idempotencyKey: "key-1",
+        }),
+      ),
+    ).resolves.toEqual({
+      status: "error",
+      message: "Revise os dados informados e tente novamente.",
+      submission: null,
+    });
+  });
+
+  it("envia o status atual e atualiza a consulta após sucesso", async () => {
+    vi.mocked(submitLeadTreatment).mockResolvedValue({
+      leadId: "lead-1",
+      treatmentId: "treatment-1",
+      status: "created",
+      commercialStatus: "won",
+      isDisqualified: true,
+      commentCount: 3,
+      reminderAt: null,
+      dueAt: null,
+      lastUpdatedAt: "2026-08-29T15:00:00.000Z",
+    });
+
+    const result = await submitLeadTreatmentAction(
+      initialTreatmentActionState,
+      formData({
+        leadId: "lead-1",
+        comment: "Seguro contratado e escopo confirmado.",
+        commercialStatus: "won",
+        isDisqualified: "on",
+        idempotencyKey: "key-2",
+      }),
+    );
+
+    expect(submitLeadTreatment).toHaveBeenCalledWith(
+      "lead-1",
+      {
+        comment: "Seguro contratado e escopo confirmado.",
+        commercialStatus: "won",
+        isDisqualified: true,
+        idempotencyKey: "key-2",
+      },
+      "sessao-segura",
+    );
+    expect(revalidatePath).toHaveBeenCalledWith("/dashboard");
+    expect(result).toMatchObject({ status: "success", submission: { commentCount: 3 } });
+  });
+});
+````
+
+## Snapshot de código: `apps/web/src/lib/operations/treatment-actions.ts`
+
+````typescript
+"use server";
+
+import { randomUUID } from "node:crypto";
+import { revalidatePath } from "next/cache";
+
+import { ApiRequestError, getLeadTreatments, submitLeadTreatment } from "../api/client";
+import type { CommercialStatus, Treatment } from "../api/types";
+import { getSessionContext } from "../auth/session";
+import type { TreatmentActionState } from "./treatment-state";
+
+export type { TreatmentActionState } from "./treatment-state";
+
+type TreatmentHistoryResult =
+  | { status: "success"; items: Treatment[] }
+  | { status: "error"; message: string; items: Treatment[] };
+
+function commercialStatus(value: FormDataEntryValue | null): CommercialStatus | null {
+  return value === "undefined" || value === "negotiation" || value === "won" ? value : null;
+}
+
+function actionError(error: unknown): string {
+  if (error instanceof ApiRequestError) return error.message;
+  return "Não foi possível concluir a tratativa. Tente novamente.";
+}
+
+export async function submitLeadTreatmentAction(
+  _previous: TreatmentActionState,
+  formData: FormData,
+): Promise<TreatmentActionState> {
+  const leadId = String(formData.get("leadId") ?? "").trim();
+  const comment = String(formData.get("comment") ?? "").trim();
+  const status = commercialStatus(formData.get("commercialStatus"));
+  const isDisqualified = formData.get("isDisqualified") === "on";
+
+  if (!leadId || !status || comment.length < 6) {
+    return {
+      status: "error",
+      message: "Escreva um comentário com ao menos 6 caracteres.",
+      submission: null,
+    };
+  }
+
+  const session = await getSessionContext();
+  if (session.status !== "authenticated") {
+    return { status: "error", message: "Sessão expirada. Entre novamente.", submission: null };
+  }
+
+  try {
+    const submission = await submitLeadTreatment(
+      leadId,
+      {
+        comment,
+        commercialStatus: status,
+        isDisqualified,
+        idempotencyKey: String(formData.get("idempotencyKey") ?? "").trim() || randomUUID(),
+      },
+      session.sessionToken,
+    );
+    revalidatePath("/dashboard");
+    revalidatePath("/historico");
+    return { status: "success", message: "Tratativa registrada.", submission };
+  } catch (error) {
+    return { status: "error", message: actionError(error), submission: null };
+  }
+}
+
+export async function loadLeadTreatmentHistoryAction(
+  leadId: string,
+): Promise<TreatmentHistoryResult> {
+  const session = await getSessionContext();
+  if (session.status !== "authenticated") {
+    return { status: "error", message: "Sessão expirada. Entre novamente.", items: [] };
+  }
+
+  try {
+    const history = await getLeadTreatments(leadId, session.sessionToken);
+    return { status: "success", items: history.items };
+  } catch (error) {
+    return { status: "error", message: actionError(error), items: [] };
+  }
+}
+````
+
+## Snapshot de código: `apps/web/src/lib/operations/treatment-state.ts`
+
+````typescript
+import type { TreatmentSubmission } from "../api/types";
+
+export type TreatmentActionState =
+  | { status: "idle"; message: null; submission: null }
+  | { status: "error"; message: string; submission: null }
+  | { status: "success"; message: string; submission: TreatmentSubmission };
+
+export const initialTreatmentActionState: TreatmentActionState = {
+  status: "idle",
+  message: null,
+  submission: null,
+};
+````
+
+## Snapshot de código: `apps/web/src/lib/users/actions.ts`
+
+````typescript
+"use server";
+
+import { revalidatePath } from "next/cache";
+
+import {
+  ApiRequestError,
+  createManagedUser,
+  resetManagedUserPassword,
+  setManagedUserAvailability,
+} from "../api/client";
+import type { CreateManagedUserInput, ManagedUser } from "../api/types";
+import { getSessionContext } from "../auth/session";
+
+export type UserMutationResult =
+  | { status: "success"; message: string; user: ManagedUser }
+  | { status: "error"; message: string; user: null };
+
+function actionError(error: unknown): string {
+  if (error instanceof ApiRequestError) return error.message;
+  return "Não foi possível concluir a ação. Tente novamente.";
+}
+
+async function sessionToken(): Promise<string | null> {
+  const session = await getSessionContext();
+  return session.status === "authenticated" && session.profile.role === "admin" ? session.sessionToken : null;
+}
+
+function refreshUsers(): void {
+  revalidatePath("/usuarios");
+  revalidatePath("/dashboard");
+  revalidatePath("/fila");
+}
+
+export async function createManagedUserAction(input: CreateManagedUserInput): Promise<UserMutationResult> {
+  if (!input.fullName.trim() || !input.email.trim() || !input.password.trim()) {
+    return { status: "error", message: "Preencha nome, e-mail e senha para criar o usuário.", user: null };
+  }
+  const token = await sessionToken();
+  if (!token) return { status: "error", message: "Sessão expirada. Entre novamente.", user: null };
+  try {
+    const user = await createManagedUser({ ...input, fullName: input.fullName.trim(), email: input.email.trim() }, token);
+    refreshUsers();
+    return { status: "success", message: "Usuário criado.", user };
+  } catch (error) {
+    return { status: "error", message: actionError(error), user: null };
+  }
+}
+
+export async function setManagedUserAvailabilityAction(userId: string, paused: boolean): Promise<UserMutationResult> {
+  const token = await sessionToken();
+  if (!token) return { status: "error", message: "Sessão expirada. Entre novamente.", user: null };
+  try {
+    const user = await setManagedUserAvailability(userId, paused, token);
+    refreshUsers();
+    return { status: "success", message: paused ? "Vendedor pausado." : "Vendedor ativado.", user };
+  } catch (error) {
+    return { status: "error", message: actionError(error), user: null };
+  }
+}
+
+export async function resetManagedUserPasswordAction(userId: string, password: string): Promise<UserMutationResult> {
+  if (!password.trim()) return { status: "error", message: "Informe uma nova senha.", user: null };
+  const token = await sessionToken();
+  if (!token) return { status: "error", message: "Sessão expirada. Entre novamente.", user: null };
+  try {
+    const user = await resetManagedUserPassword(userId, password, token);
+    refreshUsers();
+    return { status: "success", message: "Senha redefinida.", user };
+  } catch (error) {
+    return { status: "error", message: actionError(error), user: null };
+  }
 }
 ````
