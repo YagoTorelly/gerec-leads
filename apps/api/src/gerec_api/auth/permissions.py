@@ -326,6 +326,8 @@ def _identity_values(value: Any) -> list[Any]:
     values: list[Any] = [value]
     if isinstance(value, str) and ObjectId.is_valid(value):
         values.append(ObjectId(value))
+    elif isinstance(value, ObjectId):
+        values.append(str(value))
     return values
 
 

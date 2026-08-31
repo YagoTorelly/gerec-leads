@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pytest
+from bson import ObjectId
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -245,6 +246,37 @@ def test_lead_projection_recovers_phone_from_legacy_nested_source_record() -> No
     lead = next(item for item in payload["leads"]["items"] if item["id"] == "lead-a")
 
     assert lead["phoneDisplay"] == "11998765432"
+
+
+def test_source_record_phone_lookup_supports_objectid_and_string_links() -> None:
+    database = _database()
+    database["leads"].documents[0]["phoneNormalized"] = None
+    database["leads"].documents[0]["_id"] = ObjectId("66a000000000000000000001")
+    database["source_records"] = Collection(
+        [
+            {
+                "lead_id": "66a000000000000000000001",
+                "payload": {"phone_number": "11987654321"},
+            }
+        ]
+    )
+
+    payload = DashboardService(database).for_user(_admin())
+    lead = next(item for item in payload["leads"]["items"] if item["id"] == "66a000000000000000000001")
+    assert lead["phoneDisplay"] == "11987654321"
+
+    database["leads"].documents[0]["_id"] = "66a000000000000000000001"
+    database["source_records"] = Collection(
+        [
+            {
+                "lead_id": ObjectId("66a000000000000000000001"),
+                "payload": {"phone_number": "5511987654321"},
+            }
+        ]
+    )
+    payload = DashboardService(database).for_user(_admin())
+    lead = next(item for item in payload["leads"]["items"] if item["id"] == "66a000000000000000000001")
+    assert lead["phoneDisplay"] == "11987654321"
 
 
 def test_seller_projection_never_exposes_colleagues_or_global_queue_totals() -> None:
