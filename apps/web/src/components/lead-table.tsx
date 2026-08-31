@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import type { OperationalLead, TreatmentSubmission, UserRole } from "../lib/api/types";
 import {
@@ -56,6 +56,10 @@ function statusClass(status: OperationalLead["commercialStatus"]): string {
 
 export function LeadTable({ leads, role }: LeadTableProps) {
   const [leadOverrides, setLeadOverrides] = useState<Record<string, OperationalLead>>({});
+  // Do not read the wall clock during SSR and hydration: the same lead can
+  // otherwise receive different SLA classes across those two renders.
+  const [hydratedAt, setHydratedAt] = useState<Date | null>(null);
+  useEffect(() => setHydratedAt(new Date()), []);
   const onSubmitted = useCallback(
     (submission: TreatmentSubmission) => {
       setLeadOverrides((current) => {
@@ -100,7 +104,7 @@ export function LeadTable({ leads, role }: LeadTableProps) {
           <tbody>
             {leads.map((lead) => {
               const currentLead = leadOverrides[lead.id] ?? lead;
-              const sla = getSlaState(currentLead.feedbackDueAt);
+              const sla = hydratedAt ? getSlaState(currentLead.feedbackDueAt, hydratedAt) : "none";
               return (
                 <tr key={lead.id}>
                   <td>
