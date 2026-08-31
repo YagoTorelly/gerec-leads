@@ -338,6 +338,9 @@ _PHONE_CONTAINERS = (
     "projection",
     "source_projection",
     "source_payload",
+    "row",
+    "data",
+    "fields",
 )
 _SOURCE_LINK_FIELDS = ("leadId", "lead_id", "sourceLeadId", "source_lead_id")
 
