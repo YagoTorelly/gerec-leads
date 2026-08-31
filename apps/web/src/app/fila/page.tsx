@@ -4,6 +4,7 @@ import { AppShell } from "../../components/app-shell";
 import { LeadTable } from "../../components/lead-table";
 import { Pagination } from "../../components/pagination";
 import { QueueTable } from "../../components/queue-table";
+import { SellerQueueTable } from "../../components/seller-queue-table";
 import { getSessionContext } from "../../lib/auth/session";
 import { getDashboardData, isAdminDashboard, pageNumber } from "../../lib/dashboard/queries";
 
@@ -17,11 +18,21 @@ export default async function QueuePage({
   const params = await searchParams;
   const session = await getSessionContext();
   if (session.status !== "authenticated") redirect("/login");
-  if (session.profile.role !== "admin") redirect("/dashboard");
-
   const page = pageNumber(params.page ?? "1");
   const data = await getDashboardData(session.sessionToken, page);
-  if (!isAdminDashboard(data)) redirect("/dashboard");
+  if (!isAdminDashboard(data)) {
+    return (
+      <AppShell
+        profile={session.profile}
+        activePath="/fila"
+        eyebrow="Minha distribuição"
+        heading="Minha fila"
+      >
+        <SellerQueueTable queue={data.queue} leads={data.leads.items} />
+        <Pagination href="/fila" page={data.leads} searchParams={params} />
+      </AppShell>
+    );
+  }
 
   return (
     <AppShell

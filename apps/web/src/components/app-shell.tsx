@@ -22,30 +22,69 @@ export function AppShell({
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">
-          <span className="brand-logo"><Image src="/logo-wtg.png" alt="WTG Corretora de Seguros e Benefícios" width={343} height={343} priority /></span>
+          <span className="brand-logo">
+            <Image
+              src="/logo-wtg.png"
+              alt="WTG Corretora de Seguros e Benefícios"
+              width={343}
+              height={343}
+              priority
+            />
+          </span>
         </div>
         <nav aria-label="Navegação principal">
           <a className={activePath === "/dashboard" ? "nav-active" : ""} href="/dashboard">
             {isAdmin ? "Visão geral" : "Minha operação"}
           </a>
-          {isAdmin ? <>
-            <a className={activePath === "/fila" ? "nav-active" : ""} href="/fila">Fila de leads</a>
-            <a className={activePath === "/historico" ? "nav-active" : ""} href="/historico">Histórico</a>
-            <a className={activePath === "/usuarios" ? "nav-active" : ""} href="/usuarios">Usuários</a>
-          </> : null}
+          {isAdmin ? (
+            <>
+              <a className={activePath === "/fila" ? "nav-active" : ""} href="/fila">
+                Fila de leads
+              </a>
+              <a className={activePath === "/historico" ? "nav-active" : ""} href="/historico">
+                Histórico
+              </a>
+              <a className={activePath === "/usuarios" ? "nav-active" : ""} href="/usuarios">
+                Usuários
+              </a>
+            </>
+          ) : (
+            <>
+              <a className={activePath === "/fila" ? "nav-active" : ""} href="/fila">
+                Minha fila
+              </a>
+              <a className={activePath === "/historico" ? "nav-active" : ""} href="/historico">
+                Minhas tratativas
+              </a>
+            </>
+          )}
         </nav>
-        <div className="sidebar-foot"><span className="status-dot" />Sistema conectado</div>
+        <div className="sidebar-foot">
+          <span className="status-dot" />
+          Sistema conectado
+        </div>
       </aside>
       <main className="workspace">
         <header className="topbar">
           <div>
-            <p className="eyebrow">{eyebrow ?? (isAdmin ? "Painel administrativo" : "Minha operação")}</p>
+            <p className="eyebrow">
+              {eyebrow ?? (isAdmin ? "Painel administrativo" : "Minha operação")}
+            </p>
             <h1>{heading}</h1>
           </div>
           <div className="user-menu">
-            <span className="avatar" aria-hidden="true">{profile.fullName.slice(0, 1)}</span>
-            <span><strong>{profile.fullName}</strong><small>{isAdmin ? "Administrador" : "Vendedor"}</small></span>
-            <form action={signOutAction}><button className="logout" type="submit">Sair</button></form>
+            <span className="avatar" aria-hidden="true">
+              {profile.fullName.slice(0, 1)}
+            </span>
+            <span>
+              <strong>{profile.fullName}</strong>
+              <small>{isAdmin ? "Administrador" : "Vendedor"}</small>
+            </span>
+            <form action={signOutAction}>
+              <button className="logout" type="submit">
+                Sair
+              </button>
+            </form>
           </div>
         </header>
         {children}

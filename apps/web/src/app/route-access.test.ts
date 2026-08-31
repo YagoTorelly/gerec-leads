@@ -33,23 +33,40 @@ const sellerSession = {
 describe("proteção das rotas operacionais", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    redirect.mockImplementation((target: string) => { throw new Error(`REDIRECT:${target}`); });
+    redirect.mockImplementation((target: string) => {
+      throw new Error(`REDIRECT:${target}`);
+    });
   });
 
-  it("redireciona vendedor que tenta abrir o histórico global por URL", async () => {
+  it("permite ao vendedor abrir suas próprias tratativas por URL", async () => {
     getSessionContext.mockResolvedValue(sellerSession);
+    getDashboardData.mockResolvedValue({
+      user: { id: "seller-1", email: sellerSession.profile.email, role: "seller" },
+      leads: { items: [], page: 1, pageSize: 50, total: 0 },
+      history: { items: [], page: 1, pageSize: 50, total: 0 },
+      queue: { position: 2, availability: "active", skipBalance: 0 },
+    });
 
-    await expect(HistoryPage({ searchParams: Promise.resolve({}) })).rejects.toThrow("REDIRECT:/dashboard");
-    expect(redirect).toHaveBeenCalledWith("/dashboard");
-    expect(getDashboardData).not.toHaveBeenCalled();
+    const markup = renderToStaticMarkup(await HistoryPage({ searchParams: Promise.resolve({}) }));
+    expect(markup).toContain("Minhas tratativas");
+    expect(markup).toContain("Nenhuma tratativa registrada.");
+    expect(redirect).not.toHaveBeenCalled();
   });
 
-  it("redireciona vendedor que tenta abrir a fila global por URL antes da consulta", async () => {
+  it("permite ao vendedor abrir sua fila por URL sem dados globais", async () => {
     getSessionContext.mockResolvedValue(sellerSession);
+    getDashboardData.mockResolvedValue({
+      user: { id: "seller-1", email: sellerSession.profile.email, role: "seller" },
+      leads: { items: [], page: 1, pageSize: 50, total: 0 },
+      history: { items: [], page: 1, pageSize: 50, total: 0 },
+      queue: { position: 3, availability: "active", skipBalance: 0 },
+    });
 
-    await expect(QueuePage({ searchParams: Promise.resolve({}) })).rejects.toThrow("REDIRECT:/dashboard");
-    expect(redirect).toHaveBeenCalledWith("/dashboard");
-    expect(getDashboardData).not.toHaveBeenCalled();
+    const markup = renderToStaticMarkup(await QueuePage({ searchParams: Promise.resolve({}) }));
+    expect(markup).toContain("Minha fila");
+    expect(markup).toContain("Posição 3");
+    expect(markup).not.toContain("Fila comercial");
+    expect(redirect).not.toHaveBeenCalled();
   });
 
   it("renderiza um estado seguro quando a API não disponibiliza o dashboard", async () => {

@@ -13,7 +13,6 @@ export default async function HistoryPage({
 }) {
   const session = await getSessionContext();
   if (session.status !== "authenticated") redirect("/login");
-  if (session.profile.role !== "admin") redirect("/dashboard");
   const params = await searchParams;
   const page = pageNumber(typeof params.page === "string" ? params.page : "1");
   const data = await getDashboardData(session.sessionToken, page);
@@ -21,8 +20,8 @@ export default async function HistoryPage({
     <AppShell
       profile={session.profile}
       activePath="/historico"
-      eyebrow="Histórico auditável"
-      heading="Histórico"
+      eyebrow={session.profile.role === "admin" ? "Histórico auditável" : "Minha atividade"}
+      heading={session.profile.role === "admin" ? "Histórico" : "Minhas tratativas"}
     >
       <TreatmentHistoryTable treatments={data.history.items} />
       <Pagination href="/historico" page={data.history} searchParams={params} />
