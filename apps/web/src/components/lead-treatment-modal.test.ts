@@ -1,6 +1,6 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { applySubmissionToLead, commentCountsAfterSubmission, LeadTable } from "./lead-table";
 import { LeadTreatmentModal, validateTreatmentDraft } from "./lead-treatment-modal";
@@ -106,6 +106,7 @@ describe("tabela de leads e tratativa", () => {
           commentCount: 3,
           reminderAt: null,
           dueAt: null,
+          lastUpdatedAt: "2026-08-29T15:00:00.000Z",
         },
       ),
     ).toEqual({ "outro-lead": 1, "lead-1": 3 });
@@ -122,6 +123,7 @@ describe("tabela de leads e tratativa", () => {
         commentCount: 3,
         reminderAt: null,
         dueAt: null,
+        lastUpdatedAt: "2026-08-29T15:00:00.000Z",
       }),
     ).toMatchObject({
       commercialStatus: "won",
@@ -129,5 +131,31 @@ describe("tabela de leads e tratativa", () => {
       commentCount: 3,
       feedbackDueAt: null,
     });
+  });
+
+  it("exibe a última atualização persistida mesmo quando o relógio do navegador diverge", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2030-01-01T00:00:00.000Z"));
+    try {
+      const updatedLead = applySubmissionToLead(lead, {
+        leadId: "lead-1",
+        treatmentId: "treatment-1",
+        status: "created",
+        commercialStatus: "negotiation",
+        isDisqualified: false,
+        commentCount: 3,
+        reminderAt: null,
+        dueAt: null,
+        lastUpdatedAt: "2026-08-29T15:00:00.000Z",
+      });
+      const markup = renderToStaticMarkup(
+        createElement(LeadTable, { leads: [updatedLead], role: "seller" }),
+      );
+
+      expect(markup).toContain("29/08/2026, 12:00");
+      expect(markup).not.toContain("31/12/2029");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

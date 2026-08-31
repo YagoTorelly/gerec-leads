@@ -503,6 +503,7 @@ class MongoOperationsRepository:
             command.commercial_status,
             effective_disqualification,
             comment_count,
+            lead_after["updatedAt"],
             lead_after.get("feedbackReminderAt"),
             lead_after.get("feedbackDueAt"),
         )

@@ -553,6 +553,7 @@ def test_treatment_route_accepts_only_the_current_seller_and_preserves_replay() 
     assert replay.status_code == 201
     assert replay.json() == first.json()
     assert first.json()["commercialStatus"] == "negotiation"
+    assert datetime.fromisoformat(first.json()["lastUpdatedAt"]) == NOW
     assert replay_by_other_seller.status_code == 403
     assert replay_by_other_seller.json() == {"detail": "Forbidden"}
     assert "treatmentId" not in replay_by_other_seller.json()

@@ -110,6 +110,7 @@ export type TreatmentSubmission = {
   commercialStatus: CommercialStatus;
   isDisqualified: boolean;
   commentCount: number;
+  lastUpdatedAt: string;
   reminderAt: string | null;
   dueAt: string | null;
 };

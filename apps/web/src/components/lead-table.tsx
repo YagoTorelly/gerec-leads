@@ -32,7 +32,7 @@ export function applySubmissionToLead(
     isDisqualified: submission.isDisqualified,
     commentCount: submission.commentCount,
     feedbackDueAt: submission.dueAt,
-    lastUpdatedAt: new Date().toISOString(),
+    lastUpdatedAt: submission.lastUpdatedAt,
   };
 }
 
@@ -114,7 +114,9 @@ export function LeadTable({ leads, role }: LeadTableProps) {
                   <td>{formatSlaDeadline(currentLead.assignedAt)}</td>
                   <td>{formatSlaDeadline(currentLead.lastUpdatedAt)}</td>
                   <td>
-                    <span className={`sla ${sla}`}>{formatSlaDeadline(currentLead.feedbackDueAt)}</span>
+                    <span className={`sla ${sla}`}>
+                      {formatSlaDeadline(currentLead.feedbackDueAt)}
+                    </span>
                   </td>
                   <td>{formatCommentCount(currentLead.commentCount)}</td>
                   <td>

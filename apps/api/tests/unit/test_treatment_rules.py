@@ -50,6 +50,7 @@ class RecordingPersistence:
             commercial_status=command.commercial_status,
             is_disqualified=command.is_disqualified,
             comment_count=1,
+            last_updated_at=now,
             reminder_at=reminder_at,
             due_at=due_at,
         )

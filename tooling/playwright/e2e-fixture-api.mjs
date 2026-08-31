@@ -6,12 +6,54 @@ const QUEUE_CURSOR_SELLER_ID = "seller-jessica";
 
 function fixtureState() {
   const users = [
-    { id: "admin-yago", fullName: "Yago", email: "yago.e2e@wtg.test", role: "admin", active: true, paused: null },
-    { id: "admin-andre", fullName: "André", email: "andre.e2e@wtg.test", role: "admin", active: true, paused: null },
-    { id: "seller-renato", fullName: "Renato", email: "renato.e2e@wtg.test", role: "seller", active: true, paused: false },
-    { id: "seller-sandra", fullName: "Sandra", email: "sandra.e2e@wtg.test", role: "seller", active: true, paused: false },
-    { id: "seller-jessica", fullName: "Jessica", email: "jessica.e2e@wtg.test", role: "seller", active: true, paused: false },
-    { id: "seller-nelma", fullName: "Nelma", email: "nelma.e2e@wtg.test", role: "seller", active: true, paused: false },
+    {
+      id: "admin-yago",
+      fullName: "Yago",
+      email: "yago.e2e@wtg.test",
+      role: "admin",
+      active: true,
+      paused: null,
+    },
+    {
+      id: "admin-andre",
+      fullName: "André",
+      email: "andre.e2e@wtg.test",
+      role: "admin",
+      active: true,
+      paused: null,
+    },
+    {
+      id: "seller-renato",
+      fullName: "Renato",
+      email: "renato.e2e@wtg.test",
+      role: "seller",
+      active: true,
+      paused: false,
+    },
+    {
+      id: "seller-sandra",
+      fullName: "Sandra",
+      email: "sandra.e2e@wtg.test",
+      role: "seller",
+      active: true,
+      paused: false,
+    },
+    {
+      id: "seller-jessica",
+      fullName: "Jessica",
+      email: "jessica.e2e@wtg.test",
+      role: "seller",
+      active: true,
+      paused: false,
+    },
+    {
+      id: "seller-nelma",
+      fullName: "Nelma",
+      email: "nelma.e2e@wtg.test",
+      role: "seller",
+      active: true,
+      paused: false,
+    },
   ];
   const leads = [
     ["lead-renato-1", "Débora Souza", "seller-renato"],
@@ -327,6 +369,7 @@ export function createE2eFixtureServer() {
           commercialStatus: lead.commercialStatus,
           isDisqualified: lead.isDisqualified,
           commentCount: lead.commentCount,
+          lastUpdatedAt: lead.lastUpdatedAt,
           reminderAt: lead.isDisqualified ? null : "2026-08-29T14:00:00.000Z",
           dueAt: lead.feedbackDueAt,
         });

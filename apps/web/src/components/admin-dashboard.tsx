@@ -23,7 +23,9 @@ function QueueCard({ item, currentPosition }: { item: QueueEntry; currentPositio
         <span className={`status-badge status-badge--${item.availability}`}>{label}</span>
       </div>
       <strong>{item.sellerName}</strong>
-      <small>Ordem base {item.position}. {item.reason ?? "Disponível para novas atribuições"}</small>
+      <small>
+        Ordem base {item.position}. {item.reason ?? "Disponível para novas atribuições"}
+      </small>
     </li>
   );
 }

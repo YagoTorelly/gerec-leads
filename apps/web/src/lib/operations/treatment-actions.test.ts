@@ -77,6 +77,7 @@ describe("ação de tratativa", () => {
       commentCount: 3,
       reminderAt: null,
       dueAt: null,
+      lastUpdatedAt: "2026-08-29T15:00:00.000Z",
     });
 
     const result = await submitLeadTreatmentAction(

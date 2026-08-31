@@ -66,7 +66,9 @@ describe("acessibilidade e interação do modal de tratativa", () => {
     await user.click(screen.getByRole("button", { name: "Registrar tratativa" }));
     await user.type(screen.getByLabelText("Comentário"), "curto");
 
-    expect((screen.getByRole("button", { name: "Salvar tratativa" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(
+      (screen.getByRole("button", { name: "Salvar tratativa" }) as HTMLButtonElement).disabled,
+    ).toBe(true);
     expect(actions.submit).not.toHaveBeenCalled();
   });
 
@@ -91,9 +93,12 @@ describe("acessibilidade e interação do modal de tratativa", () => {
 
   it("mostra carregamento e depois renderiza o histórico devolvido pela API", async () => {
     let resolveHistory: ((value: { status: "success"; items: Treatment[] }) => void) | undefined;
-    actions.loadHistory.mockImplementation(() => new Promise<{ status: "success"; items: Treatment[] }>((resolve) => {
-      resolveHistory = resolve;
-    }));
+    actions.loadHistory.mockImplementation(
+      () =>
+        new Promise<{ status: "success"; items: Treatment[] }>((resolve) => {
+          resolveHistory = resolve;
+        }),
+    );
     const user = userEvent.setup();
     render(<LeadTreatmentModal lead={lead} mode="read" />);
 
@@ -101,14 +106,16 @@ describe("acessibilidade e interação do modal de tratativa", () => {
     expect(screen.getByText("Carregando histórico…")).toBeTruthy();
     resolveHistory?.({
       status: "success",
-      items: [{
-        leadName: "Débora Souza",
-        sellerName: "Jessica",
-        comment: "Histórico carregado da API.",
-        commercialStatus: "negotiation",
-        isDisqualified: false,
-        createdAt: "2026-08-29T12:00:00.000Z",
-      }] as Treatment[],
+      items: [
+        {
+          leadName: "Débora Souza",
+          sellerName: "Jessica",
+          comment: "Histórico carregado da API.",
+          commercialStatus: "negotiation",
+          isDisqualified: false,
+          createdAt: "2026-08-29T12:00:00.000Z",
+        },
+      ] as Treatment[],
     });
 
     expect(await screen.findByText("Histórico carregado da API.")).toBeTruthy();
@@ -116,32 +123,39 @@ describe("acessibilidade e interação do modal de tratativa", () => {
 
   it("exibe carregamento, atualiza contador/histórico e confirma após sucesso", async () => {
     let resolveSubmission: ((value: unknown) => void) | undefined;
-    actions.submit.mockImplementation(() => new Promise((resolve) => {
-      resolveSubmission = resolve;
-    }));
+    actions.submit.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveSubmission = resolve;
+        }),
+    );
     actions.loadHistory
       .mockResolvedValueOnce({ status: "success", items: [] })
       .mockResolvedValueOnce({
         status: "success",
-        items: [{
-          leadName: "Débora Souza",
-          sellerName: "Jessica",
-          comment: "Contato registrado com sucesso.",
-          commercialStatus: "negotiation",
-          isDisqualified: false,
-          createdAt: "2026-08-29T12:00:00.000Z",
-        }] as Treatment[],
+        items: [
+          {
+            leadName: "Débora Souza",
+            sellerName: "Jessica",
+            comment: "Contato registrado com sucesso.",
+            commercialStatus: "negotiation",
+            isDisqualified: false,
+            createdAt: "2026-08-29T12:00:00.000Z",
+          },
+        ] as Treatment[],
       })
       .mockResolvedValue({
         status: "success",
-        items: [{
-          leadName: "Débora Souza",
-          sellerName: "Jessica",
-          comment: "Contato registrado com sucesso.",
-          commercialStatus: "negotiation",
-          isDisqualified: false,
-          createdAt: "2026-08-29T12:00:00.000Z",
-        }] as Treatment[],
+        items: [
+          {
+            leadName: "Débora Souza",
+            sellerName: "Jessica",
+            comment: "Contato registrado com sucesso.",
+            commercialStatus: "negotiation",
+            isDisqualified: false,
+            createdAt: "2026-08-29T12:00:00.000Z",
+          },
+        ] as Treatment[],
       });
     const user = userEvent.setup();
     render(<LeadTable leads={[lead]} role="seller" />);
@@ -163,6 +177,7 @@ describe("acessibilidade e interação do modal de tratativa", () => {
         commentCount: 3,
         reminderAt: null,
         dueAt: null,
+        lastUpdatedAt: "2026-08-29T15:00:00.000Z",
       },
     });
 
@@ -171,7 +186,9 @@ describe("acessibilidade e interação do modal de tratativa", () => {
     expect(screen.getByText("3 comentários")).toBeTruthy();
     expect(screen.getByText("Negociação")).toBeTruthy();
     await waitFor(() => expect(actions.loadHistory).toHaveBeenCalledTimes(2));
-    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Registrar tratativa" }));
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "Registrar tratativa" }),
+    );
 
     await user.click(screen.getByRole("button", { name: "Registrar tratativa" }));
     expect(await screen.findByText("Contato registrado com sucesso.")).toBeTruthy();
@@ -207,26 +224,34 @@ describe("acessibilidade e interação do modal de tratativa", () => {
         commentCount: 3,
         reminderAt: null,
         dueAt: null,
+        lastUpdatedAt: "2026-08-29T15:00:00.000Z",
       },
     });
     actions.loadHistory
       .mockResolvedValueOnce({ status: "success", items: [] })
       .mockResolvedValueOnce({
         status: "success",
-        items: [{
-          leadName: "Débora Souza",
-          sellerName: "Jessica",
-          comment: "Fora do escopo, mas com fechamento excepcional.",
-          commercialStatus: "won",
-          isDisqualified: true,
-          createdAt: "2026-08-29T13:00:00.000Z",
-        }] as Treatment[],
+        items: [
+          {
+            leadName: "Débora Souza",
+            sellerName: "Jessica",
+            comment: "Fora do escopo, mas com fechamento excepcional.",
+            commercialStatus: "won",
+            isDisqualified: true,
+            createdAt: "2026-08-29T13:00:00.000Z",
+          },
+        ] as Treatment[],
       });
     const user = userEvent.setup();
-    render(<LeadTable leads={[{ ...lead, feedbackDueAt: "2026-08-29T16:03:04.876Z" }]} role="seller" />);
+    render(
+      <LeadTable leads={[{ ...lead, feedbackDueAt: "2026-08-29T16:03:04.876Z" }]} role="seller" />,
+    );
 
     await user.click(screen.getByRole("button", { name: "Registrar tratativa" }));
-    await user.type(screen.getByLabelText("Comentário"), "Fora do escopo, mas com fechamento excepcional.");
+    await user.type(
+      screen.getByLabelText("Comentário"),
+      "Fora do escopo, mas com fechamento excepcional.",
+    );
     await user.click(screen.getByLabelText("Marcar como Desqualificado"));
     await user.click(screen.getByRole("button", { name: "Salvar tratativa" }));
 

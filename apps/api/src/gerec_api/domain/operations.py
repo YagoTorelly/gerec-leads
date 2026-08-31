@@ -156,6 +156,7 @@ class TreatmentResult:
     commercial_status: CommercialStatus
     is_disqualified: bool
     comment_count: int
+    last_updated_at: datetime
     reminder_at: datetime | None
     due_at: datetime | None
 
@@ -167,6 +168,7 @@ class TreatmentResult:
             "commercialStatus": self.commercial_status,
             "isDisqualified": self.is_disqualified,
             "commentCount": self.comment_count,
+            "lastUpdatedAt": self.last_updated_at,
             "reminderAt": self.reminder_at,
             "dueAt": self.due_at,
         }
@@ -180,6 +182,7 @@ class TreatmentResult:
             commercial_status=str(value["commercialStatus"]),  # type: ignore[arg-type]
             is_disqualified=bool(value["isDisqualified"]),
             comment_count=int(value["commentCount"]),
+            last_updated_at=value["lastUpdatedAt"],
             reminder_at=value.get("reminderAt"),
             due_at=value.get("dueAt"),
         )
