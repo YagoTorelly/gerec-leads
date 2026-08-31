@@ -1,4 +1,5 @@
 import Image from "next/image";
+import Link from "next/link";
 
 import { signOutAction } from "../lib/auth/actions";
 import type { SessionProfile } from "../lib/auth/session";
@@ -33,29 +34,29 @@ export function AppShell({
           </span>
         </div>
         <nav aria-label="Navegação principal">
-          <a className={activePath === "/dashboard" ? "nav-active" : ""} href="/dashboard">
+          <Link prefetch className={activePath === "/dashboard" ? "nav-active" : ""} href="/dashboard">
             {isAdmin ? "Visão geral" : "Minha operação"}
-          </a>
+          </Link>
           {isAdmin ? (
             <>
-              <a className={activePath === "/fila" ? "nav-active" : ""} href="/fila">
+              <Link prefetch className={activePath === "/fila" ? "nav-active" : ""} href="/fila">
                 Fila de leads
-              </a>
-              <a className={activePath === "/historico" ? "nav-active" : ""} href="/historico">
+              </Link>
+              <Link prefetch className={activePath === "/historico" ? "nav-active" : ""} href="/historico">
                 Histórico
-              </a>
-              <a className={activePath === "/usuarios" ? "nav-active" : ""} href="/usuarios">
+              </Link>
+              <Link prefetch className={activePath === "/usuarios" ? "nav-active" : ""} href="/usuarios">
                 Usuários
-              </a>
+              </Link>
             </>
           ) : (
             <>
-              <a className={activePath === "/fila" ? "nav-active" : ""} href="/fila">
+              <Link prefetch className={activePath === "/fila" ? "nav-active" : ""} href="/fila">
                 Minha fila
-              </a>
-              <a className={activePath === "/historico" ? "nav-active" : ""} href="/historico">
+              </Link>
+              <Link prefetch className={activePath === "/historico" ? "nav-active" : ""} href="/historico">
                 Minhas tratativas
-              </a>
+              </Link>
             </>
           )}
         </nav>
