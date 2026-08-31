@@ -69,7 +69,10 @@ function TreatmentForm({
     submitLeadTreatmentAction,
     initialTreatmentActionState,
   );
-  const [idempotencyKey] = useState(newIdempotencyKey);
+  // Do not generate a random value during render: this component is server
+  // rendered and the browser would generate a different key during hydration.
+  const [idempotencyKey, setIdempotencyKey] = useState("");
+  useEffect(() => setIdempotencyKey(newIdempotencyKey()), []);
   const [comment, setComment] = useState("");
   const draftIsValid = validateTreatmentDraft({
     comment,

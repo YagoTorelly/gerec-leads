@@ -151,6 +151,20 @@ describe("dashboards por papel", () => {
     expect(markup).not.toContain("Próximo vendedor");
   });
 
+  it("trata uma posição ausente na resposta da API sem renderizar undefined", () => {
+    const markup = renderToStaticMarkup(
+      createElement(SellerDashboard, {
+        dashboard: {
+          ...sellerDashboard,
+          queue: { ...sellerDashboard.queue, position: undefined },
+        } as unknown as typeof sellerDashboard,
+      }),
+    );
+
+    expect(markup).toContain("Não informado");
+    expect(markup).not.toContain("Posição undefined");
+  });
+
   it("limita a navegação do vendedor à própria operação", () => {
     const markup = renderToStaticMarkup(
       AppShell({

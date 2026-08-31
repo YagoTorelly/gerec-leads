@@ -42,6 +42,10 @@ function TreatmentPreview({ item }: { item: Treatment }) {
 
 export function SellerDashboard({ dashboard }: { dashboard: SellerDashboardData }) {
   const nextDeadline = dashboard.leads.items[0]?.feedbackDueAt ?? null;
+  const queuePosition =
+    typeof dashboard.queue.position === "number" && Number.isFinite(dashboard.queue.position)
+      ? dashboard.queue.position
+      : null;
 
   return (
     <>
@@ -61,9 +65,9 @@ export function SellerDashboard({ dashboard }: { dashboard: SellerDashboardData 
         <article className="metric-card metric-card--next">
           <span>Minha posição na fila</span>
           <strong className="metric-card__text">
-            {dashboard.queue.position === null
+            {queuePosition === null
               ? "Não informado"
-              : `Posição ${dashboard.queue.position}`}
+              : `Posição ${queuePosition}`}
           </strong>
         </article>
       </section>

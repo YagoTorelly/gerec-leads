@@ -72,6 +72,17 @@ describe("acessibilidade e interação do modal de tratativa", () => {
     expect(actions.submit).not.toHaveBeenCalled();
   });
 
+  it("gera a chave de idempotência depois da hidratação, sem aleatoriedade no HTML inicial", async () => {
+    const user = userEvent.setup();
+    render(<LeadTreatmentModal lead={lead} mode="write" />);
+
+    await user.click(screen.getByRole("button", { name: "Registrar tratativa" }));
+    await waitFor(() => {
+      const input = document.querySelector('input[name="idempotencyKey"]') as HTMLInputElement;
+      expect(input?.value).toBeTruthy();
+    });
+  });
+
   it("mantém Tab e Shift+Tab dentro do formulário com múltiplos controles", async () => {
     const user = userEvent.setup();
     render(<LeadTreatmentModal lead={lead} mode="write" />);
