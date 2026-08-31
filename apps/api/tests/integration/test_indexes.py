@@ -114,7 +114,12 @@ def test_index_contract_covers_each_persisted_identity_and_active_lifecycle() ->
     assert all(
         definition.unique
         for definition in INDEXES
-        if definition.name != "lead_treatments_lead_created_at"
+        if definition.name
+        not in {
+            "lead_treatments_lead_created_at",
+            "leads_assignee_created_at",
+            "lead_treatments_seller_created_at",
+        }
     )
 
 

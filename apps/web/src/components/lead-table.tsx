@@ -59,7 +59,12 @@ export function LeadTable({ leads, role }: LeadTableProps) {
   // Do not read the wall clock during SSR and hydration: the same lead can
   // otherwise receive different SLA classes across those two renders.
   const [hydratedAt, setHydratedAt] = useState<Date | null>(null);
-  useEffect(() => setHydratedAt(new Date()), []);
+  useEffect(() => {
+    // Defer the clock read until after the initial paint so SSR and hydration
+    // produce identical markup without triggering a synchronous effect update.
+    const timer = window.setTimeout(() => setHydratedAt(new Date()), 0);
+    return () => window.clearTimeout(timer);
+  }, []);
   const onSubmitted = useCallback(
     (submission: TreatmentSubmission) => {
       setLeadOverrides((current) => {

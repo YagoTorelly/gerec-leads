@@ -34,27 +34,51 @@ export function AppShell({
           </span>
         </div>
         <nav aria-label="Navegação principal">
-          <Link prefetch className={activePath === "/dashboard" ? "nav-active" : ""} href="/dashboard">
+          <Link
+            prefetch={false}
+            className={activePath === "/dashboard" ? "nav-active" : ""}
+            href="/dashboard"
+          >
             {isAdmin ? "Visão geral" : "Minha operação"}
           </Link>
           {isAdmin ? (
             <>
-              <Link prefetch className={activePath === "/fila" ? "nav-active" : ""} href="/fila">
+              <Link
+                prefetch={false}
+                className={activePath === "/fila" ? "nav-active" : ""}
+                href="/fila"
+              >
                 Fila de leads
               </Link>
-              <Link prefetch className={activePath === "/historico" ? "nav-active" : ""} href="/historico">
+              <Link
+                prefetch={false}
+                className={activePath === "/historico" ? "nav-active" : ""}
+                href="/historico"
+              >
                 Histórico
               </Link>
-              <Link prefetch className={activePath === "/usuarios" ? "nav-active" : ""} href="/usuarios">
+              <Link
+                prefetch={false}
+                className={activePath === "/usuarios" ? "nav-active" : ""}
+                href="/usuarios"
+              >
                 Usuários
               </Link>
             </>
           ) : (
             <>
-              <Link prefetch className={activePath === "/fila" ? "nav-active" : ""} href="/fila">
+              <Link
+                prefetch={false}
+                className={activePath === "/fila" ? "nav-active" : ""}
+                href="/fila"
+              >
                 Minha fila
               </Link>
-              <Link prefetch className={activePath === "/historico" ? "nav-active" : ""} href="/historico">
+              <Link
+                prefetch={false}
+                className={activePath === "/historico" ? "nav-active" : ""}
+                href="/historico"
+              >
                 Minhas tratativas
               </Link>
             </>

@@ -61,6 +61,16 @@ class Database(dict[str, Collection]):
         return super().setdefault(name, Collection())
 
 
+class CountingCollection(Collection):
+    def __init__(self, documents: list[dict[str, Any]] | None = None) -> None:
+        super().__init__(documents)
+        self.find_one_calls = 0
+
+    def find_one(self, query: dict[str, Any], **kwargs: Any) -> dict[str, Any] | None:
+        self.find_one_calls += 1
+        return super().find_one(query, **kwargs)
+
+
 def _matches(document: dict[str, Any], query: dict[str, Any]) -> bool:
     for field, expected in query.items():
         value = document.get(field)
@@ -194,6 +204,19 @@ def test_admin_lead_projection_is_human_readable_and_omits_internal_foreign_keys
         "lastUpdatedAt": "2026-08-28T12:00:00+00:00",
     }
     assert {"assigneeId", "companyId", "campaignId", "phoneNormalized"}.isdisjoint(lead)
+
+
+def test_dashboard_batches_lead_reference_reads_instead_of_one_query_per_lead() -> None:
+    database = _database()
+    database["users"] = CountingCollection(database["users"].documents)
+    database["companies"] = CountingCollection(database["companies"].documents)
+    database["campaigns"] = CountingCollection(database["campaigns"].documents)
+
+    DashboardService(database).for_user(_admin())
+
+    assert database["companies"].find_one_calls == 0
+    assert database["campaigns"].find_one_calls == 0
+    assert database["users"].find_one_calls <= 8  # queue snapshot/labels only
 
 
 def test_missing_names_and_contact_data_use_the_single_safe_fallback() -> None:

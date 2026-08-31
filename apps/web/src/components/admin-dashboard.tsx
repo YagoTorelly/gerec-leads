@@ -1,3 +1,4 @@
+import Link from "next/link";
 import type { AdminDashboard as AdminDashboardData, QueueEntry, Treatment } from "../lib/api/types";
 import {
   formatCommercialStatus,
@@ -79,9 +80,9 @@ export function AdminDashboard({ dashboard }: { dashboard: AdminDashboardData })
               <p className="eyebrow">Distribuição</p>
               <h2>Fila comercial</h2>
             </div>
-            <a className="text-link" href="/fila">
+            <Link prefetch={false} className="text-link" href="/fila">
               Ver fila completa
-            </a>
+            </Link>
           </header>
           {dashboard.queue.items.length === 0 ? (
             <p className="empty-state">
@@ -108,9 +109,9 @@ export function AdminDashboard({ dashboard }: { dashboard: AdminDashboardData })
               <p className="eyebrow">Atividade</p>
               <h2>Últimas tratativas</h2>
             </div>
-            <a className="text-link" href="/historico">
+            <Link prefetch={false} className="text-link" href="/historico">
               Ver histórico
-            </a>
+            </Link>
           </header>
           {dashboard.history.items.length === 0 ? (
             <p className="empty-state">Nenhuma tratativa registrada.</p>

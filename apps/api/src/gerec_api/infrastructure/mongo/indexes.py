@@ -109,6 +109,11 @@ INDEXES: Final[tuple[MongoIndex, ...]] = (
         partial_filter={"archivedAt": None},
     ),
     MongoIndex(
+        MongoCollections.LEADS,
+        (("assigneeId", ASCENDING), ("createdAt", ASCENDING)),
+        "leads_assignee_created_at",
+    ),
+    MongoIndex(
         MongoCollections.SALES,
         (("leadId", ASCENDING),),
         "sales_active_lead_unique",
@@ -157,6 +162,11 @@ INDEXES: Final[tuple[MongoIndex, ...]] = (
         MongoCollections.LEAD_TREATMENTS,
         (("leadId", ASCENDING), ("createdAt", ASCENDING)),
         "lead_treatments_lead_created_at",
+    ),
+    MongoIndex(
+        MongoCollections.LEAD_TREATMENTS,
+        (("sellerId", ASCENDING), ("createdAt", ASCENDING)),
+        "lead_treatments_seller_created_at",
     ),
     MongoIndex(
         MongoCollections.LEAD_TREATMENTS,

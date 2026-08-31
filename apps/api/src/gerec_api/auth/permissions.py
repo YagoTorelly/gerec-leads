@@ -163,13 +163,51 @@ class DashboardService:
         return _page_number(page), _page_limit(self._page_size if limit is None else limit)
 
     def _lead_page(self, query: Mapping[str, Any], page: int, page_size: int) -> dict[str, Any]:
-        return self._page(
-            MongoCollections.LEADS,
-            query,
-            page,
-            page_size,
-            self._lead_projection,
-        )
+        collection = self._database[MongoCollections.LEADS]
+        cursor = collection.find(dict(query))
+        if hasattr(cursor, "sort"):
+            cursor = cursor.sort("createdAt", -1)
+        if hasattr(cursor, "skip"):
+            cursor = cursor.skip((page - 1) * page_size)
+        if hasattr(cursor, "limit"):
+            cursor = cursor.limit(page_size)
+        leads = list(cursor)
+        references = self._lead_references(leads)
+        items = [self._lead_projection(lead, references=references) for lead in leads]
+        total = collection.count_documents(dict(query)) if hasattr(collection, "count_documents") else len(items)
+        return {"items": items, "page": page, "pageSize": page_size, "total": total}
+
+    def _lead_references(self, leads: list[Mapping[str, Any]]) -> dict[str, dict[str, Mapping[str, Any]]]:
+        """Load all lead enrichment references with one query per collection."""
+        ids_by_collection: dict[str, list[Any]] = {
+            MongoCollections.USERS: [],
+            MongoCollections.COMPANIES: [],
+            MongoCollections.CAMPAIGNS: [],
+        }
+        for lead in leads:
+            for collection_name, field in (
+                (MongoCollections.USERS, "assigneeId"),
+                (MongoCollections.COMPANIES, "companyId"),
+                (MongoCollections.CAMPAIGNS, "campaignId"),
+            ):
+                value = lead.get(field)
+                if value is not None:
+                    ids_by_collection[collection_name].extend(_identity_values(value))
+
+        references: dict[str, dict[str, Mapping[str, Any]]] = {}
+        for collection_name, values in ids_by_collection.items():
+            unique_values = list(dict.fromkeys(values))
+            if not unique_values:
+                references[collection_name] = {}
+                continue
+            collection = self._database[collection_name]
+            documents = collection.find({"_id": {"$in": unique_values}})
+            references[collection_name] = {
+                str(candidate): document
+                for document in documents
+                for candidate in _identity_values(document.get("_id"))
+            }
+        return references
 
     def _treatment_page(
         self,
@@ -179,13 +217,49 @@ class DashboardService:
         *,
         include_lead_name: bool,
     ) -> dict[str, Any]:
-        return self._page(
-            MongoCollections.LEAD_TREATMENTS,
-            query,
-            page,
-            page_size,
-            lambda treatment: self._treatment_projection(treatment, include_lead_name=include_lead_name),
-        )
+        collection = self._database[MongoCollections.LEAD_TREATMENTS]
+        cursor = collection.find(dict(query))
+        if hasattr(cursor, "sort"):
+            cursor = cursor.sort("createdAt", -1)
+        if hasattr(cursor, "skip"):
+            cursor = cursor.skip((page - 1) * page_size)
+        if hasattr(cursor, "limit"):
+            cursor = cursor.limit(page_size)
+        treatments = list(cursor)
+        references = self._treatment_references(treatments)
+        items = [
+            self._treatment_projection(
+                treatment,
+                include_lead_name=include_lead_name,
+                references=references,
+            )
+            for treatment in treatments
+        ]
+        total = collection.count_documents(dict(query)) if hasattr(collection, "count_documents") else len(items)
+        return {"items": items, "page": page, "pageSize": page_size, "total": total}
+
+    def _treatment_references(self, treatments: list[Mapping[str, Any]]) -> dict[str, dict[str, Mapping[str, Any]]]:
+        ids_by_collection: dict[str, list[Any]] = {
+            MongoCollections.USERS: [],
+            MongoCollections.LEADS: [],
+        }
+        for treatment in treatments:
+            ids_by_collection[MongoCollections.USERS].extend(_identity_values(treatment.get("sellerId")))
+            ids_by_collection[MongoCollections.LEADS].extend(_identity_values(treatment.get("leadId")))
+
+        references: dict[str, dict[str, Mapping[str, Any]]] = {}
+        for collection_name, values in ids_by_collection.items():
+            unique_values = list(dict.fromkeys(value for value in values if value is not None))
+            if not unique_values:
+                references[collection_name] = {}
+                continue
+            documents = self._database[collection_name].find({"_id": {"$in": unique_values}})
+            references[collection_name] = {
+                str(candidate): document
+                for document in documents
+                for candidate in _identity_values(document.get("_id"))
+            }
+        return references
 
     def _page(
         self,
@@ -207,10 +281,17 @@ class DashboardService:
         total = collection.count_documents(dict(query)) if hasattr(collection, "count_documents") else len(items)
         return {"items": items, "page": page, "pageSize": page_size, "total": total}
 
-    def _lead_projection(self, lead: Mapping[str, Any]) -> dict[str, Any]:
-        company = self._find_by_id(MongoCollections.COMPANIES, lead.get("companyId"))
-        campaign = self._find_by_id(MongoCollections.CAMPAIGNS, lead.get("campaignId"))
-        seller = self._find_by_id(MongoCollections.USERS, lead.get("assigneeId"))
+    def _lead_projection(
+        self,
+        lead: Mapping[str, Any],
+        *,
+        references: dict[str, dict[str, Mapping[str, Any]]] | None = None,
+    ) -> dict[str, Any]:
+        if references is None:
+            references = self._lead_references([lead])
+        company = references[MongoCollections.COMPANIES].get(str(lead.get("companyId")))
+        campaign = references[MongoCollections.CAMPAIGNS].get(str(lead.get("campaignId")))
+        seller = references[MongoCollections.USERS].get(str(lead.get("assigneeId")))
         return _serialize_read_model(
             {
                 "id": str(lead["_id"]),
@@ -232,10 +313,15 @@ class DashboardService:
         )
 
     def _treatment_projection(
-        self, treatment: Mapping[str, Any], *, include_lead_name: bool
+        self,
+        treatment: Mapping[str, Any],
+        *,
+        include_lead_name: bool,
+        references: dict[str, dict[str, Mapping[str, Any]]] | None = None,
     ) -> dict[str, Any]:
-        seller = self._find_by_id(MongoCollections.USERS, treatment.get("sellerId"))
-        lead = self._find_by_id(MongoCollections.LEADS, treatment.get("leadId"))
+        references = references or self._treatment_references([treatment])
+        seller = references[MongoCollections.USERS].get(str(treatment.get("sellerId")))
+        lead = references[MongoCollections.LEADS].get(str(treatment.get("leadId")))
         result: dict[str, Any] = {
             "leadId": str(treatment.get("leadId")),
             "sellerName": _name_or_fallback(seller),
