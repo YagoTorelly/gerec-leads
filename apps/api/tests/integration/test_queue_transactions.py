@@ -212,8 +212,8 @@ def test_ac01_normal_rotation_is_atomic_and_first_assignment_defines_owner() -> 
         assert company["ownerId"] == lead["assigneeId"]
 
 
-def test_ac02_ac04_blocked_seller_loses_turn_and_one_overdue_lead_is_enough() -> None:
-    """Breaks if overdue eligibility is cached or evaluated incompletely."""
+def test_overdue_seller_remains_active_for_normal_distribution() -> None:
+    """Historical overdue cycles do not remove a seller from FIFO eligibility."""
     database = FakeDatabase()
     renato, sandra, _, _ = _seed_queue(database)
     overdue_lead, _ = _seed_lead(database, entered_offset=-1)
@@ -230,14 +230,14 @@ def test_ac02_ac04_blocked_seller_loses_turn_and_one_overdue_lead_is_enough() ->
     _open_overdue_cycle(database, overdue_lead)
     incoming, _ = _seed_lead(database)
 
-    result = _service(database).distribute_normal(incoming, "blocked-renato")
+    result = _service(database).distribute_normal(incoming, "overdue-renato")
 
-    assert result.seller_id == str(sandra)
-    assert database["queue_state"].documents[0]["nextSellerId"] not in (renato, sandra)
+    assert result.seller_id == str(renato)
+    assert database["queue_state"].documents[0]["nextSellerId"] == sandra
 
 
-def test_snapshot_derives_open_cycle_blocking_and_orders_from_next_eligible_seller() -> None:
-    """Breaks if stale lead fields block a seller or a queue read ignores its real cursor."""
+def test_snapshot_ignores_overdue_cycle_and_orders_from_next_active_seller() -> None:
+    """Open SLA cycles are historical and do not create blocked availability."""
     database = FakeDatabase()
     renato, sandra, jessica, nelma = _seed_queue(database)
     overdue_lead, _ = _seed_lead(database, entered_offset=-1)
@@ -257,17 +257,17 @@ def test_snapshot_derives_open_cycle_blocking_and_orders_from_next_eligible_sell
     snapshot = QueueRepository(database, now=lambda: NOW).snapshot()
 
     assert snapshot.cursor_seller_id == renato
-    assert [entry.seller_id for entry in snapshot.entries] == [jessica, nelma, renato, sandra]
+    assert [entry.seller_id for entry in snapshot.entries] == [sandra, jessica, nelma, renato]
     assert [entry.availability.status for entry in snapshot.entries] == [
         "active",
         "active",
+        "active",
         "paused",
-        "blocked_overdue",
     ]
 
 
-def test_disqualified_open_cycle_does_not_block_and_regularization_keeps_manual_pause() -> None:
-    """Breaks if a disqualified lead can block or regularization silently clears a pause."""
+def test_overdue_and_disqualified_cycles_never_change_manual_availability() -> None:
+    """SLA history cannot change availability; manual pause remains authoritative."""
     database = FakeDatabase()
     renato, *_ = _seed_queue(database)
     overdue_lead, _ = _seed_lead(database, entered_offset=-1)
@@ -292,11 +292,10 @@ def test_disqualified_open_cycle_does_not_block_and_regularization_keeps_manual_
         {"_id": active_overdue_lead},
         {"$set": {"assignmentStatus": "assigned", "assigneeId": renato}},
     )
-    cycle_id = _open_overdue_cycle(database, active_overdue_lead)
-    blocked = QueueRepository(database, now=lambda: NOW).snapshot()
-    assert _availability(blocked, renato).status == "blocked_overdue"
+    _open_overdue_cycle(database, active_overdue_lead)
+    still_active = QueueRepository(database, now=lambda: NOW).snapshot()
+    assert _availability(still_active, renato).status == "active"
 
-    database["feedback_cycles"].update_one({"_id": cycle_id}, {"$set": {"closedAt": NOW}})
     database["feedback_cycles"].update_one(
         {"_id": disqualified_open_cycle}, {"$set": {"closedAt": NOW}}
     )
@@ -340,13 +339,12 @@ def test_pause_preserves_existing_lead_and_consumes_its_natural_turn() -> None:
     assert next_assignment.seller_id == str(sandra)
 
 
-def test_ac05_ac06_all_blocked_parks_and_regularization_releases_ready_fifo() -> None:
-    """Breaks if ready/parked leads are dropped or a newer normal lead jumps the FIFO."""
+def test_overdue_sellers_do_not_park_normal_fifo_leads() -> None:
+    """Normal leads continue through FIFO even when every seller has overdue history."""
     database = FakeDatabase()
     sellers = _seed_queue(database)
     oldest, _ = _seed_lead(database, entered_offset=0)
     newest, _ = _seed_lead(database, entered_offset=1)
-    blocker_cycles = {}
     for seller_id in sellers:
         blocked, _ = _seed_lead(database, entered_offset=-10)
         database["leads"].update_one(
@@ -359,26 +357,14 @@ def test_ac05_ac06_all_blocked_parks_and_regularization_releases_ready_fifo() ->
                 }
             },
         )
-        blocker_cycles[seller_id] = _open_overdue_cycle(database, blocked)
+        _open_overdue_cycle(database, blocked)
     service = _service(database)
 
-    with pytest.raises(QueueStateError, match="FIFO"):
-        service.distribute_normal(newest, "jump-ready-fifo")
-    parked = service.distribute_normal(oldest, "park-oldest")
-    with pytest.raises(QueueStateError, match="FIFO"):
-        service.distribute_normal(newest, "jump-parked-fifo")
+    first = service.distribute_normal(oldest, "fifo-oldest")
+    second = service.distribute_normal(newest, "fifo-newest")
 
-    database["feedback_cycles"].update_one(
-        {"_id": blocker_cycles[sellers[1]]},
-        {"$set": {"closedAt": NOW}},
-    )
-    released_oldest = service.distribute_normal(oldest, "release-oldest")
-    released_newest = service.distribute_normal(newest, "release-newest")
-
-    assert parked.status == "parked"
-    assert parked.seller_id is None
-    assert released_oldest.seller_id == str(sellers[1])
-    assert released_newest.seller_id == str(sellers[1])
+    assert first.seller_id == str(sellers[0])
+    assert second.seller_id == str(sellers[1])
     assignment_leads = [item["leadId"] for item in database["assignments"].documents]
     assert assignment_leads[-2:] == [oldest, newest]
 
@@ -402,8 +388,8 @@ def test_ac07_ac08_recurring_preserves_cursor_and_adds_credit_consumed_later() -
     assert database["companies"].find_one({"_id": company_id})["ownerId"] == renato
 
 
-def test_ac09_ac10_ac11_blocked_owner_waits_and_temporary_assignment_preserves_owner() -> None:
-    """Breaks if recurrence leaks to the rotation or temporary work transfers ownership."""
+def test_paused_owner_waits_and_temporary_assignment_preserves_owner() -> None:
+    """Only manual pause parks recurrence; temporary work preserves ownership."""
     database = FakeDatabase()
     renato, sandra, _, _ = _seed_queue(database)
     recurring, company_id = _seed_lead(database)
@@ -420,9 +406,10 @@ def test_ac09_ac10_ac11_blocked_owner_waits_and_temporary_assignment_preserves_o
         },
     )
     _open_overdue_cycle(database, overdue)
+    database["seller_queue"].update_one({"sellerId": renato}, {"$set": {"paused": True}})
     service = _service(database)
 
-    waiting = service.assign_recurring(recurring, "blocked-owner")
+    waiting = service.assign_recurring(recurring, "paused-owner")
     temporary = service.assign_temporarily(
         recurring,
         sandra,
