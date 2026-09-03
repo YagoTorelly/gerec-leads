@@ -5,12 +5,9 @@ import { randomUUID } from "node:crypto";
 import { ApiRequestError, transferLeadOwnership } from "../api/client";
 import { getSessionContext } from "../auth/session";
 
-export type TransferActionState = {
-  status: "idle" | "success" | "error";
-  message: string;
-};
+import type { TransferActionState } from "./transfer-state";
 
-export const initialTransferActionState: TransferActionState = { status: "idle", message: "" };
+export type { TransferActionState } from "./transfer-state";
 
 export async function transferLeadOwnershipAction(
   _previous: TransferActionState,

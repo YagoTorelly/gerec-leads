@@ -15,7 +15,8 @@ vi.mock("../api/client", () => {
 
 import { getSessionContext } from "../auth/session";
 import { transferLeadOwnership } from "../api/client";
-import { initialTransferActionState, transferLeadOwnershipAction } from "./transfer-actions";
+import { transferLeadOwnershipAction } from "./transfer-actions";
+import { initialTransferActionState } from "./transfer-state";
 
 function formData(values: Record<string, string>): FormData {
   const form = new FormData();

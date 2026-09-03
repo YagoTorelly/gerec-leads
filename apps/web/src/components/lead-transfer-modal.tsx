@@ -4,9 +4,9 @@ import { useActionState, useEffect, useState } from "react";
 
 import type { ManagedUser, OperationalLead } from "../lib/api/types";
 import {
-  initialTransferActionState,
   transferLeadOwnershipAction,
 } from "../lib/operations/transfer-actions";
+import { initialTransferActionState } from "../lib/operations/transfer-state";
 
 export function LeadTransferModal({
   lead,
