@@ -239,7 +239,7 @@ O plano deve localizar todos os parsers e formatadores, sem alterar registros le
 - `14:11` sem fuso permanece `14:11` em São Paulo;
 - `17:11Z` aparece como `14:11` em São Paulo;
 - timestamps com offset diferente são convertidos corretamente;
-- SLA continua usando o calendário 09:00–18:00;
+- o envio não calcula SLA, prazo ou lembrete; timestamps seguem apenas a conversão de origem para America/Sao_Paulo;
 - horários legados não são deslocados sem classificação;
 - e-mail e interface usam a mesma regra.
 

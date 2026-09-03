@@ -20,7 +20,7 @@
 - `SMTP_PASSWORD` e demais segredos só existem nas variáveis da Railway.
 - Nenhum e-mail de lead inclui campanha, e-mail do lead ou identificadores internos.
 - Datas sem fuso da origem são `America/Sao_Paulo`; armazenamento é UTC; apresentação é São Paulo.
-- Uma falha de e-mail nunca desfaz atribuição, transferência, SLA ou fila.
+- Uma falha de e-mail nunca desfaz atribuição, transferência ou fila; o fluxo não possui SLA, prazo, lembrete ou bloqueio automático operacional.
 - Aplicar TDD: teste vermelho observado antes de cada implementação.
 - Não alterar `D apps/api/.env.example` nem `?? tools/google-sheets-diagnostic/`.
 - Não fazer push/deploy sem autorização explícita para a etapa; commits devem ser pequenos e auditáveis.
@@ -69,7 +69,19 @@ Esperado: falha porque os contratos novos ainda não estão registrados.
 - [ ] **Step 4: Reexecutar o `rg` e confirmar todos os contratos.**
 - [ ] **Step 5: Commit** `docs: registra alertas smtp e contrato de horario`.
 
-### Task 2: Corrigir e congelar o contrato de horário
+### Task 2: Remover SLA e bloqueio automático da operação
+
+**Objetivo:** alinhar API, fila, métricas e telas aos únicos estados de disponibilidade `Ativo` e `Pausado`, ambos manuais, preservando campos legados somente para auditoria.
+
+**Arquivos principais:** `apps/api/src/gerec_api/infrastructure/mongo/queue_repository.py`, `apps/api/src/gerec_api/auth/permissions.py`, projeções/dashboard em `apps/web/src/`, testes de domínio/API/E2E e migração versionada quando necessária.
+
+- [ ] Escrever testes vermelhos para rejeitar `blocked`, ignorar atraso na elegibilidade e ocultar prazo/SLA da projeção operacional.
+- [ ] Implementar a remoção mínima de bloqueio derivado, due/reminder e consequências automáticas, sem alterar cursor FIFO nem histórico.
+- [ ] Implementar/validar pausa e ativação manuais do administrador.
+- [ ] Executar testes unitários, integração e interface; registrar evidências no ledger.
+- [ ] Commit `feat: remove sla operacional e bloqueio automatico`.
+
+### Task 3: Corrigir e congelar o contrato de horário
 
 **Files:**
 - Modify: `apps/api/src/gerec_api/domain/normalization.py` apenas se a regressão localizar parser incorreto.
@@ -112,7 +124,7 @@ Esperado: falha porque os contratos novos ainda não estão registrados.
 
 - [ ] **Step 1: Escrever testes vermelhos** para resumo automático e transferência individual, verificando destinatário lógico, lead ID e ausência de dados pessoais redundantes.
 - [ ] **Step 2: Executar os testes e confirmar falha.**
-- [ ] **Step 3: Gravar eventos na mesma transação da atribuição/transferência; manter o evento SLA existente separado.**
+- [ ] **Step 3: Gravar eventos na mesma transação da atribuição/transferência; não criar evento de SLA, prazo ou bloqueio automático.**
 - [ ] **Step 4: Verificar replay idempotente e cursor inalterado.**
 - [ ] **Step 5: Commit** `feat: grava eventos de alerta de atribuicao`.
 
@@ -174,7 +186,7 @@ Esperado: falha porque os contratos novos ainda não estão registrados.
 - [ ] **Step 2: Confirmar falhas.**
 - [ ] **Step 3: Integrar agregador, templates e SMTP no worker Railway sem remover o webhook até a substituição estar coberta.**
 - [ ] **Step 4: Executar entrega somente depois do claim; `mark_sent` só após sucesso.**
-- [ ] **Step 5: Verificar que falha não altera leads, assignments, queue_state ou SLA.**
+- [ ] **Step 5: Verificar que falha não altera leads, assignments ou queue_state, e que nenhum SLA/prazo é criado.**
 - [ ] **Step 6: Commit** `feat: integra worker de alertas de leads`.
 
 ### Task 9: Configurar Railway e documentação operacional

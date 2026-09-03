@@ -1,6 +1,6 @@
 ﻿# Contexto Mestre - Gerenciador de Leads WTG
 
-> Gerado em 2026-09-03 12:51:03 UTC por `scripts/generate-master-context.ps1`.
+> Gerado em 2026-09-03 16:16:38 UTC por `scripts/generate-master-context.ps1`.
 
 ## Como usar este documento
 
@@ -1926,6 +1926,16 @@ O núcleo do produto é uma máquina operacional auditável, não apenas um dash
 4. proteção de dados e permissões reais no banco.
 
 Uma implementação que tenha uma interface bonita, mas não consiga provar essas quatro propriedades, não atende esta especificação.
+### GOV-006 â€” Disponibilidade manual sem SLA operacional
+
+- **Regra anterior:** a GOV-004/DEC-028 previa SLA de 24 horas Ãºteis, lembrete, ciclos de feedback e estado derivado **Bloqueado por atraso**, que impedia novas atribuiÃ§Ãµes.
+- **Nova regra:** a disponibilidade operacional possui somente **Ativo** e **Pausado**. Pausado Ã© uma aÃ§Ã£o manual, definida e removida exclusivamente pelo administrador. NÃ£o hÃ¡ prazo, SLA comercial, lembrete, bloqueio automÃ¡tico ou estado Bloqueado por atraso. AusÃªncia de comentÃ¡rio nÃ£o altera fila, elegibilidade ou estado do vendedor. ComentÃ¡rios, situaÃ§Ã£o primÃ¡ria e marcador Desqualificado continuam sendo registrados manualmente pelo vendedor; Desqualificado exige comentÃ¡rio na mesma tratativa.
+- **Motivo:** alinhar o sistema Ã  operaÃ§Ã£o real aprovada e remover uma consequÃªncia automÃ¡tica que nÃ£o faz parte do processo comercial atual.
+- **Impacto em dados existentes:** nenhum evento, comentÃ¡rio, atribuiÃ§Ã£o ou timestamp histÃ³rico Ã© apagado. Campos/ciclos legados de SLA podem permanecer somente para auditoria, sem serem calculados, exibidos ou usados na elegibilidade corrente.
+- **Impacto em mÃ©tricas:** remover prazo, lembrete, atraso e bloqueio das mÃ©tricas operacionais atuais; manter contadores de comentÃ¡rios, situaÃ§Ã£o primÃ¡ria, marcador e atribuiÃ§Ãµes. A fila continua FIFO e transferÃªncia nÃ£o altera cursor.
+- **MigraÃ§Ã£o necessÃ¡ria:** versionar ajustes de projeÃ§Ãµes, comandos e contratos para aceitar apenas `active`/`paused`; nÃ£o editar migraÃ§Ãµes aplicadas nem remover dados histÃ³ricos.
+- **Novos testes de aceite:** vendedor ativo e pausado sÃ£o os Ãºnicos estados; pausa/ativaÃ§Ã£o manual do administrador funciona; lead sem comentÃ¡rio nÃ£o Ã© bloqueado nem muda de posiÃ§Ã£o; nenhuma tela ou alerta apresenta prazo/SLA/Bloqueado por atraso; comentÃ¡rio vÃ¡lido atualiza apenas tratativa/status/marcador; FIFO permanece inalterado.
+- **AprovaÃ§Ã£o:** Yago, em 03 de setembro de 2026.
 
 ## Documento de orientação: `AGENTS.md`
 
@@ -2550,6 +2560,7 @@ As decisões abaixo foram aprovadas na organização inicial do projeto. Mudanç
 | DEC-027 | Não haverá migração de dados comerciais nesta mudança arquitetural. | O MongoDB destinado ao produto está vazio. A mudança preserva as regras, métricas e o contrato do fixture; artefatos legados serão retirados em tarefa própria. | Aprovada em 27/08/2026 |
 | DEC-028 | A operação comercial usa SLA de 24 horas úteis apenas entre 09:00 e 18:00; `isDisqualified` é marcador adicional que encerra o SLA. Ambos impedem somente novas atribuições e preservam os leads existentes. Pausa manual é definida e removida somente pelo administrador. Bloqueado por atraso é derivado de qualquer ciclo de SLA aberto vencido. Ele cessa automaticamente após a regularização de todos os ciclos vencidos. Quando coexistirem, Pausado prevalece na apresentação e na elegibilidade. A regularização não devolve turnos perdidos. O vendedor atualmente responsável é o único autor de tratativa. O administrador possui somente leitura global da tratativa. | Vendedor atrasado fica Bloqueado por atraso sem redistribuir leads; ganhos e desqualificados são métricas independentes. As contas aprovadas neste ambiente são Yago, André, Renato, Sandra, Jessica e Nelma: Yago e André são administradores; os demais são vendedores. Criação e redefinição aceitam senha não vazia, sem política adicional. Histórico é preservado, e prazos, projeções e métricas são recalculados idempotentemente por migração. Administrador não edita comentário, status ou responsável da tratativa. | Aprovada em 28/08/2026 |
 | DEC-029 | Transferência manual de propriedade não altera o cursor ou a ordem FIFO; após a confirmação, o vendedor anterior perde totalmente o acesso ao lead e às tratativas, inclusive leitura. | A transferência é exclusiva do administrador, auditável e preserva os dados para auditoria administrativa e para o novo responsável. | Aprovada em 03/09/2026 |
+| DEC-030 | A disponibilidade operacional possui somente `Ativo` e `Pausado`. `Pausado` Ã© definido e removido manualmente pelo administrador. NÃ£o existe prazo/SLA comercial, lembrete, estado `Bloqueado por atraso` ou bloqueio automÃ¡tico por ausÃªncia de comentÃ¡rio. | Alinhar o produto Ã  operaÃ§Ã£o real: tratativas, situaÃ§Ã£o comercial e marcador de desqualificaÃ§Ã£o sÃ£o registrados manualmente pelo vendedor, sem consequÃªncia automÃ¡tica por demora. A DEC-028 fica superada somente nesses pontos; seus demais controles de permissÃ£o, contas e tratativa permanecem vÃ¡lidos. HistÃ³ricos e campos legados de SLA sÃ£o preservados apenas para auditoria, sem uso operacional. | Aprovada em 03/09/2026 |
 
 ## Desenho de produto: `docs/superpowers/specs/2026-08-25-organizacao-roadmap-design.md`
 
@@ -3315,6 +3326,323 @@ Nenhum dado histórico será apagado. Registros antigos recebem projeção compa
 - integração com a planilha definitiva além do adapter já existente;
 - alteração de proprietário, campanhas, regras de recorrência e créditos de pulo;
 - suporte a tablet/celular.
+
+## Desenho de produto: `docs/superpowers/specs/2026-09-03-alertas-email-leads-design.md`
+
+# Design — Alertas de novos leads por e-mail
+
+**Data:** 03/09/2026
+**Status:** Design aprovado em conversa; aguardando revisão do documento antes do plano de implementação.
+**Escopo:** alertas operacionais por e-mail e normalização de horários exibidos.
+
+## 1. Objetivo
+
+Enviar alertas úteis aos vendedores sem alterar a lógica da fila, a atribuição transacional ou as permissões.
+
+Existem dois fluxos:
+
+1. novos leads atribuídos por uma execução de sincronização: um resumo por vendedor e por sincronização;
+2. transferência manual de propriedade: um aviso individual imediato ao novo proprietário.
+
+Uma falha de e-mail nunca desfaz uma atribuição, uma transferência, uma alteração de status ou qualquer outro efeito comercial confirmado.
+
+## 2. Decisões aprovadas
+
+- O resumo de uma sincronização agrupa todos os leads novos recebidos pelo mesmo vendedor naquela execução.
+- Não haverá um e-mail por lead dentro de uma sincronização.
+- Uma transferência manual gera um aviso individual ao novo proprietário.
+- O remetente é `contato@wtgseguros.com.br`.
+- O SMTP é `smtp.oncorretor.com.br`, porta `587`.
+- A conexão usa STARTTLS obrigatório.
+- Usuário SMTP: `contato@wtgseguros.com.br`.
+- Senha SMTP: variável de ambiente exclusiva da Railway.
+- Nenhuma credencial fica no código, MongoDB, navegador, documentação pública ou logs.
+- O conteúdo contém somente nome do lead, telefone e link para o dashboard.
+- Não incluir campanha, e-mail do lead ou outros campos de origem.
+- A URL do dashboard vem de configuração por ambiente.
+- Datas, quando exibidas, usam `America/Sao_Paulo`.
+- O horário sem fuso da planilha é horário local de São Paulo.
+- Instantes são armazenados em UTC e devolvidos com offset explícito.
+- O administrador acompanha falhas e pendências, mas não edita tratativas de vendedor.
+
+## 3. Arquitetura existente aproveitada
+
+O projeto já possui:
+
+- `SyncJob`, responsável por importar e disparar atribuições;
+- comandos transacionais da fila;
+- coleção MongoDB `notification_outbox`;
+- `MongoOutboxRepository` com claim atômico;
+- `OutboxWorker` com retry, lock, idempotência e dead-letter;
+- `WebhookDeliveryAdapter` como fronteira atual de entrega;
+- auditoria e eventos de atribuição.
+
+Não criar um segundo sistema de fila ou uma integração paralela fora da outbox.
+
+## 4. Fluxo de resumo da sincronização
+
+1. A sincronização recebe um `syncRunId` determinístico e não vazio.
+2. Cada atribuição automática permanece em sua própria transação da fila.
+3. O evento de atribuição gravado na outbox recebe `syncRunId`, `sellerId`, `leadId`, tipo da atribuição e chave idempotente.
+4. O evento também identifica o grupo lógico `assignment-summary:{syncRunId}:{sellerId}`.
+5. Um agregador consulta eventos pendentes do mesmo grupo.
+6. O agregador resolve o e-mail atual do vendedor e os dados mínimos de cada lead.
+7. A lista é ordenada de forma determinística por instante de atribuição e identificador do lead.
+8. Se o grupo não tiver leads, nenhum e-mail é enviado.
+9. O adapter SMTP monta uma mensagem HTML acessível e uma parte texto simples.
+10. O worker envia o resumo usando STARTTLS.
+11. Somente após confirmação de sucesso todos os eventos do grupo são marcados como enviados.
+12. Uma nova tentativa encontra a mesma chave idempotente e não cria outro grupo lógico.
+
+O agregador não pode marcar eventos como enviados antes do SMTP confirmar sucesso.
+
+## 5. Fluxo de transferência manual
+
+1. O administrador confirma a transferência pela operação existente.
+2. A transação mantém as regras atuais: não altera cursor, ordem FIFO ou créditos.
+3. A transação grava o evento `lead.owner_transferred` na outbox.
+4. O evento usa chave `owner-transfer:{leadId}:{commandId}`.
+5. O destinatário é o novo responsável ativo no momento do preparo do envio.
+6. O worker monta um e-mail individual com nome, telefone e link para o dashboard.
+7. O antigo vendedor continua sem qualquer acesso operacional ao lead, conforme a decisão vigente.
+8. O histórico permanece disponível para administração e novo responsável.
+
+Transferência não deve entrar no resumo de uma sincronização.
+
+## 6. Contrato dos eventos
+
+### 6.1 Resumo de atribuição
+
+```json
+{
+  "eventType": "lead.assignment_email_requested",
+  "syncRunId": "sync-2026-09-03-001",
+  "sellerId": "...",
+  "groupKey": "assignment-summary:sync-2026-09-03-001:...",
+  "leadIds": ["..."],
+  "idempotencyKey": "assignment-summary:sync-2026-09-03-001:..."
+}
+```
+
+O payload persistido deve conter identificadores e metadados operacionais, não cópia desnecessária de dados pessoais.
+
+### 6.2 Transferência
+
+```json
+{
+  "eventType": "lead.owner_transfer_email_requested",
+  "leadId": "...",
+  "sellerId": "...",
+  "idempotencyKey": "owner-transfer:...:..."
+}
+```
+
+O worker busca nome e telefone atuais no momento de preparar a mensagem. Se o lead tiver sido arquivado ou estiver sem telefone, a regra de fallback deverá ser definida no plano e coberta por teste; não inventar dados.
+
+## 7. Adapter SMTP
+
+Criar uma fronteira testável, independente do domínio:
+
+- recebe uma mensagem já renderizada;
+- abre conexão com host e porta configurados;
+- inicia STARTTLS;
+- autentica com usuário e senha server-side;
+- envia remetente, destinatário, assunto e partes MIME;
+- fecha a conexão mesmo em erro;
+- transforma falhas de rede/autenticação em erro de entrega para retry.
+
+O worker não deve conter regra de negócio de fila, status comercial ou propriedade.
+
+Configuração prevista, com nomes finais definidos no plano:
+
+- `SMTP_HOST=smtp.oncorretor.com.br`;
+- `SMTP_PORT=587`;
+- `SMTP_USERNAME=contato@wtgseguros.com.br`;
+- `SMTP_PASSWORD`;
+- `SMTP_FROM=contato@wtgseguros.com.br`;
+- `DASHBOARD_PUBLIC_URL`.
+
+Valores de produção não devem ser commitados.
+
+## 8. Templates
+
+### 8.1 Resumo de novos leads
+
+Assunto:
+
+`Chegaram leads novos para você — WTG`
+
+Texto base:
+
+```text
+Chegaram leads novos para você!!!
+
+As informações dos novos leads já estão no gerenciador de leads.
+
+{nome do lead}
+{telefone do lead}
+{link para acesso}
+```
+
+Para vários leads, repetir o bloco de nome, telefone e link, sem expor identificadores internos.
+
+### 8.2 Transferência
+
+Assunto:
+
+`Lead transferido para você — WTG`
+
+Texto base:
+
+```text
+Um lead foi transferido para você.
+
+{nome do lead}
+{telefone do lead}
+{link para acesso}
+```
+
+Os templates terão versão HTML e texto simples. O link aponta para o dashboard configurado e não deve incluir dados sensíveis na URL.
+
+## 9. Idempotência e concorrência
+
+- `syncRunId` identifica uma execução completa.
+- `groupKey` identifica um resumo por vendedor dentro da execução.
+- Índice único impede dois grupos iguais.
+- Claim atômico impede dois workers de processarem o mesmo evento simultaneamente.
+- Lock expirado permite recuperação de worker interrompido.
+- Retry usa backoff e limite configurado.
+- Dead-letter registra evento, chave, tipo e erro resumido.
+- O envio duplicado por uma falha após o SMTP e antes do `mark_sent` deve ser tratado como risco de entrega externa; o adapter deve usar a chave idempotente quando o provedor suportar. O plano deve documentar esse limite operacional.
+
+## 10. Política de falhas
+
+- Timeout/conexão recusada: retry.
+- Erro temporário SMTP: retry.
+- Falha de autenticação: retry limitado e alerta técnico.
+- Destinatário inválido: dead-letter, sem desfazer o negócio.
+- Vendedor desativado antes do preparo: evento não é enviado automaticamente; fica rastreável para decisão administrativa.
+- Lead sem dados mínimos: falha explícita e segura, sem fabricar conteúdo.
+- Falha de consulta ao MongoDB: retry do evento.
+
+Logs devem conter somente `eventId`, `eventType`, `groupKey`, tentativa, status e erro técnico truncado. Nunca registrar senha, token ou corpo integral do lead.
+
+## 11. Contrato de horário
+
+- Timestamp ingênuo da planilha: `America/Sao_Paulo`.
+- Timestamp com `Z` ou offset: respeitar o offset informado.
+- Persistência: UTC.
+- API: ISO 8601 com `Z` ou offset.
+- Frontend: `Intl.DateTimeFormat` em `America/Sao_Paulo`.
+- E-mail: mesma conversão, se datas forem incluídas.
+
+O plano deve localizar todos os parsers e formatadores, sem alterar registros legados sem evidência da semântica original. Qualquer correção histórica precisa de migração versionada, relatório de afetados e rollback operacional.
+
+## 12. Testes obrigatórios
+
+### Domínio e integração
+
+- uma sincronização com vários leads para um vendedor produz um resumo único;
+- dois vendedores na mesma sincronização produzem dois grupos;
+- sincronização sem novas atribuições não produz e-mail;
+- recorrências atribuídas automaticamente entram no resumo quando forem novas atribuições daquela execução;
+- transferências ficam fora do resumo;
+- transferência cria aviso individual para o novo responsável;
+- repetição da mesma sincronização não cria grupo duplicado;
+- dois workers concorrentes não enviam dois grupos lógicos;
+- atribuição permanece confirmada se SMTP falhar;
+- erro de SMTP retorna ao retry e depois dead-letter;
+- vendedor sem e-mail válido é rastreável;
+- payload não contém campanha, e-mail do lead ou segredo.
+
+### SMTP
+
+- usa host e porta corretos;
+- exige STARTTLS;
+- autentica com variáveis de ambiente;
+- envia remetente aprovado;
+- produz MIME HTML + texto simples;
+- encerra conexão em sucesso e erro;
+- não registra credenciais.
+
+### Horário
+
+- `14:11` sem fuso permanece `14:11` em São Paulo;
+- `17:11Z` aparece como `14:11` em São Paulo;
+- timestamps com offset diferente são convertidos corretamente;
+- o envio não calcula SLA, prazo ou lembrete; timestamps seguem apenas a conversão de origem para America/Sao_Paulo;
+- horários legados não são deslocados sem classificação;
+- e-mail e interface usam a mesma regra.
+
+### Frontend e E2E
+
+- vendedor recebe resumo renderizado com nome, telefone e link;
+- link abre o dashboard;
+- transferência mostra o aviso individual após confirmação;
+- estados de pendência e erro são legíveis;
+- admin visualiza estado da outbox sem editar tratativas;
+- screenshot em 1440×900;
+- acesso de vendedor continua restrito aos próprios leads.
+
+## 13. Observabilidade e operação
+
+Adicionar métricas/logs para:
+
+- eventos criados por tipo;
+- grupos agregados;
+- mensagens enviadas;
+- tempo entre atribuição e envio;
+- retries;
+- dead-letter;
+- falhas por código SMTP;
+- grupos sem destinatário;
+- última execução de sincronização com alertas.
+
+O administrador deve conseguir distinguir:
+
+- atribuição concluída e e-mail pendente;
+- e-mail enviado;
+- retry em andamento;
+- dead-letter que exige intervenção.
+
+Desativar o alerta deve ser uma configuração operacional independente da fila.
+
+## 14. Alterações documentais necessárias antes do código
+
+- registrar a nova regra na seção de governança do SPEC: regra anterior, nova regra, motivo, impactos, migração, testes e aprovação;
+- atualizar `docs/DECISOES.md` com decisão sobre resumo por sincronização, transferência individual, SMTP e horário;
+- regenerar `docs/CONTEXTO_MESTRE_GERENCIADOR_DE_LEADS.md`;
+- atualizar `docs/ARQUITETURA.md` se a fronteira do worker SMTP mudar;
+- documentar variáveis sem valores secretos;
+- criar plano de rollout, rollback e piloto.
+
+## 15. Fora do escopo
+
+- envio de WhatsApp;
+- alteração da fila FIFO;
+- alteração de status comercial por e-mail;
+- edição administrativa de tratativas;
+- inclusão de campanha, e-mail do lead ou dados adicionais no alerta;
+- migração ampla de timestamps sem classificação;
+- painel de preferências individuais de e-mail;
+- provedor externo adicional além do SMTP aprovado.
+
+## 16. Critérios de aceite
+
+1. Após uma sincronização com novos leads, cada vendedor recebe no máximo um resumo daquela execução.
+2. O resumo lista todos os leads novos atribuídos ao vendedor naquela execução.
+3. O resumo contém apenas nome, telefone e link do dashboard.
+4. Uma transferência manual envia um aviso individual ao novo proprietário.
+5. Nenhum alerta de transferência afeta cursor, posição ou créditos da fila.
+6. Retry e dead-letter funcionam sem desfazer atribuições.
+7. STARTTLS e credenciais server-side são obrigatórios.
+8. Horário local da planilha não aparece três horas adiantado.
+9. Timestamps UTC existentes continuam sendo exibidos corretamente em São Paulo.
+10. Todos os testes obrigatórios e gates de build, lint, typecheck e E2E passam.
+
+## 17. Próximo passo
+
+Após a revisão e aprovação deste documento, criar o plano executável em `docs/superpowers/plans/` com tarefas TDD pequenas, implementação por subagentes, revisão independente e evidências no ledger.
 
 ## Plano histórico ou executável: `docs/superpowers/plans/2026-08-25-etapa-1-esqueleto-executavel.md`
 
@@ -6937,6 +7265,277 @@ Commit: `docs(gerec-leads): registra evidências da reconstrução`
 - Todas as alterações de domínio começam por teste vermelho e terminam em teste verde.
 - A UI não inicia antes de contratos e projeções de API estáveis.
 - O fornecedor de e-mail, planilha definitiva, recorrência/transferência/créditos e suporte mobile permanecem explicitamente fora deste corte.
+
+## Plano histórico ou executável: `docs/superpowers/plans/2026-09-03-alertas-email-leads.md`
+
+# Alertas de novos leads por e-mail — Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Entregar alertas SMTP seguros e idempotentes para novos leads agrupados por vendedor/sincronização, avisos individuais de transferência e horários corretos em `America/Sao_Paulo`.
+
+**Architecture:** A atribuição continua transacional no MongoDB. Eventos leves entram na `notification_outbox`; um agregador forma um grupo por `syncRunId + sellerId`, enquanto transferências usam evento individual. O worker Railway resolve os dados mínimos, renderiza texto/HTML e entrega por SMTP STARTTLS com retry/dead-letter.
+
+**Tech Stack:** Python 3, FastAPI, MongoDB/PyMongo, `smtplib`/MIME da biblioteca padrão, Railway worker, Next.js/React, Vitest, Pytest, Playwright.
+
+**Spec:** `docs/superpowers/specs/2026-09-03-alertas-email-leads-design.md`
+
+## Global Constraints
+
+- Ler integralmente `AGENTS.md`, `SPEC_GERENCIADOR_DE_LEADS_WTG.md` e `docs/CONTEXTO_MESTRE_GERENCIADOR_DE_LEADS.md` antes de cada tarefa.
+- MongoDB é a única persistência; não adicionar Supabase/PostgreSQL/n8n.
+- Regras críticas permanecem em serviços/comandos Python, nunca em React, controller ou worker de integração.
+- Google Sheets é somente origem; nunca escrever na planilha.
+- SMTP: `smtp.oncorretor.com.br:587`, STARTTLS obrigatório, remetente `contato@wtgseguros.com.br`.
+- `SMTP_PASSWORD` e demais segredos só existem nas variáveis da Railway.
+- Nenhum e-mail de lead inclui campanha, e-mail do lead ou identificadores internos.
+- Datas sem fuso da origem são `America/Sao_Paulo`; armazenamento é UTC; apresentação é São Paulo.
+- Uma falha de e-mail nunca desfaz atribuição, transferência ou fila; o fluxo não possui SLA, prazo, lembrete ou bloqueio automático operacional.
+- Aplicar TDD: teste vermelho observado antes de cada implementação.
+- Não alterar `D apps/api/.env.example` nem `?? tools/google-sheets-diagnostic/`.
+- Não fazer push/deploy sem autorização explícita para a etapa; commits devem ser pequenos e auditáveis.
+
+## Mapa de arquivos e responsabilidades
+
+- `apps/api/src/gerec_api/domain/normalization.py`: interpretação de datas da origem.
+- `apps/api/src/gerec_api/automation/sync_job.py`: ciclo de sincronização e `syncRunId`.
+- `apps/api/src/gerec_api/infrastructure/mongo/queue_repository.py`: eventos transacionais de atribuição/transferência.
+- `apps/api/src/gerec_api/infrastructure/mongo/collections.py` e `indexes.py`: nomes e índices da outbox.
+- `apps/api/src/gerec_api/automation/outbox_worker.py`: claim, agrupamento e entrega.
+- `apps/api/src/gerec_api/automation/email_templates.py`: MIME/texto/HTML sem regra de negócio.
+- `apps/api/src/gerec_api/automation/smtp_delivery.py`: adapter SMTP isolado e testável.
+- `apps/api/src/gerec_api/config.py`: configuração validada sem segredos no cliente.
+- `apps/api/src/gerec_api/routes/admin.py`: endpoint administrativo de leitura da outbox.
+- `apps/api/src/gerec_api/auth/permissions.py`: leitura administrativa segura de estado da outbox.
+- `apps/api/tests/unit/` e `apps/api/tests/integration/`: testes de domínio, Mongo e concorrência.
+- `apps/web/src/lib/dashboard/format.ts`: apresentação de timestamps em São Paulo.
+- `apps/web/src/components/admin-notification-status.tsx`: estados visuais de alertas administrativos.
+- `docs/DECISOES.md`, `SPEC_GERENCIADOR_DE_LEADS_WTG.md`, `docs/ARQUITETURA.md`: governança e contratos.
+- `docs/CONTEXTO_MESTRE_GERENCIADOR_DE_LEADS.md`: contexto regenerado após mudanças documentais.
+
+---
+
+### Task 1: Registrar governança e contrato operacional
+
+**Files:**
+- Modify: `SPEC_GERENCIADOR_DE_LEADS_WTG.md` seção 39 e dependências de implantação.
+- Modify: `docs/DECISOES.md` adicionando decisão após DEC-029.
+- Modify: `docs/ARQUITETURA.md` fronteira do outbox worker.
+- Regenerate: `docs/CONTEXTO_MESTRE_GERENCIADOR_DE_LEADS.md` via `scripts/generate-master-context.ps1`.
+- Test: inspeção documental com `rg`.
+
+**Interfaces:** produz os nomes de eventos, variáveis e política temporal consumidos pelas tarefas seguintes.
+
+- [ ] **Step 1: Escrever primeiro a verificação documental**
+
+```powershell
+rg -n "assignment_email_requested|owner_transfer_email_requested|SMTP_HOST|America/Sao_Paulo|agrup" SPEC_GERENCIADOR_DE_LEADS_WTG.md docs/DECISOES.md docs/ARQUITETURA.md
+```
+
+Esperado: falha porque os contratos novos ainda não estão registrados.
+
+- [ ] **Step 2: Registrar regra anterior, nova regra, motivo, impacto, migração, testes e aprovação de Yago** nas três documentações canônicas.
+- [ ] **Step 3: Regenerar o contexto mestre** com `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/generate-master-context.ps1`.
+- [ ] **Step 4: Reexecutar o `rg` e confirmar todos os contratos.**
+- [ ] **Step 5: Commit** `docs: registra alertas smtp e contrato de horario`.
+
+### Task 2: Remover SLA e bloqueio automático da operação
+
+**Objetivo:** alinhar API, fila, métricas e telas aos únicos estados de disponibilidade `Ativo` e `Pausado`, ambos manuais, preservando campos legados somente para auditoria.
+
+**Arquivos principais:** `apps/api/src/gerec_api/infrastructure/mongo/queue_repository.py`, `apps/api/src/gerec_api/auth/permissions.py`, projeções/dashboard em `apps/web/src/`, testes de domínio/API/E2E e migração versionada quando necessária.
+
+- [ ] Escrever testes vermelhos para rejeitar `blocked`, ignorar atraso na elegibilidade e ocultar prazo/SLA da projeção operacional.
+- [ ] Implementar a remoção mínima de bloqueio derivado, due/reminder e consequências automáticas, sem alterar cursor FIFO nem histórico.
+- [ ] Implementar/validar pausa e ativação manuais do administrador.
+- [ ] Executar testes unitários, integração e interface; registrar evidências no ledger.
+- [ ] Commit `feat: remove sla operacional e bloqueio automatico`.
+
+### Task 3: Corrigir e congelar o contrato de horário
+
+**Files:**
+- Modify: `apps/api/src/gerec_api/domain/normalization.py` apenas se a regressão localizar parser incorreto.
+- Modify: `apps/web/src/lib/dashboard/format.ts` apenas se a regressão localizar formato incorreto.
+- Test: `apps/api/tests/unit/test_normalization.py` e novo teste de formato web.
+
+**Interfaces:** `normalize_datetime(value) -> datetime | None` interpreta valor ingênuo em São Paulo e retorna UTC; `formatDateTime(value) -> string` exibe São Paulo.
+
+- [ ] **Step 1: Adicionar testes vermelhos** para `14:11` ingênuo, `17:11Z`, offset externo e timestamp inválido.
+- [ ] **Step 2: Executar** `python -m pytest apps/api/tests/unit/test_normalization.py -q` e `npm test -- --run src/lib/dashboard/format.test.ts`; confirmar falha da expectativa nova.
+- [ ] **Step 3: Implementar somente a normalização/formatação mínima**, sem deslocar timestamps já aware.
+- [ ] **Step 4: Executar os testes direcionados e depois a suíte completa de API/Web.**
+- [ ] **Step 5: Auditar registros reais/legados por consulta somente leitura; nenhuma migração corretiva sem classificação explícita.**
+- [ ] **Step 6: Commit** `fix: normaliza timestamps da origem em sao paulo`.
+
+### Task 3: Propagar `syncRunId` até a atribuição
+
+**Files:**
+- Modify: `apps/api/src/gerec_api/automation/sync_job.py`.
+- Modify: `apps/api/src/gerec_api/domain/queue.py` assinaturas do comando.
+- Modify: `apps/api/src/gerec_api/infrastructure/mongo/queue_repository.py` payload do evento de atribuição.
+- Test: `apps/api/tests/unit/test_sync_job.py` e `apps/api/tests/integration/test_queue_transactions.py`.
+
+**Interfaces:** `QueueService.distribute_ready(lead_id, command_id, *, actor_id, sync_run_id: str | None = None) -> AssignmentResult`; eventos carregam `syncRunId` quando atribuídos pelo `SyncJob`.
+
+- [ ] **Step 1: Criar teste vermelho** que execute uma sincronização e inspecione o evento criado para conter o mesmo `syncRunId`.
+- [ ] **Step 2: Rodar o teste direcionado e confirmar falha por ausência do campo.**
+- [ ] **Step 3: Propagar o argumento sem mudar cursor, critérios de elegibilidade ou créditos.**
+- [ ] **Step 4: Rodar testes de sincronização, fila e concorrência.**
+- [ ] **Step 5: Commit** `feat: vincula atribuicoes ao ciclo de sincronizacao`.
+
+### Task 4: Criar eventos de notificação de atribuição e transferência
+
+**Files:**
+- Modify: `apps/api/src/gerec_api/infrastructure/mongo/queue_repository.py`.
+- Modify: `apps/api/src/gerec_api/infrastructure/mongo/indexes.py` se uma chave auxiliar exigir índice.
+- Test: `apps/api/tests/integration/test_queue_transactions.py`.
+
+**Interfaces:** `lead.assignment_email_requested` usa `groupKey=assignment-summary:{syncRunId}:{sellerId}`; `lead.owner_transfer_email_requested` usa `owner-transfer:{leadId}:{commandId}`.
+
+- [ ] **Step 1: Escrever testes vermelhos** para resumo automático e transferência individual, verificando destinatário lógico, lead ID e ausência de dados pessoais redundantes.
+- [ ] **Step 2: Executar os testes e confirmar falha.**
+- [ ] **Step 3: Gravar eventos na mesma transação da atribuição/transferência; não criar evento de SLA, prazo ou bloqueio automático.**
+- [ ] **Step 4: Verificar replay idempotente e cursor inalterado.**
+- [ ] **Step 5: Commit** `feat: grava eventos de alerta de atribuicao`.
+
+### Task 5: Implementar agregação por vendedor e sincronização
+
+**Files:**
+- Modify: `apps/api/src/gerec_api/automation/outbox_worker.py` ou criar `apps/api/src/gerec_api/automation/notification_groups.py`.
+- Test: `apps/api/tests/unit/test_notification_groups.py` e `apps/api/tests/integration/test_automation_idempotency.py`.
+
+**Interfaces:** `NotificationGroupRepository.claim_group(group_key, now, max_attempts) -> NotificationGroup`; `NotificationGroupRepository.mark_group_sent(group, now) -> bool`; grupos de transferência nunca agregam com sincronização.
+
+- [ ] **Step 1: Criar testes vermelhos** para dois leads do mesmo vendedor, dois vendedores da mesma sincronização, grupo vazio e dois workers concorrentes.
+- [ ] **Step 2: Confirmar falhas com `pytest`.**
+- [ ] **Step 3: Implementar claim atômico por `groupKey`, lock e fencing token reaproveitando a outbox.**
+- [ ] **Step 4: Marcar todos os eventos do grupo somente após entrega bem-sucedida.**
+- [ ] **Step 5: Testar crash antes/depois do envio e documentar limite de duplicidade externa.**
+- [ ] **Step 6: Commit** `feat: agrupa alertas por sincronizacao e vendedor`.
+
+### Task 6: Criar templates de e-mail HTML e texto
+
+**Files:**
+- Create: `apps/api/src/gerec_api/automation/email_templates.py`.
+- Test: `apps/api/tests/unit/test_email_templates.py`.
+
+**Interfaces:** `render_assignment_summary(items, dashboard_url) -> EmailMessageData`; `render_owner_transfer(item, dashboard_url) -> EmailMessageData`.
+
+- [ ] **Step 1: Escrever testes vermelhos** para assunto, texto aprovado, nome, telefone, link e ausência de campanha/e-mail/IDs.
+- [ ] **Step 2: Rodar `pytest apps/api/tests/unit/test_email_templates.py -q` e confirmar falha.**
+- [ ] **Step 3: Implementar MIME multipart com versão texto simples e HTML escapado.**
+- [ ] **Step 4: Testar nomes/telefones com caracteres especiais e lista vazia.**
+- [ ] **Step 5: Commit** `feat: adiciona templates de alerta por email`.
+
+### Task 7: Implementar adapter SMTP STARTTLS
+
+**Files:**
+- Create: `apps/api/src/gerec_api/automation/smtp_delivery.py`.
+- Modify: `apps/api/src/gerec_api/config.py` para configuração validada.
+- Test: `apps/api/tests/unit/test_smtp_delivery.py`.
+
+**Interfaces:** `SmtpSettings.from_env() -> SmtpSettings`; `SmtpDelivery(settings, smtp_factory=smtplib.SMTP).send(message, idempotency_key) -> None`.
+
+- [ ] **Step 1: Escrever testes vermelhos** para host/porta, STARTTLS, login, remetente, timeout e falhas convertidas em erro retryable.
+- [ ] **Step 2: Confirmar falha dos testes.**
+- [ ] **Step 3: Implementar com `smtplib.SMTP`, `starttls()`, `login()` e fechamento garantido.**
+- [ ] **Step 4: Garantir que senha nunca apareça em exceção/log.**
+- [ ] **Step 5: Rodar testes unitários e lint Python.**
+- [ ] **Step 6: Commit** `feat: entrega alertas via smtp starttls`.
+
+### Task 8: Integrar worker, dados mínimos e retry
+
+**Files:**
+- Modify: `apps/api/src/gerec_api/automation/outbox_worker.py`.
+- Modify: `apps/api/src/gerec_api/infrastructure/mongo/indexes.py` para consultas por IDs/grupos.
+- Test: `apps/api/tests/integration/test_automation_idempotency.py` e novo teste de integração de entrega.
+
+**Interfaces:** `EmailNotificationWorker.process(batch_size, now=None) -> int`; resolução de vendedor/lead retorna somente e-mail do vendedor, nome e telefone do lead.
+
+- [ ] **Step 1: Escrever testes vermelhos** de envio agrupado, transferência individual, retry, dead-letter e vendedor sem e-mail.
+- [ ] **Step 2: Confirmar falhas.**
+- [ ] **Step 3: Integrar agregador, templates e SMTP no worker Railway sem remover o webhook até a substituição estar coberta.**
+- [ ] **Step 4: Executar entrega somente depois do claim; `mark_sent` só após sucesso.**
+- [ ] **Step 5: Verificar que falha não altera leads, assignments ou queue_state, e que nenhum SLA/prazo é criado.**
+- [ ] **Step 6: Commit** `feat: integra worker de alertas de leads`.
+
+### Task 9: Configurar Railway e documentação operacional
+
+**Files:**
+- Modify: `docs/ARQUITETURA.md` seção de configuração e operação Railway, sem valores secretos.
+- Test: validação de configuração unitária e inspeção de arquivos.
+
+**Interfaces:** variáveis `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM`, `DASHBOARD_PUBLIC_URL`, `SMTP_ENABLED`.
+
+- [ ] **Step 1: Escrever teste vermelho** que rejeite configuração SMTP incompleta quando `SMTP_ENABLED=true`.
+- [ ] **Step 2: Implementar validação; permitir `SMTP_ENABLED=false` em desenvolvimento sem enviar mensagens.**
+- [ ] **Step 3: Documentar configuração Railway e procedimento de rotação da senha.**
+- [ ] **Step 4: Confirmar que nenhum segredo está no repositório com `rg`.**
+- [ ] **Step 5: Commit** `chore: documenta configuracao smtp da railway`.
+
+### Task 10: Expor observabilidade administrativa sem dados sensíveis
+
+**Files:**
+- Modify: `apps/api/src/gerec_api/auth/permissions.py`.
+- Modify: `apps/api/src/gerec_api/routes/admin.py`.
+- Create: `apps/web/src/components/admin-notification-status.tsx`.
+- Modify: `apps/web/src/components/admin-dashboard.tsx` para incluir o painel de status.
+- Test: API/Web de leitura administrativa.
+
+**Interfaces:** leitura admin-only de contagens/status: pending, processing, retry, sent, dead_letter, último erro truncado e última sincronização; nenhuma ação de edição de tratativa.
+
+- [ ] **Step 1: Escrever testes vermelhos** para admin autorizado, vendedor negado e ausência de senha/payload pessoal.
+- [ ] **Step 2: Implementar projeção agregada server-side com paginação/limites.**
+- [ ] **Step 3: Renderizar estados claros de pendente, retry e dead-letter.**
+- [ ] **Step 4: Rodar API/Web tests e verificar acessibilidade básica.**
+- [ ] **Step 5: Commit** `feat: adiciona observabilidade dos alertas`.
+
+### Task 11: E2E e screenshots do fluxo completo
+
+**Files:**
+- Modify/Create: `tests/e2e/email-alerts.spec.ts` e fixtures de teste.
+- Create: evidências em diretório de artefatos do teste, sem dados reais.
+
+**Interfaces:** sincronização mock → atribuição → resumo; transferência → aviso individual; relógio controlado; SMTP fake.
+
+- [ ] **Step 1: Escrever cenários E2E vermelhos** para resumo agrupado, transferência, falha/retry e horário 14:11.
+- [ ] **Step 2: Executar Playwright em viewport 1440×900 e confirmar falhas antes da implementação final.**
+- [ ] **Step 3: Implementar fixtures/fakes isolados sem SMTP real.**
+- [ ] **Step 4: Capturar screenshots de dashboard admin, dashboard vendedor, outbox e lead com horário correto.**
+- [ ] **Step 5: Commit** `test: cobre alertas de leads no fluxo e2e`.
+
+### Task 12: Verificação final, piloto e handoff
+
+**Files:**
+- Create/Modify: `.superpowers/sdd/2026-09-03-alertas-email-leads/progress.md`, sem apagar histórico.
+- Review: diff completo, SPEC, design e plano.
+
+- [ ] **Step 1: Rodar API completa:** `python -m pytest apps/api/tests -q`.
+- [ ] **Step 2: Rodar Web completa:** `npm test` em `apps/web`.
+- [ ] **Step 3: Rodar `npm run typecheck`, `npm run lint` e `npm run build`.**
+- [ ] **Step 4: Rodar E2E/screenshot e revisar manualmente as evidências.**
+- [ ] **Step 5: Verificar `git diff --check`, arquivos protegidos e ausência de segredos.**
+- [ ] **Step 6: Atualizar contexto mestre após todas as mudanças documentais.**
+- [ ] **Step 7: Solicitar revisão independente; corrigir achados; só então preparar rollout/piloto com `SMTP_ENABLED=false` inicialmente e habilitação autorizada.**
+- [ ] **Step 8: Commit final de documentação/evidências; não declarar concluído sem saídas recentes dos comandos.**
+
+## Critério de conclusão
+
+O trabalho só está concluído quando os critérios de aceite da especificação de design forem demonstrados por testes recentes, revisão independente, screenshots em 1440×900, configuração SMTP validada em staging e evidência de que atribuições/fila permanecem corretas quando o provedor de e-mail falha.
+
+## Matriz de cobertura do design
+
+| Design | Tarefas do plano |
+|---|---|
+| Arquitetura e fluxo de sincronização | 3, 4, 5, 8 |
+| Transferência individual | 4, 5, 8, 11 |
+| Contrato de eventos e idempotência | 3, 4, 5, 8 |
+| Templates HTML/texto | 6 |
+| SMTP STARTTLS e configuração | 7, 9 |
+| Retry, dead-letter e observabilidade | 5, 8, 10, 12 |
+| Timezone e registros legados | 1, 2, 12 |
+| Segurança, permissões e dados mínimos | 1, 6, 8, 10, 11 |
+| E2E, screenshots, rollout e rollback | 9, 11, 12 |
 
 ## Documento complementar: `apps/web/README.md`
 
@@ -15577,7 +16176,8 @@ button:disabled {
   border-bottom: 0;
 }
 .table-card tbody tr:hover {
-  background: #fbfdff;
+  background: var(--wtg-blue-soft);
+  color: var(--text-strong);
 }
 .table-card td strong {
   color: var(--text-strong);
@@ -15882,6 +16482,7 @@ button:disabled {
 .table-action:not(:disabled):hover {
   border-color: var(--wtg-blue-hover);
   background: var(--wtg-blue-hover);
+  color: #fff;
 }
 .secondary-button {
   border: 1px solid var(--line-strong);
@@ -16229,6 +16830,35 @@ export default async function HistoryPage({
     </AppShell>
   );
 }
+````
+
+## Snapshot de código: `apps/web/src/app/hover-contrast.test.ts`
+
+````typescript
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+
+import { describe, expect, it } from "vitest";
+
+const stylesheetPath = fileURLToPath(new URL("./globals.css", import.meta.url));
+
+describe("contraste dos estados de interação", () => {
+  it("preserva contraste no hover da ação primária", async () => {
+    const stylesheet = await readFile(stylesheetPath, "utf8");
+    const start = stylesheet.indexOf(".table-action:not(:disabled):hover {");
+    const block = stylesheet.slice(start, stylesheet.indexOf("}", start) + 1);
+
+    expect(block).toContain("color: #fff;");
+  });
+
+  it("preserva contraste no hover das linhas da tabela", async () => {
+    const stylesheet = await readFile(stylesheetPath, "utf8");
+    const start = stylesheet.indexOf(".table-card tbody tr:hover {");
+    const block = stylesheet.slice(start, stylesheet.indexOf("}", start) + 1);
+
+    expect(block).toContain("color: var(--text-strong);");
+  });
+});
 ````
 
 ## Snapshot de código: `apps/web/src/app/layout.tsx`
@@ -17114,9 +17744,9 @@ import { useActionState, useEffect, useState } from "react";
 
 import type { ManagedUser, OperationalLead } from "../lib/api/types";
 import {
-  initialTransferActionState,
   transferLeadOwnershipAction,
 } from "../lib/operations/transfer-actions";
+import { initialTransferActionState } from "../lib/operations/transfer-state";
 
 export function LeadTransferModal({
   lead,
@@ -20303,6 +20933,87 @@ export function validateAttempt(input: {
 }
 ````
 
+## Snapshot de código: `apps/web/src/lib/operations/transfer-actions.test.ts`
+
+````typescript
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("../auth/session", () => ({ getSessionContext: vi.fn() }));
+vi.mock("../api/client", () => {
+  class ApiRequestError extends Error {
+    constructor(
+      message: string,
+      readonly status: number,
+    ) {
+      super(message);
+    }
+  }
+  return { ApiRequestError, transferLeadOwnership: vi.fn() };
+});
+
+import { getSessionContext } from "../auth/session";
+import { transferLeadOwnership } from "../api/client";
+import { transferLeadOwnershipAction } from "./transfer-actions";
+import { initialTransferActionState } from "./transfer-state";
+
+function formData(values: Record<string, string>): FormData {
+  const form = new FormData();
+  Object.entries(values).forEach(([key, value]) => form.set(key, value));
+  return form;
+}
+
+describe("ação de transferência de propriedade", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("converte falha inesperada ao carregar sessão em erro do formulário", async () => {
+    vi.mocked(getSessionContext).mockRejectedValue(new Error("API indisponível"));
+
+    await expect(
+      transferLeadOwnershipAction(
+        initialTransferActionState,
+        formData({ leadId: "lead-1", sellerId: "seller-2", reason: "Cobertura" }),
+      ),
+    ).resolves.toEqual({
+      status: "error",
+      message: "Não foi possível transferir a propriedade.",
+    });
+  });
+
+  it("envia confirmação explícita ao backend", async () => {
+    vi.mocked(getSessionContext).mockResolvedValue({
+      status: "authenticated",
+      sessionToken: "sessao",
+      profile: {
+        id: "admin-1",
+        userId: "admin-1",
+        fullName: "Yago",
+        email: "yago@example.com",
+        role: "admin",
+      },
+    });
+    vi.mocked(transferLeadOwnership).mockResolvedValue({
+      leadId: "lead-1",
+      sellerId: "seller-2",
+      status: "assigned",
+    });
+
+    const result = await transferLeadOwnershipAction(
+      initialTransferActionState,
+      formData({ leadId: "lead-1", sellerId: "seller-2", reason: "Cobertura" }),
+    );
+
+    expect(result.status).toBe("success");
+    expect(transferLeadOwnership).toHaveBeenCalledWith(
+      "lead-1",
+      "seller-2",
+      "Cobertura",
+      expect.any(String),
+      "sessao",
+    );
+  });
+});
+````
+
 ## Snapshot de código: `apps/web/src/lib/operations/transfer-actions.ts`
 
 ````typescript
@@ -20313,12 +21024,9 @@ import { randomUUID } from "node:crypto";
 import { ApiRequestError, transferLeadOwnership } from "../api/client";
 import { getSessionContext } from "../auth/session";
 
-export type TransferActionState = {
-  status: "idle" | "success" | "error";
-  message: string;
-};
+import type { TransferActionState } from "./transfer-state";
 
-export const initialTransferActionState: TransferActionState = { status: "idle", message: "" };
+export type { TransferActionState } from "./transfer-state";
 
 export async function transferLeadOwnershipAction(
   _previous: TransferActionState,
@@ -20330,11 +21038,11 @@ export async function transferLeadOwnershipAction(
   if (!leadId || !sellerId || reason.length < 1) {
     return { status: "error", message: "Selecione um vendedor e informe o motivo." };
   }
-  const session = await getSessionContext();
-  if (session.status !== "authenticated" || session.profile.role !== "admin") {
-    return { status: "error", message: "Sessão expirada ou sem permissão." };
-  }
   try {
+    const session = await getSessionContext();
+    if (session.status !== "authenticated" || session.profile.role !== "admin") {
+      return { status: "error", message: "Sessão expirada ou sem permissão." };
+    }
     await transferLeadOwnership(leadId, sellerId, reason, randomUUID(), session.sessionToken);
     return { status: "success", message: "Propriedade transferida." };
   } catch (error) {
@@ -20347,6 +21055,17 @@ export async function transferLeadOwnershipAction(
     };
   }
 }
+````
+
+## Snapshot de código: `apps/web/src/lib/operations/transfer-state.ts`
+
+````typescript
+export type TransferActionState = {
+  status: "idle" | "success" | "error";
+  message: string;
+};
+
+export const initialTransferActionState: TransferActionState = { status: "idle", message: "" };
 ````
 
 ## Snapshot de código: `apps/web/src/lib/operations/treatment-actions.test.ts`

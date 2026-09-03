@@ -1899,3 +1899,13 @@ O núcleo do produto é uma máquina operacional auditável, não apenas um dash
 4. proteção de dados e permissões reais no banco.
 
 Uma implementação que tenha uma interface bonita, mas não consiga provar essas quatro propriedades, não atende esta especificação.
+### GOV-006 â€” Disponibilidade manual sem SLA operacional
+
+- **Regra anterior:** a GOV-004/DEC-028 previa SLA de 24 horas Ãºteis, lembrete, ciclos de feedback e estado derivado **Bloqueado por atraso**, que impedia novas atribuiÃ§Ãµes.
+- **Nova regra:** a disponibilidade operacional possui somente **Ativo** e **Pausado**. Pausado Ã© uma aÃ§Ã£o manual, definida e removida exclusivamente pelo administrador. NÃ£o hÃ¡ prazo, SLA comercial, lembrete, bloqueio automÃ¡tico ou estado Bloqueado por atraso. AusÃªncia de comentÃ¡rio nÃ£o altera fila, elegibilidade ou estado do vendedor. ComentÃ¡rios, situaÃ§Ã£o primÃ¡ria e marcador Desqualificado continuam sendo registrados manualmente pelo vendedor; Desqualificado exige comentÃ¡rio na mesma tratativa.
+- **Motivo:** alinhar o sistema Ã  operaÃ§Ã£o real aprovada e remover uma consequÃªncia automÃ¡tica que nÃ£o faz parte do processo comercial atual.
+- **Impacto em dados existentes:** nenhum evento, comentÃ¡rio, atribuiÃ§Ã£o ou timestamp histÃ³rico Ã© apagado. Campos/ciclos legados de SLA podem permanecer somente para auditoria, sem serem calculados, exibidos ou usados na elegibilidade corrente.
+- **Impacto em mÃ©tricas:** remover prazo, lembrete, atraso e bloqueio das mÃ©tricas operacionais atuais; manter contadores de comentÃ¡rios, situaÃ§Ã£o primÃ¡ria, marcador e atribuiÃ§Ãµes. A fila continua FIFO e transferÃªncia nÃ£o altera cursor.
+- **MigraÃ§Ã£o necessÃ¡ria:** versionar ajustes de projeÃ§Ãµes, comandos e contratos para aceitar apenas `active`/`paused`; nÃ£o editar migraÃ§Ãµes aplicadas nem remover dados histÃ³ricos.
+- **Novos testes de aceite:** vendedor ativo e pausado sÃ£o os Ãºnicos estados; pausa/ativaÃ§Ã£o manual do administrador funciona; lead sem comentÃ¡rio nÃ£o Ã© bloqueado nem muda de posiÃ§Ã£o; nenhuma tela ou alerta apresenta prazo/SLA/Bloqueado por atraso; comentÃ¡rio vÃ¡lido atualiza apenas tratativa/status/marcador; FIFO permanece inalterado.
+- **AprovaÃ§Ã£o:** Yago, em 03 de setembro de 2026.
