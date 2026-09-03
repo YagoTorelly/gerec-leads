@@ -666,7 +666,10 @@ class QueueRepository:
             active=self._users.find_one({"_id": seller_id, "active": True}, session=session)
             is not None,
             paused=bool(queue.get("paused", False)),
-            has_overdue_feedback=self._seller_has_overdue(seller_id, now, session),
+            # Overdue cycles are retained for historical/audit reads only. They
+            # no longer create an operational availability state or remove a
+            # seller from FIFO; only manual pause controls eligibility.
+            has_overdue_feedback=False,
             skip_balance=self._balance(seller_id, session),
             position=int(queue["position"]),
         )

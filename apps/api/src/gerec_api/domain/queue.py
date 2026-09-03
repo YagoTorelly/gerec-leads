@@ -20,7 +20,7 @@ class SellerState:
 
 @dataclass(frozen=True)
 class SellerAvailability:
-    status: Literal["active", "paused", "blocked_overdue"]
+    status: Literal["active", "paused"]
     reason: str | None
 
 
@@ -53,8 +53,9 @@ class QueueRules:
             return SellerAvailability("paused", "Pausa manual ativa.")
         if not seller.active:
             return SellerAvailability("paused", "Vendedor inativo.")
-        if seller.has_overdue_feedback:
-            return SellerAvailability("blocked_overdue", "Possui ciclo de SLA vencido.")
+        # Feedback/SLA fields remain historical data, but do not affect the
+        # current operational availability. Only manual pause (or account
+        # deactivation) can remove a seller from the rotation.
         return SellerAvailability("active", None)
 
     @classmethod

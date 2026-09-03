@@ -33,25 +33,19 @@ def test_ac01_rotation_assigns_each_seller_once_and_returns_to_renato() -> None:
     assert cursor == sellers[0].seller_id
 
 
-def test_ac02_ac03_overdue_seller_loses_the_turn_without_restoration() -> None:
-    """Breaks if an overdue seller keeps a turn or is served immediately after regularizing."""
+def test_overdue_feedback_does_not_change_fifo_eligibility() -> None:
+    """SLA history must not create an automatic queue state."""
     renato, sandra, jessica, nelma = [_seller() for _ in range(4)]
     renato = SellerState(renato.seller_id, True, False, True, 0)
 
-    first = QueueRules.select_normal([renato, sandra, jessica, nelma], renato.seller_id)
-    regularized = SellerState(renato.seller_id, True, False, False, 0)
-    second = QueueRules.select_normal(
-        [regularized, sandra, jessica, nelma],
-        first.next_seller_id,
-    )
+    decision = QueueRules.select_normal([renato, sandra, jessica, nelma], renato.seller_id)
 
-    assert first.seller_id == sandra.seller_id
-    assert first.next_seller_id == jessica.seller_id
-    assert second.seller_id == jessica.seller_id
+    assert decision.seller_id == renato.seller_id
+    assert QueueRules.availability(renato).status == "active"
 
 
-def test_ac04_ac05_one_overdue_lead_blocks_and_all_unavailable_parks() -> None:
-    """Breaks if any blocked/paused/inactive seller can receive a normal lead."""
+def test_only_manual_pause_or_inactive_user_is_unavailable() -> None:
+    """Overdue history alone never removes a seller from the queue."""
     sellers = [
         _seller(overdue=True),
         _seller(paused=True),
@@ -61,20 +55,21 @@ def test_ac04_ac05_one_overdue_lead_blocks_and_all_unavailable_parks() -> None:
 
     decision = QueueRules.select_normal(sellers, sellers[0].seller_id)
 
-    assert decision.seller_id is None
-    assert decision.next_seller_id == sellers[0].seller_id
-    assert decision.consumed_credit_seller_ids == ()
+    assert decision.seller_id == sellers[0].seller_id
+    assert QueueRules.availability(sellers[0]).status == "active"
+    assert QueueRules.availability(sellers[1]).status == "paused"
+    assert QueueRules.availability(sellers[2]).status == "paused"
 
 
-def test_availability_prioritizes_manual_pause_over_automatic_overdue_block() -> None:
-    """Breaks if an overdue deadline can hide a manual pause in the queue projection."""
+def test_availability_has_only_active_and_paused_states() -> None:
+    """Availability is controlled only by account activity and manual pause."""
     paused_and_overdue = _seller(paused=True, overdue=True)
     blocked_only = _seller(overdue=True)
     active = _seller()
 
     assert QueueRules.availability(paused_and_overdue).status == "paused"
     assert QueueRules.availability(paused_and_overdue).reason is not None
-    assert QueueRules.availability(blocked_only).status == "blocked_overdue"
+    assert QueueRules.availability(blocked_only).status == "active"
     assert QueueRules.availability(active).status == "active"
     assert QueueRules.availability(active).reason is None
 
@@ -90,16 +85,16 @@ def test_snapshot_starts_with_next_eligible_seller_and_keeps_unavailable_entries
 
     assert snapshot.cursor_seller_id == renato.seller_id
     assert [entry.seller_id for entry in snapshot.entries] == [
+        sandra.seller_id,
         jessica.seller_id,
         nelma.seller_id,
         renato.seller_id,
-        sandra.seller_id,
     ]
     assert [entry.availability.status for entry in snapshot.entries] == [
         "active",
         "active",
+        "active",
         "paused",
-        "blocked_overdue",
     ]
 
 
@@ -146,10 +141,10 @@ def test_ac08_credits_cross_rotations_and_are_consumed_exactly_once() -> None:
     assert renato.skip_balance == 1
 
 
-def test_only_operational_seller_with_credit_consumes_it_then_receives_the_lead() -> None:
-    """Breaks if a finite skip balance can park a lead forever or fall below zero."""
+def test_only_active_seller_with_credit_consumes_it_then_receives_the_lead() -> None:
+    """A finite skip balance can park a lead temporarily without negative balance."""
     renato = _seller(credits=2)
-    others = [_seller(overdue=True) for _ in range(3)]
+    others = [_seller(paused=True) for _ in range(3)]
 
     decision = QueueRules.select_normal([renato, *others], renato.seller_id)
 
