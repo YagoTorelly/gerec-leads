@@ -26,6 +26,7 @@ READY_COMMAND = "queue.distribute_ready"
 RECURRING_COMMAND = "queue.assign_recurring"
 TEMPORARY_COMMAND = "queue.assign_temporarily"
 TRANSFER_COMMAND = "queue.transfer_owner"
+TRANSFER_LEAD_COMMAND = "queue.transfer_lead"
 QUEUE_STATE_ID = "global"
 
 ResultT = TypeVar("ResultT", AssignmentResult, TransferResult)
@@ -144,6 +145,24 @@ class QueueRepository:
                 command_id,
                 actor_id,
                 session,
+            ),
+        )
+
+    def transfer_lead(
+        self,
+        lead_id: Any,
+        seller_id: Any,
+        reason: str,
+        command_id: str,
+        *,
+        actor_id: Any,
+    ) -> AssignmentResult:
+        return self._execute(
+            TRANSFER_LEAD_COMMAND,
+            command_id,
+            AssignmentResult,
+            lambda session: self._transfer_lead(
+                lead_id, seller_id, reason, command_id, actor_id, session
             ),
         )
 
@@ -434,6 +453,72 @@ class QueueRepository:
             previous_owner_id=(str(previous_owner_id) if previous_owner_id is not None else None),
             owner_id=str(seller_id),
         )
+
+    def _transfer_lead(
+        self,
+        lead_id: Any,
+        seller_id: Any,
+        reason: str,
+        command_id: str,
+        actor_id: Any,
+        session: Any,
+    ) -> AssignmentResult:
+        now = self._now()
+        lead = self._leads.find_one({"_id": lead_id, "archivedAt": None}, session=session)
+        if lead is None or lead.get("assigneeId") is None:
+            raise QueueStateError("assigned lead not found")
+        if lead.get("assigneeId") == seller_id:
+            raise QueueStateError("new seller must differ from current seller")
+        user = self._users.find_one({"_id": seller_id, "active": True}, session=session)
+        if user is None:
+            raise QueueStateError("new seller is not active")
+        current_assignment_id = lead.get("currentAssignmentId")
+        if current_assignment_id is not None:
+            ended = self._assignments.update_one(
+                {"_id": current_assignment_id, "current": True},
+                {"$set": {"current": False, "endedAt": now}},
+                session=session,
+            )
+            if ended.matched_count != 1:
+                raise QueueStateError("current assignment changed concurrently")
+        current_cycle_id = lead.get("feedbackCycleId")
+        if current_cycle_id is not None:
+            self._feedback_cycles.update_one(
+                {"_id": current_cycle_id, "closedAt": None},
+                {"$set": {"closedAt": now}},
+                session=session,
+            )
+        cleared = self._leads.update_one(
+            {"_id": lead_id, "currentAssignmentId": current_assignment_id},
+            {"$set": {"currentAssignmentId": None}},
+            session=session,
+        )
+        if cleared.matched_count != 1:
+            raise QueueStateError("lead changed concurrently")
+        result = self._assign_effective(
+            lead,
+            seller_id,
+            "permanent_transfer",
+            reason,
+            command_id,
+            actor_id,
+            now,
+            session,
+        )
+        self._record_event(
+            event_type="lead.owner_transferred",
+            entity_type="lead",
+            entity_id=lead_id,
+            action="lead.owner_transferred",
+            command_id=command_id,
+            actor_id=actor_id,
+            before={"assigneeId": lead.get("assigneeId")},
+            after={"assigneeId": seller_id},
+            now=now,
+            session=session,
+            reason=reason,
+        )
+        return result
 
     def _assign_effective(
         self,

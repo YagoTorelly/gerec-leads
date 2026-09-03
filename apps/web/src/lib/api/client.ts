@@ -83,7 +83,13 @@ function managedUser(value: unknown): ManagedUser {
   const fullName = text(record.fullName);
   const id = text(record.id);
   const role = record.role;
-  if (!id || !fullName || !email || (role !== "admin" && role !== "seller") || typeof record.active !== "boolean") {
+  if (
+    !id ||
+    !fullName ||
+    !email ||
+    (role !== "admin" && role !== "seller") ||
+    typeof record.active !== "boolean"
+  ) {
     throw new ApiRequestError("A resposta de usuários é inválida.", 502);
   }
   return {
@@ -124,7 +130,11 @@ function managedUserPage(value: unknown): Page<ManagedUser> {
   };
 }
 
-export async function getManagedUsers(sessionToken: string, page = 1, limit = 50): Promise<Page<ManagedUser>> {
+export async function getManagedUsers(
+  sessionToken: string,
+  page = 1,
+  limit = 50,
+): Promise<Page<ManagedUser>> {
   return managedUserPage(
     await apiFetch<unknown>(`/api/admin/users?page=${page}&limit=${limit}`, {
       cache: "no-store",
@@ -199,4 +209,18 @@ export async function getLeadTreatments(
       headers: { Cookie: `gerec_session=${sessionToken}` },
     },
   );
+}
+
+export async function transferLeadOwnership(
+  leadId: string,
+  sellerId: string,
+  reason: string,
+  commandId: string,
+  sessionToken: string,
+): Promise<{ leadId: string; sellerId: string; status: string }> {
+  return apiFetch(`/api/admin/leads/${encodeURIComponent(leadId)}/transfer-owner`, {
+    method: "POST",
+    headers: sessionHeaders(sessionToken),
+    body: JSON.stringify({ seller_id: sellerId, reason, command_id: commandId, confirmed: true }),
+  });
 }

@@ -276,6 +276,13 @@ As ações críticas deverão ser comandos explícitos do domínio implementados
 
 O administrador pode acrescentar uma nota administrativa, mas essa nota não conta como feedback do vendedor, não renova o SLA e não desbloqueia o vendedor. Isso impede regularização artificial do acompanhamento.
 
+### 9.4 Transferência manual de propriedade do lead
+
+- Somente o administrador pode transferir manualmente a propriedade de um lead.
+- A transferência altera o responsável atual e não altera o cursor, a ordem da fila ou créditos de pulo.
+- Após a transferência, o vendedor anterior perde totalmente o acesso ao lead e às tratativas relacionadas, inclusive em leitura.
+- O histórico permanece preservado para auditoria administrativa e para o novo responsável conforme suas permissões.
+
 ---
 
 ## 10. Glossário canônico
@@ -1870,6 +1877,17 @@ Nenhuma IA ou desenvolvedor deve “melhorar” uma regra de negócio sem aprese
 - **Aprovação:** Yago, em 28 de agosto de 2026.
 
 ---
+
+### GOV-005 — Transferência manual e revogação de acesso do vendedor anterior
+
+- **Regra anterior:** após transferência, o vendedor anterior podia consultar em leitura os registros históricos produzidos enquanto era responsável.
+- **Nova regra:** somente o administrador pode transferir manualmente um lead. A transferência altera apenas o responsável/proprietário do lead, não move o cursor, não altera a ordem FIFO e não cria nem consome créditos. A partir da confirmação, o vendedor anterior perde qualquer acesso ao lead e às tratativas relacionadas, inclusive leitura; o novo responsável passa a ser o único vendedor com acesso operacional.
+- **Motivo:** garantir que a propriedade transferida represente também a separação operacional e de confidencialidade entre vendedores.
+- **Impacto em dados existentes:** nenhum registro é apagado. Os tratamentos permanecem disponíveis ao administrador para auditoria e ao novo responsável segundo suas permissões; consultas do vendedor anterior deixam de retornar o lead e seus tratamentos.
+- **Impacto em métricas:** atribuições e tratativas históricas continuam contabilizadas globalmente; métricas do vendedor anterior deixam de incluir esse lead após a transferência, enquanto métricas administrativas permanecem completas.
+- **Migração necessária:** nenhuma migração estrutural; ajustar filtros de autorização e registrar evento de transferência com responsável anterior e novo responsável.
+- **Novos testes de aceite:** administrador transfere lead sem alterar cursor/FIFO; vendedor anterior recebe 403 e não vê o lead nem tratamentos; novo responsável vê o lead e pode tratar; auditoria mantém o evento e o histórico.
+- **Aprovação:** Yago, em 3 de setembro de 2026.
 
 ## 40. Encerramento
 

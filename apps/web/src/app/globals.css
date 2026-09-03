@@ -627,6 +627,40 @@ button:disabled {
   white-space: normal;
   line-height: 1.35;
 }
+.lead-actions {
+  display: grid;
+  gap: 6px;
+}
+.inline-transfer {
+  min-width: 230px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.inline-transfer form,
+.inline-transfer label {
+  display: grid;
+  gap: 5px;
+}
+.inline-transfer label {
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.inline-transfer input,
+.inline-transfer select {
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  background: var(--surface);
+}
+.inline-transfer__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
 .route-loading {
   display: grid;
   gap: 12px;

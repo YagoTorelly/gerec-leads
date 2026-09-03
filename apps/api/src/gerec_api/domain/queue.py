@@ -238,6 +238,16 @@ class QueuePersistence(Protocol):
         actor_id: Any,
     ) -> TransferResult: ...
 
+    def transfer_lead(
+        self,
+        lead_id: Any,
+        seller_id: Any,
+        reason: str,
+        command_id: str,
+        *,
+        actor_id: Any,
+    ) -> AssignmentResult: ...
+
 
 class QueueService:
     """Expose queue mutations without leaking MongoDB details to routes or workers."""
@@ -297,6 +307,21 @@ class QueueService:
     ) -> TransferResult:
         return self._persistence.transfer_owner(
             company_id,
+            seller_id,
+            _required(reason, "reason"),
+            _required(command_id, "command id"),
+            actor_id=self._actor_id,
+        )
+
+    def transfer_lead(
+        self,
+        lead_id: Any,
+        seller_id: Any,
+        reason: str,
+        command_id: str,
+    ) -> AssignmentResult:
+        return self._persistence.transfer_lead(
+            lead_id,
             seller_id,
             _required(reason, "reason"),
             _required(command_id, "command id"),

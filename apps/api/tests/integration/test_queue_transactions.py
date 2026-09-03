@@ -530,6 +530,25 @@ def test_permanent_transfer_changes_future_owner_without_rewriting_assignments()
     assert audit["after"] == {"ownerId": sandra}
 
 
+def test_lead_transfer_changes_only_current_assignment_and_preserves_queue_cursor() -> None:
+    database = FakeDatabase()
+    renato, sandra, *_ = _seed_queue(database)
+    lead_id, _ = _seed_lead(database)
+    service = _service(database)
+    service.distribute_normal(lead_id, "lead-transfer-initial")
+    cursor_before = database["queue_state"].find_one({"_id": "global"})["nextSellerId"]
+
+    result = service.transfer_lead(lead_id, sandra, "Cobertura administrativa", "lead-transfer")
+
+    lead = database["leads"].find_one({"_id": lead_id})
+    assert result.seller_id == str(sandra)
+    assert lead["assigneeId"] == sandra
+    assert database["queue_state"].find_one({"_id": "global"})["nextSellerId"] == cursor_before
+    assert any(item["action"] == "lead.owner_transferred" for item in database["audit_log"].documents)
+    assert database["assignments"].documents[0]["sellerId"] == renato
+    assert database["assignments"].documents[0]["current"] is False
+
+
 def test_command_replay_returns_original_result_without_duplicate_side_effects() -> None:
     """Breaks if an idempotent retry creates another assignment/audit/outbox event."""
     database = FakeDatabase()
@@ -617,6 +636,15 @@ def test_admin_routes_propagate_actor_and_require_transfer_confirmation() -> Non
             "confirmed": False,
         },
     )
+    lead_unconfirmed = client.post(
+        f"/api/admin/leads/{lead_id}/transfer-owner",
+        json={
+            "seller_id": str(sandra),
+            "reason": "Transferência do lead",
+            "command_id": "route-lead-transfer-no",
+            "confirmed": False,
+        },
+    )
     confirmed = client.post(
         f"/api/admin/companies/{company_id}/transfer-owner",
         json={
@@ -629,5 +657,6 @@ def test_admin_routes_propagate_actor_and_require_transfer_confirmation() -> Non
 
     assert temporary.status_code == 200
     assert unconfirmed.status_code == 422
+    assert lead_unconfirmed.status_code == 422
     assert confirmed.status_code == 200
     assert all(item["actorId"] == admin_id for item in database["audit_log"].documents)

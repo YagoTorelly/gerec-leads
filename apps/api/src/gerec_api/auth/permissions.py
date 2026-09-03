@@ -121,12 +121,26 @@ class DashboardService:
             "user": _public_user(current),
             "leads": self._lead_page(PermissionService.scope_query(current, "leads"), page, page_size),
             "history": self._treatment_page(
-                PermissionService.scope_query(current, "treatments"),
+                self._seller_history_query(current),
                 page,
                 page_size,
                 include_lead_name=True,
             ),
             "queue": self._seller_queue(current),
+        }
+
+    def _seller_history_query(self, user: CurrentUser) -> dict[str, Any]:
+        """Limit seller history to leads they currently own after transfers."""
+        lead_ids = [
+            lead.get("_id")
+            for lead in self._database[MongoCollections.LEADS].find(
+                PermissionService.scope_query(user, "leads")
+            )
+            if lead.get("_id") is not None
+        ]
+        return {
+            "sellerId": {"$in": _identity_values(user.id)},
+            "leadId": {"$in": lead_ids},
         }
 
     def queue_for_user(self, user: CurrentUser | None) -> dict[str, Any]:
@@ -150,11 +164,8 @@ class DashboardService:
         query: dict[str, Any] = {"leadId": {"$in": _identity_values(lead_id)}}
         if current.role == "seller":
             seller_query = PermissionService.scope_query(current, "treatments")
-            own_treatments = self._database[MongoCollections.LEAD_TREATMENTS].find_one(
-                {**query, **seller_query}
-            )
             current_owner = lead.get("assigneeId") in _identity_values(current.id)
-            if not current_owner and own_treatments is None:
+            if not current_owner:
                 raise PermissionDenied("lead is outside current user scope")
             query.update(seller_query)
         return self._treatment_page(query, page, page_size, include_lead_name=False)

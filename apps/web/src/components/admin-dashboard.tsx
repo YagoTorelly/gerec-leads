@@ -1,5 +1,10 @@
 import Link from "next/link";
-import type { AdminDashboard as AdminDashboardData, QueueEntry, Treatment } from "../lib/api/types";
+import type {
+  AdminDashboard as AdminDashboardData,
+  ManagedUser,
+  QueueEntry,
+  Treatment,
+} from "../lib/api/types";
 import {
   formatCommercialStatus,
   formatDateTime,
@@ -51,7 +56,13 @@ function TreatmentPreview({ item }: { item: Treatment }) {
   );
 }
 
-export function AdminDashboard({ dashboard }: { dashboard: AdminDashboardData }) {
+export function AdminDashboard({
+  dashboard,
+  transferTargets = [],
+}: {
+  dashboard: AdminDashboardData;
+  transferTargets?: ManagedUser[];
+}) {
   return (
     <>
       <section className="metric-grid" aria-label="Resumo operacional administrativo">
@@ -125,7 +136,7 @@ export function AdminDashboard({ dashboard }: { dashboard: AdminDashboardData })
         </section>
       </section>
 
-      <LeadTable leads={dashboard.leads.items} role="admin" />
+      <LeadTable leads={dashboard.leads.items} role="admin" transferTargets={transferTargets} />
     </>
   );
 }

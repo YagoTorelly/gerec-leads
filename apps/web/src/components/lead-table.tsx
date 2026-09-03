@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-import type { OperationalLead, TreatmentSubmission, UserRole } from "../lib/api/types";
+import type { ManagedUser, OperationalLead, TreatmentSubmission, UserRole } from "../lib/api/types";
 import {
   formatCommentCount,
   formatCommercialStatus,
@@ -11,8 +11,9 @@ import {
   getSlaState,
 } from "../lib/dashboard/format";
 import { LeadTreatmentModal } from "./lead-treatment-modal";
+import { LeadTransferModal } from "./lead-transfer-modal";
 
-type LeadTableProps = { leads: OperationalLead[]; role: UserRole };
+type LeadTableProps = { leads: OperationalLead[]; role: UserRole; transferTargets?: ManagedUser[] };
 
 /** Render Brazilian numbers consistently, whether the source includes +55 or not. */
 export function formatBrazilianPhone(value: string | null | undefined): string {
@@ -54,7 +55,7 @@ function statusClass(status: OperationalLead["commercialStatus"]): string {
   return `commercial-status ${status}`;
 }
 
-export function LeadTable({ leads, role }: LeadTableProps) {
+export function LeadTable({ leads, role, transferTargets = [] }: LeadTableProps) {
   const [leadOverrides, setLeadOverrides] = useState<Record<string, OperationalLead>>({});
   // Do not read the wall clock during SSR and hydration: the same lead can
   // otherwise receive different SLA classes across those two renders.
@@ -140,11 +141,25 @@ export function LeadTable({ leads, role }: LeadTableProps) {
                   </td>
                   <td>{formatCommentCount(currentLead.commentCount)}</td>
                   <td>
-                    <LeadTreatmentModal
-                      lead={currentLead}
-                      mode={role === "seller" ? "write" : "read"}
-                      onSubmitted={role === "seller" ? onSubmitted : undefined}
-                    />
+                    <div className="lead-actions">
+                      <LeadTreatmentModal
+                        lead={currentLead}
+                        mode={role === "seller" ? "write" : "read"}
+                        onSubmitted={role === "seller" ? onSubmitted : undefined}
+                      />
+                      {role === "admin" ? (
+                        <LeadTransferModal
+                          lead={currentLead}
+                          targets={transferTargets}
+                          onSuccess={(sellerName) => {
+                            setLeadOverrides((current) => ({
+                              ...current,
+                              [currentLead.id]: { ...currentLead, sellerName },
+                            }));
+                          }}
+                        />
+                      ) : null}
+                    </div>
                   </td>
                 </tr>
               );

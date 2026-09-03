@@ -1,6 +1,6 @@
 ﻿# Contexto Mestre - Gerenciador de Leads WTG
 
-> Gerado em 2026-08-31 15:47:28 UTC por `scripts/generate-master-context.ps1`.
+> Gerado em 2026-09-03 12:51:03 UTC por `scripts/generate-master-context.ps1`.
 
 ## Como usar este documento
 
@@ -302,6 +302,13 @@ As ações críticas deverão ser comandos explícitos do domínio implementados
 ### 9.3 Notas administrativas
 
 O administrador pode acrescentar uma nota administrativa, mas essa nota não conta como feedback do vendedor, não renova o SLA e não desbloqueia o vendedor. Isso impede regularização artificial do acompanhamento.
+
+### 9.4 Transferência manual de propriedade do lead
+
+- Somente o administrador pode transferir manualmente a propriedade de um lead.
+- A transferência altera o responsável atual e não altera o cursor, a ordem da fila ou créditos de pulo.
+- Após a transferência, o vendedor anterior perde totalmente o acesso ao lead e às tratativas relacionadas, inclusive em leitura.
+- O histórico permanece preservado para auditoria administrativa e para o novo responsável conforme suas permissões.
 
 ---
 
@@ -1898,6 +1905,17 @@ Nenhuma IA ou desenvolvedor deve “melhorar” uma regra de negócio sem aprese
 
 ---
 
+### GOV-005 — Transferência manual e revogação de acesso do vendedor anterior
+
+- **Regra anterior:** após transferência, o vendedor anterior podia consultar em leitura os registros históricos produzidos enquanto era responsável.
+- **Nova regra:** somente o administrador pode transferir manualmente um lead. A transferência altera apenas o responsável/proprietário do lead, não move o cursor, não altera a ordem FIFO e não cria nem consome créditos. A partir da confirmação, o vendedor anterior perde qualquer acesso ao lead e às tratativas relacionadas, inclusive leitura; o novo responsável passa a ser o único vendedor com acesso operacional.
+- **Motivo:** garantir que a propriedade transferida represente também a separação operacional e de confidencialidade entre vendedores.
+- **Impacto em dados existentes:** nenhum registro é apagado. Os tratamentos permanecem disponíveis ao administrador para auditoria e ao novo responsável segundo suas permissões; consultas do vendedor anterior deixam de retornar o lead e seus tratamentos.
+- **Impacto em métricas:** atribuições e tratativas históricas continuam contabilizadas globalmente; métricas do vendedor anterior deixam de incluir esse lead após a transferência, enquanto métricas administrativas permanecem completas.
+- **Migração necessária:** nenhuma migração estrutural; ajustar filtros de autorização e registrar evento de transferência com responsável anterior e novo responsável.
+- **Novos testes de aceite:** administrador transfere lead sem alterar cursor/FIFO; vendedor anterior recebe 403 e não vê o lead nem tratamentos; novo responsável vê o lead e pode tratar; auditoria mantém o evento e o histórico.
+- **Aprovação:** Yago, em 3 de setembro de 2026.
+
 ## 40. Encerramento
 
 O núcleo do produto é uma máquina operacional auditável, não apenas um dashboard. A qualidade da solução dependerá principalmente de quatro pontos:
@@ -2514,7 +2532,7 @@ As decisões abaixo foram aprovadas na organização inicial do projeto. Mudanç
 | DEC-009 | A arquitetura inicial previa n8n hospedado na Cloudfy. | Registro histórico substituído por automações Python idempotentes na Railway; não orienta novas implementações. | Substituída pela DEC-026 |
 | DEC-010 | Os usuários iniciais são Yago, Renato, Sandra, Jessica e Nelma. | Yago é administrador; os demais são vendedores na ordem canônica da fila. | Aprovada |
 | DEC-011 | Contas usam senhas aleatórias sem troca obrigatória inicial. | Simplifica o primeiro MVP; redefinição administrativa permanece disponível. | Aprovada |
-| DEC-012 | Vendedor vê somente seus dados. | Após transferência, mantém apenas seus próprios registros históricos em leitura, sem ações posteriores do novo responsável. | Aprovada |
+| DEC-012 | Vendedor vê somente seus dados. | Regra substituída pela DEC-029 para transferência de propriedade: após a transferência, o vendedor anterior perde qualquer acesso ao lead e às tratativas relacionadas. | Substituída pela DEC-029 |
 | DEC-013 | O backend e banco precedem o frontend. | A interface não pode antecipar regras críticas ainda não comprovadas. | Aprovada |
 | DEC-014 | A interface usa a identidade visual WTG. | Materiais do legado podem ser consultados apenas como referência visual. | Aprovada |
 | DEC-015 | O provedor de e-mail será definido depois. | A outbox e a interface de notificação serão construídas antes do adapter real. | Aprovada |
@@ -2531,6 +2549,7 @@ As decisões abaixo foram aprovadas na organização inicial do projeto. Mudanç
 | DEC-026 | Vercel hospeda o cliente Next.js/React; Railway hospeda a API, workers, jobs e agendamentos Python. | As automações usam comandos compartilhados e outbox idempotente, sem manter invariantes do domínio. O sistema novo não usa n8n. | Aprovada em 27/08/2026 |
 | DEC-027 | Não haverá migração de dados comerciais nesta mudança arquitetural. | O MongoDB destinado ao produto está vazio. A mudança preserva as regras, métricas e o contrato do fixture; artefatos legados serão retirados em tarefa própria. | Aprovada em 27/08/2026 |
 | DEC-028 | A operação comercial usa SLA de 24 horas úteis apenas entre 09:00 e 18:00; `isDisqualified` é marcador adicional que encerra o SLA. Ambos impedem somente novas atribuições e preservam os leads existentes. Pausa manual é definida e removida somente pelo administrador. Bloqueado por atraso é derivado de qualquer ciclo de SLA aberto vencido. Ele cessa automaticamente após a regularização de todos os ciclos vencidos. Quando coexistirem, Pausado prevalece na apresentação e na elegibilidade. A regularização não devolve turnos perdidos. O vendedor atualmente responsável é o único autor de tratativa. O administrador possui somente leitura global da tratativa. | Vendedor atrasado fica Bloqueado por atraso sem redistribuir leads; ganhos e desqualificados são métricas independentes. As contas aprovadas neste ambiente são Yago, André, Renato, Sandra, Jessica e Nelma: Yago e André são administradores; os demais são vendedores. Criação e redefinição aceitam senha não vazia, sem política adicional. Histórico é preservado, e prazos, projeções e métricas são recalculados idempotentemente por migração. Administrador não edita comentário, status ou responsável da tratativa. | Aprovada em 28/08/2026 |
+| DEC-029 | Transferência manual de propriedade não altera o cursor ou a ordem FIFO; após a confirmação, o vendedor anterior perde totalmente o acesso ao lead e às tratativas, inclusive leitura. | A transferência é exclusiva do administrador, auditável e preserva os dados para auditoria administrativa e para o novo responsável. | Aprovada em 03/09/2026 |
 
 ## Desenho de produto: `docs/superpowers/specs/2026-08-25-organizacao-roadmap-design.md`
 
@@ -6958,6 +6977,65 @@ Configuração operacional: `infra/railway/README.md`.
 Este diretório abrigará contratos de integrações externas a partir da Etapa 4.
 Não há integração real habilitada na Etapa 1.
 
+## Evidência: `docs/evidencias/2026-08-28-reconstrucao-operacional.md`
+
+# Evidências da reconstrução operacional — Gerenciador de Leads WTG
+
+Data da verificação: 31/08/2026
+Worktree: `.worktrees/migracao-mongodb-vercel-railway`
+Branch: `feat/migracao-mongodb-vercel-railway`
+
+## Escopo validado
+
+Este registro fecha o gate operacional das Tasks 1–16 do plano de reconstrução. A validação cobre o núcleo Python/MongoDB, contratos HTTP, cliente Next.js, permissões administrativas e de vendedor, tratativas comerciais, fila FIFO dinâmica, paginação, usuários, SLA de 24 horas úteis e os fluxos E2E em desktop.
+
+## Comandos e resultados
+
+| Comando | Resultado observado |
+| --- | --- |
+| `python -m pytest apps/api/tests -q` | **151 passed, 8 skipped** em 20,82 s |
+| `npm run test --workspace=@wtg/web -- --run` | **16 arquivos, 78 testes aprovados** |
+| `npm run lint --workspace=@wtg/web` | **0 erros, 2 avisos** preexistentes: uso de `<img>` e import não usado em teste |
+| `npm run typecheck --workspace=@wtg/web` | **Aprovado**, `tsc --noEmit` sem saída de erro |
+| `npm run build --workspace=@wtg/web` | **Aprovado**, Next.js 16.3.3 compilou e gerou as rotas |
+| `node --test tests/contracts/*.test.mjs` | **5 testes aprovados** |
+| `npx playwright test --project=chromium` | **12 testes aprovados** em 18,1 s |
+| `powershell -ExecutionPolicy Bypass -File scripts/generate-master-context.ps1` | **Aprovado**, contexto mestre regenerado com 19.521 linhas |
+| `git diff --check` | Executado no gate; nenhuma falha de whitespace registrada |
+
+## E2E e referências visuais
+
+Os fluxos foram executados com fixture local determinística, sem produção, Google Sheets ou MongoDB real. A suíte Chromium usa viewport 1440×900 e cobre:
+
+- autenticação válida e inválida;
+- redirecionamento e isolamento por perfil;
+- criação de vendedor no fim da fila, pausa, ativação e redefinição de senha;
+- leitura administrativa sem controles de edição de tratativas;
+- paginação semântica de fila e histórico;
+- tratativa do vendedor com comentário mínimo, status, contador e desqualificação;
+- snapshots do dashboard administrativo, usuários/modal, fila/histórico e dashboard/modal do vendedor.
+
+## Limitações conhecidas
+
+- O escopo continua exclusivamente desktop (largura mínima de 1280 px).
+- Os oito skips da suíte API correspondem aos testes condicionados à disponibilidade de replica set MongoDB.
+- O lint mantém dois avisos não bloqueantes listados acima; não há erros.
+- A suíte visual é uma referência determinística do fixture e não substitui validação com dados reais da operação.
+- Integração definitiva com a planilha, e-mail, WhatsApp e operação de produção permanecem fora deste gate.
+
+## Correção necessária encontrada no gate
+
+O contrato HTTP controlado ainda não preenchia `last_updated_at` ao criar seu `TreatmentResult`, embora o domínio já exigisse o carimbo persistido autoritativo. O fixture foi atualizado para usar um timestamp fixo de 28/08/2026; após a correção, os cinco contratos HTTP passaram. Nenhuma regra de negócio de produção foi alterada.
+
+## Integridade e arquivos protegidos
+
+Não foram feitos push, merge, deploy ou ações externas. Os arquivos preexistentes protegidos foram preservados sem inclusão:
+
+- `apps/api/.env.example` permanece uma exclusão preexistente;
+- `tools/google-sheets-diagnostic/` permanece não rastreado e fora da alteração.
+
+Segredos, credenciais e acesso direto ao MongoDB não foram expostos ao navegador nem adicionados à evidência.
+
 ## Evidência: `docs/evidencias/etapa-1.md`
 
 # Evidência histórica da Etapa 1
@@ -7723,12 +7801,26 @@ class DashboardService:
             "user": _public_user(current),
             "leads": self._lead_page(PermissionService.scope_query(current, "leads"), page, page_size),
             "history": self._treatment_page(
-                PermissionService.scope_query(current, "treatments"),
+                self._seller_history_query(current),
                 page,
                 page_size,
                 include_lead_name=True,
             ),
             "queue": self._seller_queue(current),
+        }
+
+    def _seller_history_query(self, user: CurrentUser) -> dict[str, Any]:
+        """Limit seller history to leads they currently own after transfers."""
+        lead_ids = [
+            lead.get("_id")
+            for lead in self._database[MongoCollections.LEADS].find(
+                PermissionService.scope_query(user, "leads")
+            )
+            if lead.get("_id") is not None
+        ]
+        return {
+            "sellerId": {"$in": _identity_values(user.id)},
+            "leadId": {"$in": lead_ids},
         }
 
     def queue_for_user(self, user: CurrentUser | None) -> dict[str, Any]:
@@ -7752,11 +7844,8 @@ class DashboardService:
         query: dict[str, Any] = {"leadId": {"$in": _identity_values(lead_id)}}
         if current.role == "seller":
             seller_query = PermissionService.scope_query(current, "treatments")
-            own_treatments = self._database[MongoCollections.LEAD_TREATMENTS].find_one(
-                {**query, **seller_query}
-            )
             current_owner = lead.get("assigneeId") in _identity_values(current.id)
-            if not current_owner and own_treatments is None:
+            if not current_owner:
                 raise PermissionDenied("lead is outside current user scope")
             query.update(seller_query)
         return self._treatment_page(query, page, page_size, include_lead_name=False)
@@ -7765,13 +7854,51 @@ class DashboardService:
         return _page_number(page), _page_limit(self._page_size if limit is None else limit)
 
     def _lead_page(self, query: Mapping[str, Any], page: int, page_size: int) -> dict[str, Any]:
-        return self._page(
-            MongoCollections.LEADS,
-            query,
-            page,
-            page_size,
-            self._lead_projection,
-        )
+        collection = self._database[MongoCollections.LEADS]
+        cursor = collection.find(dict(query))
+        if hasattr(cursor, "sort"):
+            cursor = cursor.sort("createdAt", -1)
+        if hasattr(cursor, "skip"):
+            cursor = cursor.skip((page - 1) * page_size)
+        if hasattr(cursor, "limit"):
+            cursor = cursor.limit(page_size)
+        leads = list(cursor)
+        references = self._lead_references(leads)
+        items = [self._lead_projection(lead, references=references) for lead in leads]
+        total = collection.count_documents(dict(query)) if hasattr(collection, "count_documents") else len(items)
+        return {"items": items, "page": page, "pageSize": page_size, "total": total}
+
+    def _lead_references(self, leads: list[Mapping[str, Any]]) -> dict[str, dict[str, Mapping[str, Any]]]:
+        """Load all lead enrichment references with one query per collection."""
+        ids_by_collection: dict[str, list[Any]] = {
+            MongoCollections.USERS: [],
+            MongoCollections.COMPANIES: [],
+            MongoCollections.CAMPAIGNS: [],
+        }
+        for lead in leads:
+            for collection_name, field in (
+                (MongoCollections.USERS, "assigneeId"),
+                (MongoCollections.COMPANIES, "companyId"),
+                (MongoCollections.CAMPAIGNS, "campaignId"),
+            ):
+                value = lead.get(field)
+                if value is not None:
+                    ids_by_collection[collection_name].extend(_identity_values(value))
+
+        references: dict[str, dict[str, Mapping[str, Any]]] = {}
+        for collection_name, values in ids_by_collection.items():
+            unique_values = list(dict.fromkeys(values))
+            if not unique_values:
+                references[collection_name] = {}
+                continue
+            collection = self._database[collection_name]
+            documents = collection.find({"_id": {"$in": unique_values}})
+            references[collection_name] = {
+                str(candidate): document
+                for document in documents
+                for candidate in _identity_values(document.get("_id"))
+            }
+        return references
 
     def _treatment_page(
         self,
@@ -7781,13 +7908,49 @@ class DashboardService:
         *,
         include_lead_name: bool,
     ) -> dict[str, Any]:
-        return self._page(
-            MongoCollections.LEAD_TREATMENTS,
-            query,
-            page,
-            page_size,
-            lambda treatment: self._treatment_projection(treatment, include_lead_name=include_lead_name),
-        )
+        collection = self._database[MongoCollections.LEAD_TREATMENTS]
+        cursor = collection.find(dict(query))
+        if hasattr(cursor, "sort"):
+            cursor = cursor.sort("createdAt", -1)
+        if hasattr(cursor, "skip"):
+            cursor = cursor.skip((page - 1) * page_size)
+        if hasattr(cursor, "limit"):
+            cursor = cursor.limit(page_size)
+        treatments = list(cursor)
+        references = self._treatment_references(treatments)
+        items = [
+            self._treatment_projection(
+                treatment,
+                include_lead_name=include_lead_name,
+                references=references,
+            )
+            for treatment in treatments
+        ]
+        total = collection.count_documents(dict(query)) if hasattr(collection, "count_documents") else len(items)
+        return {"items": items, "page": page, "pageSize": page_size, "total": total}
+
+    def _treatment_references(self, treatments: list[Mapping[str, Any]]) -> dict[str, dict[str, Mapping[str, Any]]]:
+        ids_by_collection: dict[str, list[Any]] = {
+            MongoCollections.USERS: [],
+            MongoCollections.LEADS: [],
+        }
+        for treatment in treatments:
+            ids_by_collection[MongoCollections.USERS].extend(_identity_values(treatment.get("sellerId")))
+            ids_by_collection[MongoCollections.LEADS].extend(_identity_values(treatment.get("leadId")))
+
+        references: dict[str, dict[str, Mapping[str, Any]]] = {}
+        for collection_name, values in ids_by_collection.items():
+            unique_values = list(dict.fromkeys(value for value in values if value is not None))
+            if not unique_values:
+                references[collection_name] = {}
+                continue
+            documents = self._database[collection_name].find({"_id": {"$in": unique_values}})
+            references[collection_name] = {
+                str(candidate): document
+                for document in documents
+                for candidate in _identity_values(document.get("_id"))
+            }
+        return references
 
     def _page(
         self,
@@ -7809,10 +7972,17 @@ class DashboardService:
         total = collection.count_documents(dict(query)) if hasattr(collection, "count_documents") else len(items)
         return {"items": items, "page": page, "pageSize": page_size, "total": total}
 
-    def _lead_projection(self, lead: Mapping[str, Any]) -> dict[str, Any]:
-        company = self._find_by_id(MongoCollections.COMPANIES, lead.get("companyId"))
-        campaign = self._find_by_id(MongoCollections.CAMPAIGNS, lead.get("campaignId"))
-        seller = self._find_by_id(MongoCollections.USERS, lead.get("assigneeId"))
+    def _lead_projection(
+        self,
+        lead: Mapping[str, Any],
+        *,
+        references: dict[str, dict[str, Mapping[str, Any]]] | None = None,
+    ) -> dict[str, Any]:
+        if references is None:
+            references = self._lead_references([lead])
+        company = references[MongoCollections.COMPANIES].get(str(lead.get("companyId")))
+        campaign = references[MongoCollections.CAMPAIGNS].get(str(lead.get("campaignId")))
+        seller = references[MongoCollections.USERS].get(str(lead.get("assigneeId")))
         return _serialize_read_model(
             {
                 "id": str(lead["_id"]),
@@ -7820,7 +7990,7 @@ class DashboardService:
                 "sellerName": _name_or_fallback(seller),
                 "companyName": _company_name(company),
                 "campaignName": _campaign_name(campaign),
-                "phoneDisplay": _phone_without_country_code(lead.get("phoneNormalized")),
+                "phoneDisplay": _phone_without_country_code(self._lead_phone_value(lead)),
                 "email": _text_or_fallback(lead.get("email") or lead.get("emailNormalized")),
                 "commercialStatus": _commercial_status(lead),
                 "isDisqualified": bool(lead.get("isDisqualified", False)),
@@ -7834,10 +8004,15 @@ class DashboardService:
         )
 
     def _treatment_projection(
-        self, treatment: Mapping[str, Any], *, include_lead_name: bool
+        self,
+        treatment: Mapping[str, Any],
+        *,
+        include_lead_name: bool,
+        references: dict[str, dict[str, Mapping[str, Any]]] | None = None,
     ) -> dict[str, Any]:
-        seller = self._find_by_id(MongoCollections.USERS, treatment.get("sellerId"))
-        lead = self._find_by_id(MongoCollections.LEADS, treatment.get("leadId"))
+        references = references or self._treatment_references([treatment])
+        seller = references[MongoCollections.USERS].get(str(treatment.get("sellerId")))
+        lead = references[MongoCollections.LEADS].get(str(treatment.get("leadId")))
         result: dict[str, Any] = {
             "leadId": str(treatment.get("leadId")),
             "sellerName": _name_or_fallback(seller),
@@ -7905,12 +8080,84 @@ class DashboardService:
                 return item
         return None
 
+    def _lead_phone_value(self, lead: Mapping[str, Any]) -> Any:
+        """Read the canonical phone, tolerating source records from older imports.
+
+        Current imports persist ``phoneNormalized`` on the lead.  Some already
+        persisted snapshots retain the original value only in ``source_records``;
+        reading those fields keeps the read model useful without changing the
+        source contract or mutating data during a GET.
+        """
+        value = _phone_from_mapping(lead)
+        if value is not None:
+            return value
+
+        source_records = self._database[MongoCollections.SOURCE_RECORDS]
+        source = _find_source_record(source_records, lead)
+        if source is None:
+            return None
+        return _phone_from_mapping(source)
+
 
 def _identity_values(value: Any) -> list[Any]:
     values: list[Any] = [value]
     if isinstance(value, str) and ObjectId.is_valid(value):
         values.append(ObjectId(value))
+    elif isinstance(value, ObjectId):
+        values.append(str(value))
     return values
+
+
+_PHONE_FIELDS = ("phoneNormalized", "phoneNumber", "phone_number", "phone", "telefone")
+_PHONE_CONTAINERS = (
+    "sourceProjection",
+    "sourcePayload",
+    "sellerProjection",
+    "payload",
+    "projection",
+    "source_projection",
+    "source_payload",
+    "row",
+    "data",
+    "fields",
+)
+_SOURCE_LINK_FIELDS = ("leadId", "lead_id", "sourceLeadId", "source_lead_id")
+
+
+def _phone_from_mapping(value: Any, *, depth: int = 0) -> Any:
+    """Extract only known phone aliases from known persisted containers."""
+    if not isinstance(value, Mapping) or depth > 4:
+        return None
+    for field in _PHONE_FIELDS:
+        candidate = value.get(field)
+        if candidate is not None and str(candidate).strip():
+            return candidate
+    for field in _PHONE_CONTAINERS:
+        candidate = value.get(field)
+        found = _phone_from_mapping(candidate, depth=depth + 1)
+        if found is not None:
+            return found
+    return None
+
+
+def _find_source_record(collection: Any, lead: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """Resolve source records across current and legacy link field names."""
+    lead_values: list[Any] = []
+    for field in ("_id", "id", "sourceLeadId", "source_lead_id"):
+        candidate = lead.get(field)
+        if candidate is not None:
+            lead_values.extend(_identity_values(candidate))
+    seen: set[str] = set()
+    for link_field in _SOURCE_LINK_FIELDS:
+        for candidate in lead_values:
+            marker = f"{link_field}:{candidate!r}"
+            if marker in seen:
+                continue
+            seen.add(marker)
+            source = collection.find_one({link_field: candidate})
+            if source is not None:
+                return source
+    return None
 
 
 def _public_user(user: CurrentUser) -> dict[str, str]:
@@ -10194,6 +10441,16 @@ class QueuePersistence(Protocol):
         actor_id: Any,
     ) -> TransferResult: ...
 
+    def transfer_lead(
+        self,
+        lead_id: Any,
+        seller_id: Any,
+        reason: str,
+        command_id: str,
+        *,
+        actor_id: Any,
+    ) -> AssignmentResult: ...
+
 
 class QueueService:
     """Expose queue mutations without leaking MongoDB details to routes or workers."""
@@ -10253,6 +10510,21 @@ class QueueService:
     ) -> TransferResult:
         return self._persistence.transfer_owner(
             company_id,
+            seller_id,
+            _required(reason, "reason"),
+            _required(command_id, "command id"),
+            actor_id=self._actor_id,
+        )
+
+    def transfer_lead(
+        self,
+        lead_id: Any,
+        seller_id: Any,
+        reason: str,
+        command_id: str,
+    ) -> AssignmentResult:
+        return self._persistence.transfer_lead(
+            lead_id,
             seller_id,
             _required(reason, "reason"),
             _required(command_id, "command id"),
@@ -10833,6 +11105,11 @@ INDEXES: Final[tuple[MongoIndex, ...]] = (
         partial_filter={"archivedAt": None},
     ),
     MongoIndex(
+        MongoCollections.LEADS,
+        (("assigneeId", ASCENDING), ("createdAt", ASCENDING)),
+        "leads_assignee_created_at",
+    ),
+    MongoIndex(
         MongoCollections.SALES,
         (("leadId", ASCENDING),),
         "sales_active_lead_unique",
@@ -10881,6 +11158,11 @@ INDEXES: Final[tuple[MongoIndex, ...]] = (
         MongoCollections.LEAD_TREATMENTS,
         (("leadId", ASCENDING), ("createdAt", ASCENDING)),
         "lead_treatments_lead_created_at",
+    ),
+    MongoIndex(
+        MongoCollections.LEAD_TREATMENTS,
+        (("sellerId", ASCENDING), ("createdAt", ASCENDING)),
+        "lead_treatments_seller_created_at",
     ),
     MongoIndex(
         MongoCollections.LEAD_TREATMENTS,
@@ -11394,7 +11676,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from gerec_api.domain.business_time import BusinessClock, MongoHolidayRepository
+from gerec_api.domain.business_time import BusinessClock, MongoHolidayRepository, SAO_PAULO
 from gerec_api.infrastructure.mongo.collections import MongoCollections
 
 
@@ -11427,7 +11709,7 @@ def _migrate_lead(
     )
     commercial_status = _commercial_status(lead, outcomes)
     is_disqualified = _is_disqualified(lead, outcomes)
-    last_comment_at = feedbacks[-1].get("createdAt") if feedbacks else None
+    last_comment_at = _legacy_datetime(feedbacks[-1].get("createdAt")) if feedbacks else None
 
     _copy_legacy_feedbacks_as_treatments(
         database,
@@ -11466,7 +11748,13 @@ def _valid_feedbacks(database: Any, lead_id: Any, options: dict[str, Any]) -> li
         and feedback.get("contactStarted") is True
         and len(str(feedback.get("comment", "")).strip()) >= 6
     ]
-    return sorted(valid, key=lambda feedback: (feedback.get("createdAt") or _EPOCH, str(feedback["_id"])))
+    return sorted(
+        valid,
+        key=lambda feedback: (
+            _legacy_datetime(feedback.get("createdAt")) or _EPOCH,
+            str(feedback["_id"]),
+        ),
+    )
 
 
 def _copy_legacy_feedbacks_as_treatments(
@@ -11492,7 +11780,7 @@ def _copy_legacy_feedbacks_as_treatments(
                     "commercialStatus": treatment_status,
                     "isDisqualified": treatment_disqualification,
                     "legacyStatusUnavailable": status_unavailable,
-                    "createdAt": feedback.get("createdAt") or _EPOCH,
+                    "createdAt": _legacy_datetime(feedback.get("createdAt")) or _EPOCH,
                     "idempotencyKey": f"legacy-feedback:{legacy_id}",
                     "legacyFeedbackId": legacy_id,
                 }
@@ -11522,7 +11810,7 @@ def _rebuild_queue_positions(database: Any, session: Any | None) -> None:
 def _queue_position_sort_key(entry: dict[str, Any]) -> tuple[int, int, datetime, str]:
     position = entry.get("position")
     valid_position = isinstance(position, int) and not isinstance(position, bool) and position > 0
-    created_at = entry.get("createdAt")
+    created_at = _legacy_datetime(entry.get("createdAt"))
     return (
         0 if valid_position else 1,
         int(position) if valid_position else 0,
@@ -11545,7 +11833,7 @@ def _recalculate_open_cycles(
     )
     recalculated: list[dict[str, Any]] = []
     for cycle in cycles:
-        start_at = cycle.get("startAt") or lead.get("assignedAt")
+        start_at = _legacy_datetime(cycle.get("startAt")) or _legacy_datetime(lead.get("assignedAt"))
         if not isinstance(start_at, datetime):
             continue
         due_at = business_clock.add_business_hours(start_at, 24)
@@ -11590,22 +11878,37 @@ def _disqualification_closed_at(
     outcomes: list[dict[str, Any]], feedbacks: list[dict[str, Any]], lead: dict[str, Any]
 ) -> datetime:
     timestamps = [
-        event.get("createdAt")
+        _legacy_datetime(event.get("createdAt"))
         for event in outcomes
         if event.get("outcome") == "disqualified" and isinstance(event.get("createdAt"), datetime)
     ]
     timestamps.extend(
-        feedback.get("createdAt")
+        _legacy_datetime(feedback.get("createdAt"))
         for feedback in feedbacks
         if isinstance(feedback.get("createdAt"), datetime)
     )
-    if isinstance(lead.get("assignedAt"), datetime):
-        timestamps.append(lead["assignedAt"])
+    assigned_at = _legacy_datetime(lead.get("assignedAt"))
+    if assigned_at is not None:
+        timestamps.append(assigned_at)
     return max(timestamps, default=_EPOCH)
 
 
 def _session_options(session: Any | None) -> dict[str, Any]:
     return {} if session is None else {"session": session}
+
+
+def _legacy_datetime(value: Any) -> datetime | None:
+    """Normalize legacy Mongo timestamps before business-calendar operations.
+
+    Historical records may contain naive datetimes because older Mongo clients
+    did not persist timezone metadata. The canonical interpretation for those
+    values is local São Paulo time; aware values are converted to that zone.
+    """
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=SAO_PAULO)
+    return value.astimezone(SAO_PAULO)
 
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
@@ -12581,6 +12884,7 @@ READY_COMMAND = "queue.distribute_ready"
 RECURRING_COMMAND = "queue.assign_recurring"
 TEMPORARY_COMMAND = "queue.assign_temporarily"
 TRANSFER_COMMAND = "queue.transfer_owner"
+TRANSFER_LEAD_COMMAND = "queue.transfer_lead"
 QUEUE_STATE_ID = "global"
 
 ResultT = TypeVar("ResultT", AssignmentResult, TransferResult)
@@ -12699,6 +13003,24 @@ class QueueRepository:
                 command_id,
                 actor_id,
                 session,
+            ),
+        )
+
+    def transfer_lead(
+        self,
+        lead_id: Any,
+        seller_id: Any,
+        reason: str,
+        command_id: str,
+        *,
+        actor_id: Any,
+    ) -> AssignmentResult:
+        return self._execute(
+            TRANSFER_LEAD_COMMAND,
+            command_id,
+            AssignmentResult,
+            lambda session: self._transfer_lead(
+                lead_id, seller_id, reason, command_id, actor_id, session
             ),
         )
 
@@ -12989,6 +13311,72 @@ class QueueRepository:
             previous_owner_id=(str(previous_owner_id) if previous_owner_id is not None else None),
             owner_id=str(seller_id),
         )
+
+    def _transfer_lead(
+        self,
+        lead_id: Any,
+        seller_id: Any,
+        reason: str,
+        command_id: str,
+        actor_id: Any,
+        session: Any,
+    ) -> AssignmentResult:
+        now = self._now()
+        lead = self._leads.find_one({"_id": lead_id, "archivedAt": None}, session=session)
+        if lead is None or lead.get("assigneeId") is None:
+            raise QueueStateError("assigned lead not found")
+        if lead.get("assigneeId") == seller_id:
+            raise QueueStateError("new seller must differ from current seller")
+        user = self._users.find_one({"_id": seller_id, "active": True}, session=session)
+        if user is None:
+            raise QueueStateError("new seller is not active")
+        current_assignment_id = lead.get("currentAssignmentId")
+        if current_assignment_id is not None:
+            ended = self._assignments.update_one(
+                {"_id": current_assignment_id, "current": True},
+                {"$set": {"current": False, "endedAt": now}},
+                session=session,
+            )
+            if ended.matched_count != 1:
+                raise QueueStateError("current assignment changed concurrently")
+        current_cycle_id = lead.get("feedbackCycleId")
+        if current_cycle_id is not None:
+            self._feedback_cycles.update_one(
+                {"_id": current_cycle_id, "closedAt": None},
+                {"$set": {"closedAt": now}},
+                session=session,
+            )
+        cleared = self._leads.update_one(
+            {"_id": lead_id, "currentAssignmentId": current_assignment_id},
+            {"$set": {"currentAssignmentId": None}},
+            session=session,
+        )
+        if cleared.matched_count != 1:
+            raise QueueStateError("lead changed concurrently")
+        result = self._assign_effective(
+            lead,
+            seller_id,
+            "permanent_transfer",
+            reason,
+            command_id,
+            actor_id,
+            now,
+            session,
+        )
+        self._record_event(
+            event_type="lead.owner_transferred",
+            entity_type="lead",
+            entity_id=lead_id,
+            action="lead.owner_transferred",
+            command_id=command_id,
+            actor_id=actor_id,
+            before={"assigneeId": lead.get("assigneeId")},
+            after={"assigneeId": seller_id},
+            now=now,
+            session=session,
+            reason=reason,
+        )
+        return result
 
     def _assign_effective(
         self,
@@ -14372,6 +14760,12 @@ class TransferOwnerRequest(CommandRequest):
     confirmed: bool
 
 
+class TransferLeadRequest(CommandRequest):
+    seller_id: str
+    reason: str = Field(min_length=1, max_length=2_000)
+    confirmed: bool
+
+
 def get_queue_service(request: Request) -> QueueService:
     service = getattr(request.app.state, "queue_service", None)
     if not isinstance(service, QueueService):
@@ -14485,6 +14879,30 @@ def transfer_owner(
     )
 
 
+@router.post(
+    "/api/admin/leads/{lead_id}/transfer-owner",
+)
+def transfer_lead_owner(
+    lead_id: str,
+    payload: TransferLeadRequest,
+    service: QueueService = Depends(get_queue_service),
+    current_user: CurrentUser = Depends(require_admin),
+) -> dict[str, Any]:
+    if payload.confirmed is not True:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Lead transfer requires explicit confirmation",
+        )
+    return _run(
+        lambda: service.with_actor(_object_id(current_user.id)).transfer_lead(
+            _object_id(lead_id),
+            _object_id(payload.seller_id),
+            payload.reason,
+            payload.command_id,
+        )
+    )
+
+
 def _object_id(value: str) -> ObjectId:
     try:
         return ObjectId(value)
@@ -14508,10 +14926,12 @@ def _run(operation):
 
 ````tsx
 import { redirect } from "next/navigation";
+import type { ManagedUser } from "../../lib/api/types";
 
 import { AdminDashboard } from "../../components/admin-dashboard";
 import { AppShell } from "../../components/app-shell";
 import { SellerDashboard } from "../../components/seller-dashboard";
+import { getManagedUsers } from "../../lib/api/client";
 import { getSessionContext } from "../../lib/auth/session";
 import { getDashboardData, isAdminDashboard, pageNumber } from "../../lib/dashboard/queries";
 
@@ -14545,9 +14965,22 @@ export default async function DashboardPage({
     );
   }
 
+  let transferTargets: ManagedUser[] = [];
+  if (isAdminDashboard(dashboard)) {
+    try {
+      transferTargets = (await getManagedUsers(session.sessionToken, 1, 200)).items;
+    } catch {
+      // The dashboard remains readable if the optional transfer target list is unavailable.
+    }
+  }
+
   return (
     <AppShell profile={session.profile} activePath="/dashboard" heading="Visão geral">
-      {isAdminDashboard(dashboard) ? <AdminDashboard dashboard={dashboard} /> : <SellerDashboard dashboard={dashboard} />}
+      {isAdminDashboard(dashboard) ? (
+        <AdminDashboard dashboard={dashboard} transferTargets={transferTargets} />
+      ) : (
+        <SellerDashboard dashboard={dashboard} />
+      )}
     </AppShell>
   );
 }
@@ -14557,13 +14990,16 @@ export default async function DashboardPage({
 
 ````tsx
 import { redirect } from "next/navigation";
+import type { ManagedUser } from "../../lib/api/types";
 
 import { AppShell } from "../../components/app-shell";
 import { LeadTable } from "../../components/lead-table";
 import { Pagination } from "../../components/pagination";
 import { QueueTable } from "../../components/queue-table";
+import { SellerQueueTable } from "../../components/seller-queue-table";
 import { getSessionContext } from "../../lib/auth/session";
 import { getDashboardData, isAdminDashboard, pageNumber } from "../../lib/dashboard/queries";
+import { getManagedUsers } from "../../lib/api/client";
 
 export const dynamic = "force-dynamic";
 
@@ -14575,11 +15011,28 @@ export default async function QueuePage({
   const params = await searchParams;
   const session = await getSessionContext();
   if (session.status !== "authenticated") redirect("/login");
-  if (session.profile.role !== "admin") redirect("/dashboard");
-
   const page = pageNumber(params.page ?? "1");
   const data = await getDashboardData(session.sessionToken, page);
-  if (!isAdminDashboard(data)) redirect("/dashboard");
+  if (!isAdminDashboard(data)) {
+    return (
+      <AppShell
+        profile={session.profile}
+        activePath="/fila"
+        eyebrow="Minha distribuição"
+        heading="Minha fila"
+      >
+        <SellerQueueTable queue={data.queue} leads={data.leads.items} />
+        <Pagination href="/fila" page={data.leads} searchParams={params} />
+      </AppShell>
+    );
+  }
+
+  let transferTargets: ManagedUser[] = [];
+  try {
+    transferTargets = (await getManagedUsers(session.sessionToken, 1, 200)).items;
+  } catch {
+    // Keep the read-only queue available if target loading fails.
+  }
 
   return (
     <AppShell
@@ -14589,7 +15042,7 @@ export default async function QueuePage({
       heading="Fila de leads"
     >
       <QueueTable queue={data.queue} />
-      <LeadTable leads={data.leads.items} role="admin" />
+      <LeadTable leads={data.leads.items} role="admin" transferTargets={transferTargets} />
       <Pagination href="/fila" page={data.leads} searchParams={params} />
     </AppShell>
   );
@@ -14681,6 +15134,7 @@ button:disabled {
   grid-template-columns: 252px minmax(0, 1fr);
   min-height: 100vh;
 }
+
 .sidebar {
   display: flex;
   flex-direction: column;
@@ -15128,11 +15582,207 @@ button:disabled {
 .table-card td strong {
   color: var(--text-strong);
 }
-.lead-table-card td:nth-child(3),
-.lead-table-card td:nth-child(4),
-.lead-table-card td:nth-child(6) {
-  max-width: 240px;
+.lead-table-card {
+  max-height: calc(100vh - 210px);
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+.seller-queue-card table {
+  min-width: 0;
+  table-layout: fixed;
+}
+.seller-queue-card th,
+.seller-queue-card td {
+  padding: 12px 14px;
   overflow-wrap: anywhere;
+}
+.seller-queue-card th:nth-child(1),
+.seller-queue-card td:nth-child(1) {
+  width: 30%;
+}
+.seller-queue-card th:nth-child(2),
+.seller-queue-card td:nth-child(2) {
+  width: 23%;
+}
+.seller-queue-card th:nth-child(3),
+.seller-queue-card td:nth-child(3) {
+  width: 23%;
+}
+.seller-queue-card th:nth-child(4),
+.seller-queue-card td:nth-child(4) {
+  width: 24%;
+}
+.lead-table-card table {
+  min-width: 0;
+  table-layout: fixed;
+}
+.lead-table-card th,
+.lead-table-card td {
+  padding: 12px 14px;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+.lead-table-card td:last-child,
+.lead-table-card td:last-child .table-action {
+  white-space: nowrap;
+}
+.lead-table-card td:nth-last-child(2) {
+  white-space: nowrap;
+}
+.lead-table-card--admin th:nth-child(1),
+.lead-table-card--admin td:nth-child(1) {
+  width: 12%;
+}
+.lead-table-card--admin th:nth-child(2),
+.lead-table-card--admin td:nth-child(2) {
+  width: 9%;
+}
+.lead-table-card--admin th:nth-child(3),
+.lead-table-card--admin td:nth-child(3) {
+  width: 10%;
+}
+.lead-table-card--admin th:nth-child(4),
+.lead-table-card--admin td:nth-child(4) {
+  width: 7%;
+}
+.lead-table-card--admin th:nth-child(5),
+.lead-table-card--admin td:nth-child(5) {
+  width: 7%;
+}
+.lead-table-card--admin th:nth-child(6),
+.lead-table-card--admin td:nth-child(6) {
+  width: 8%;
+}
+.lead-table-card--admin th:nth-child(7),
+.lead-table-card--admin td:nth-child(7) {
+  width: 8%;
+}
+.lead-table-card--admin th:nth-child(8),
+.lead-table-card--admin td:nth-child(8) {
+  width: 12%;
+}
+.lead-table-card--admin th:nth-child(9),
+.lead-table-card--admin td:nth-child(9) {
+  width: 12%;
+}
+.lead-table-card--admin th:nth-child(10),
+.lead-table-card--admin td:nth-child(10) {
+  width: 13%;
+}
+.lead-table-card--admin td:nth-child(8) .sla {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-overflow: ellipsis;
+}
+.lead-table-card--admin td:nth-child(9) {
+  white-space: normal;
+  line-height: 1.35;
+}
+.lead-actions {
+  display: grid;
+  gap: 6px;
+}
+.inline-transfer {
+  min-width: 230px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.inline-transfer form,
+.inline-transfer label {
+  display: grid;
+  gap: 5px;
+}
+.inline-transfer label {
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.inline-transfer input,
+.inline-transfer select {
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  background: var(--surface);
+}
+.inline-transfer__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.route-loading {
+  display: grid;
+  gap: 12px;
+  place-items: center;
+  min-height: 180px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.route-loading__bar {
+  display: block;
+  width: 220px;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 99px;
+  background: var(--line);
+}
+.route-loading__bar::after {
+  display: block;
+  width: 42%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--wtg-blue);
+  content: "";
+  animation: route-loading-progress 1.1s ease-in-out infinite;
+}
+@keyframes route-loading-progress {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(240%);
+  }
+}
+.lead-table-card--seller th:nth-child(1),
+.lead-table-card--seller td:nth-child(1) {
+  width: 13%;
+}
+.lead-table-card--seller th:nth-child(2),
+.lead-table-card--seller td:nth-child(2) {
+  width: 10%;
+}
+.lead-table-card--seller th:nth-child(3),
+.lead-table-card--seller td:nth-child(3) {
+  width: 9%;
+}
+.lead-table-card--seller th:nth-child(4),
+.lead-table-card--seller td:nth-child(4) {
+  width: 8%;
+}
+.lead-table-card--seller th:nth-child(5),
+.lead-table-card--seller td:nth-child(5) {
+  width: 10%;
+}
+.lead-table-card--seller th:nth-child(6),
+.lead-table-card--seller td:nth-child(6) {
+  width: 10%;
+}
+.lead-table-card--seller th:nth-child(7),
+.lead-table-card--seller td:nth-child(7) {
+  width: 11%;
+}
+.lead-table-card--seller th:nth-child(8),
+.lead-table-card--seller td:nth-child(8) {
+  width: 13%;
+}
+.lead-table-card--seller th:nth-child(9),
+.lead-table-card--seller td:nth-child(9) {
+  width: 14%;
 }
 .queue-table-summary {
   display: grid;
@@ -15564,7 +16214,6 @@ export default async function HistoryPage({
 }) {
   const session = await getSessionContext();
   if (session.status !== "authenticated") redirect("/login");
-  if (session.profile.role !== "admin") redirect("/dashboard");
   const params = await searchParams;
   const page = pageNumber(typeof params.page === "string" ? params.page : "1");
   const data = await getDashboardData(session.sessionToken, page);
@@ -15572,8 +16221,8 @@ export default async function HistoryPage({
     <AppShell
       profile={session.profile}
       activePath="/historico"
-      eyebrow="Histórico auditável"
-      heading="Histórico"
+      eyebrow={session.profile.role === "admin" ? "Histórico auditável" : "Minha atividade"}
+      heading={session.profile.role === "admin" ? "Histórico" : "Minhas tratativas"}
     >
       <TreatmentHistoryTable treatments={data.history.items} />
       <Pagination href="/historico" page={data.history} searchParams={params} />
@@ -15615,6 +16264,19 @@ export default function RootLayout({ children }: Readonly<{ children: ReactNode 
     <html lang="pt-BR">
       <body className={`${geistSans.variable} ${geistMono.variable}`}>{children}</body>
     </html>
+  );
+}
+````
+
+## Snapshot de código: `apps/web/src/app/loading.tsx`
+
+````tsx
+export default function Loading() {
+  return (
+    <main className="route-loading" aria-live="polite" aria-busy="true">
+      <div className="route-loading__bar" />
+      <p>Carregando dados da operação…</p>
+    </main>
   );
 }
 ````
@@ -15677,23 +16339,40 @@ const sellerSession = {
 describe("proteção das rotas operacionais", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    redirect.mockImplementation((target: string) => { throw new Error(`REDIRECT:${target}`); });
+    redirect.mockImplementation((target: string) => {
+      throw new Error(`REDIRECT:${target}`);
+    });
   });
 
-  it("redireciona vendedor que tenta abrir o histórico global por URL", async () => {
+  it("permite ao vendedor abrir suas próprias tratativas por URL", async () => {
     getSessionContext.mockResolvedValue(sellerSession);
+    getDashboardData.mockResolvedValue({
+      user: { id: "seller-1", email: sellerSession.profile.email, role: "seller" },
+      leads: { items: [], page: 1, pageSize: 50, total: 0 },
+      history: { items: [], page: 1, pageSize: 50, total: 0 },
+      queue: { position: 2, availability: "active", skipBalance: 0 },
+    });
 
-    await expect(HistoryPage({ searchParams: Promise.resolve({}) })).rejects.toThrow("REDIRECT:/dashboard");
-    expect(redirect).toHaveBeenCalledWith("/dashboard");
-    expect(getDashboardData).not.toHaveBeenCalled();
+    const markup = renderToStaticMarkup(await HistoryPage({ searchParams: Promise.resolve({}) }));
+    expect(markup).toContain("Minhas tratativas");
+    expect(markup).toContain("Nenhuma tratativa registrada.");
+    expect(redirect).not.toHaveBeenCalled();
   });
 
-  it("redireciona vendedor que tenta abrir a fila global por URL antes da consulta", async () => {
+  it("permite ao vendedor abrir sua fila por URL sem dados globais", async () => {
     getSessionContext.mockResolvedValue(sellerSession);
+    getDashboardData.mockResolvedValue({
+      user: { id: "seller-1", email: sellerSession.profile.email, role: "seller" },
+      leads: { items: [], page: 1, pageSize: 50, total: 0 },
+      history: { items: [], page: 1, pageSize: 50, total: 0 },
+      queue: { position: 3, availability: "active", skipBalance: 0 },
+    });
 
-    await expect(QueuePage({ searchParams: Promise.resolve({}) })).rejects.toThrow("REDIRECT:/dashboard");
-    expect(redirect).toHaveBeenCalledWith("/dashboard");
-    expect(getDashboardData).not.toHaveBeenCalled();
+    const markup = renderToStaticMarkup(await QueuePage({ searchParams: Promise.resolve({}) }));
+    expect(markup).toContain("Minha fila");
+    expect(markup).toContain("Posição 3");
+    expect(markup).not.toContain("Fila comercial");
+    expect(redirect).not.toHaveBeenCalled();
   });
 
   it("renderiza um estado seguro quando a API não disponibiliza o dashboard", async () => {
@@ -15749,7 +16428,13 @@ export default async function UsersPage({
 ## Snapshot de código: `apps/web/src/components/admin-dashboard.tsx`
 
 ````tsx
-import type { AdminDashboard as AdminDashboardData, QueueEntry, Treatment } from "../lib/api/types";
+import Link from "next/link";
+import type {
+  AdminDashboard as AdminDashboardData,
+  ManagedUser,
+  QueueEntry,
+  Treatment,
+} from "../lib/api/types";
 import {
   formatCommercialStatus,
   formatDateTime,
@@ -15801,7 +16486,13 @@ function TreatmentPreview({ item }: { item: Treatment }) {
   );
 }
 
-export function AdminDashboard({ dashboard }: { dashboard: AdminDashboardData }) {
+export function AdminDashboard({
+  dashboard,
+  transferTargets = [],
+}: {
+  dashboard: AdminDashboardData;
+  transferTargets?: ManagedUser[];
+}) {
   return (
     <>
       <section className="metric-grid" aria-label="Resumo operacional administrativo">
@@ -15830,9 +16521,9 @@ export function AdminDashboard({ dashboard }: { dashboard: AdminDashboardData })
               <p className="eyebrow">Distribuição</p>
               <h2>Fila comercial</h2>
             </div>
-            <a className="text-link" href="/fila">
+            <Link prefetch={false} className="text-link" href="/fila">
               Ver fila completa
-            </a>
+            </Link>
           </header>
           {dashboard.queue.items.length === 0 ? (
             <p className="empty-state">
@@ -15859,9 +16550,9 @@ export function AdminDashboard({ dashboard }: { dashboard: AdminDashboardData })
               <p className="eyebrow">Atividade</p>
               <h2>Últimas tratativas</h2>
             </div>
-            <a className="text-link" href="/historico">
+            <Link prefetch={false} className="text-link" href="/historico">
               Ver histórico
-            </a>
+            </Link>
           </header>
           {dashboard.history.items.length === 0 ? (
             <p className="empty-state">Nenhuma tratativa registrada.</p>
@@ -15875,7 +16566,7 @@ export function AdminDashboard({ dashboard }: { dashboard: AdminDashboardData })
         </section>
       </section>
 
-      <LeadTable leads={dashboard.leads.items} role="admin" />
+      <LeadTable leads={dashboard.leads.items} role="admin" transferTargets={transferTargets} />
     </>
   );
 }
@@ -15885,6 +16576,7 @@ export function AdminDashboard({ dashboard }: { dashboard: AdminDashboardData })
 
 ````tsx
 import Image from "next/image";
+import Link from "next/link";
 
 import { signOutAction } from "../lib/auth/actions";
 import type { SessionProfile } from "../lib/auth/session";
@@ -15908,30 +16600,93 @@ export function AppShell({
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">
-          <span className="brand-logo"><Image src="/logo-wtg.png" alt="WTG Corretora de Seguros e Benefícios" width={343} height={343} priority /></span>
+          <span className="brand-logo">
+            <Image
+              src="/logo-wtg.png"
+              alt="WTG Corretora de Seguros e Benefícios"
+              width={343}
+              height={343}
+              priority
+            />
+          </span>
         </div>
         <nav aria-label="Navegação principal">
-          <a className={activePath === "/dashboard" ? "nav-active" : ""} href="/dashboard">
+          <Link
+            prefetch={false}
+            className={activePath === "/dashboard" ? "nav-active" : ""}
+            href="/dashboard"
+          >
             {isAdmin ? "Visão geral" : "Minha operação"}
-          </a>
-          {isAdmin ? <>
-            <a className={activePath === "/fila" ? "nav-active" : ""} href="/fila">Fila de leads</a>
-            <a className={activePath === "/historico" ? "nav-active" : ""} href="/historico">Histórico</a>
-            <a className={activePath === "/usuarios" ? "nav-active" : ""} href="/usuarios">Usuários</a>
-          </> : null}
+          </Link>
+          {isAdmin ? (
+            <>
+              <Link
+                prefetch={false}
+                className={activePath === "/fila" ? "nav-active" : ""}
+                href="/fila"
+              >
+                Fila de leads
+              </Link>
+              <Link
+                prefetch={false}
+                className={activePath === "/historico" ? "nav-active" : ""}
+                href="/historico"
+              >
+                Histórico
+              </Link>
+              <Link
+                prefetch={false}
+                className={activePath === "/usuarios" ? "nav-active" : ""}
+                href="/usuarios"
+              >
+                Usuários
+              </Link>
+            </>
+          ) : (
+            <>
+              <Link
+                prefetch={false}
+                className={activePath === "/fila" ? "nav-active" : ""}
+                href="/fila"
+              >
+                Minha fila
+              </Link>
+              <Link
+                prefetch={false}
+                className={activePath === "/historico" ? "nav-active" : ""}
+                href="/historico"
+              >
+                Minhas tratativas
+              </Link>
+            </>
+          )}
         </nav>
-        <div className="sidebar-foot"><span className="status-dot" />Sistema conectado</div>
+        <div className="sidebar-foot">
+          <span className="status-dot" />
+          Sistema conectado
+        </div>
       </aside>
       <main className="workspace">
         <header className="topbar">
           <div>
-            <p className="eyebrow">{eyebrow ?? (isAdmin ? "Painel administrativo" : "Minha operação")}</p>
+            <p className="eyebrow">
+              {eyebrow ?? (isAdmin ? "Painel administrativo" : "Minha operação")}
+            </p>
             <h1>{heading}</h1>
           </div>
           <div className="user-menu">
-            <span className="avatar" aria-hidden="true">{profile.fullName.slice(0, 1)}</span>
-            <span><strong>{profile.fullName}</strong><small>{isAdmin ? "Administrador" : "Vendedor"}</small></span>
-            <form action={signOutAction}><button className="logout" type="submit">Sair</button></form>
+            <span className="avatar" aria-hidden="true">
+              {profile.fullName.slice(0, 1)}
+            </span>
+            <span>
+              <strong>{profile.fullName}</strong>
+              <small>{isAdmin ? "Administrador" : "Vendedor"}</small>
+            </span>
+            <form action={signOutAction}>
+              <button className="logout" type="submit">
+                Sair
+              </button>
+            </form>
           </div>
         </header>
         {children}
@@ -16137,6 +16892,20 @@ describe("dashboards por papel", () => {
     expect(markup).not.toContain("Próximo vendedor");
   });
 
+  it("trata uma posição ausente na resposta da API sem renderizar undefined", () => {
+    const markup = renderToStaticMarkup(
+      createElement(SellerDashboard, {
+        dashboard: {
+          ...sellerDashboard,
+          queue: { ...sellerDashboard.queue, position: undefined },
+        } as unknown as typeof sellerDashboard,
+      }),
+    );
+
+    expect(markup).toContain("Não informado");
+    expect(markup).not.toContain("Posição undefined");
+  });
+
   it("limita a navegação do vendedor à própria operação", () => {
     const markup = renderToStaticMarkup(
       AppShell({
@@ -16164,9 +16933,9 @@ describe("dashboards por papel", () => {
 ````tsx
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
-import type { OperationalLead, TreatmentSubmission, UserRole } from "../lib/api/types";
+import type { ManagedUser, OperationalLead, TreatmentSubmission, UserRole } from "../lib/api/types";
 import {
   formatCommentCount,
   formatCommercialStatus,
@@ -16175,8 +16944,23 @@ import {
   getSlaState,
 } from "../lib/dashboard/format";
 import { LeadTreatmentModal } from "./lead-treatment-modal";
+import { LeadTransferModal } from "./lead-transfer-modal";
 
-type LeadTableProps = { leads: OperationalLead[]; role: UserRole };
+type LeadTableProps = { leads: OperationalLead[]; role: UserRole; transferTargets?: ManagedUser[] };
+
+/** Render Brazilian numbers consistently, whether the source includes +55 or not. */
+export function formatBrazilianPhone(value: string | null | undefined): string {
+  const digits = String(value ?? "").replace(/\D/g, "");
+  const national =
+    digits.startsWith("55") && [12, 13].includes(digits.length) ? digits.slice(2) : digits;
+  if (national.length === 11) {
+    return `(${national.slice(0, 2)}) ${national.slice(2, 7)}-${national.slice(7)}`;
+  }
+  if (national.length === 10) {
+    return `(${national.slice(0, 2)}) ${national.slice(2, 6)}-${national.slice(6)}`;
+  }
+  return national || "Não informado";
+}
 
 export function commentCountsAfterSubmission(
   current: Record<string, number>,
@@ -16204,8 +16988,17 @@ function statusClass(status: OperationalLead["commercialStatus"]): string {
   return `commercial-status ${status}`;
 }
 
-export function LeadTable({ leads, role }: LeadTableProps) {
+export function LeadTable({ leads, role, transferTargets = [] }: LeadTableProps) {
   const [leadOverrides, setLeadOverrides] = useState<Record<string, OperationalLead>>({});
+  // Do not read the wall clock during SSR and hydration: the same lead can
+  // otherwise receive different SLA classes across those two renders.
+  const [hydratedAt, setHydratedAt] = useState<Date | null>(null);
+  useEffect(() => {
+    // Defer the clock read until after the initial paint so SSR and hydration
+    // produce identical markup without triggering a synchronous effect update.
+    const timer = window.setTimeout(() => setHydratedAt(new Date()), 0);
+    return () => window.clearTimeout(timer);
+  }, []);
   const onSubmitted = useCallback(
     (submission: TreatmentSubmission) => {
       setLeadOverrides((current) => {
@@ -16219,7 +17012,10 @@ export function LeadTable({ leads, role }: LeadTableProps) {
   );
 
   return (
-    <section className="table-card lead-table-card" aria-labelledby="lead-table-title">
+    <section
+      className={`table-card lead-table-card lead-table-card--${role}`}
+      aria-labelledby="lead-table-title"
+    >
       <div className="table-head">
         <div>
           <p className="eyebrow">Dados ao vivo</p>
@@ -16234,10 +17030,7 @@ export function LeadTable({ leads, role }: LeadTableProps) {
             <tr>
               <th>Nome</th>
               {role === "admin" ? <th>Responsável</th> : null}
-              <th>Empresa</th>
-              <th>Campanha</th>
               <th>Telefone</th>
-              <th>E-mail</th>
               <th>Situação</th>
               <th>Marcador</th>
               <th>Atribuído em</th>
@@ -16250,17 +17043,14 @@ export function LeadTable({ leads, role }: LeadTableProps) {
           <tbody>
             {leads.map((lead) => {
               const currentLead = leadOverrides[lead.id] ?? lead;
-              const sla = getSlaState(currentLead.feedbackDueAt);
+              const sla = hydratedAt ? getSlaState(currentLead.feedbackDueAt, hydratedAt) : "none";
               return (
                 <tr key={lead.id}>
                   <td>
                     <strong>{currentLead.contactName}</strong>
                   </td>
                   {role === "admin" ? <td>{currentLead.sellerName}</td> : null}
-                  <td>{currentLead.companyName}</td>
-                  <td>{currentLead.campaignName}</td>
-                  <td>{currentLead.phoneDisplay}</td>
-                  <td>{currentLead.email}</td>
+                  <td>{formatBrazilianPhone(currentLead.phoneDisplay)}</td>
                   <td>
                     <span className={statusClass(currentLead.commercialStatus)}>
                       {formatCommercialStatus(currentLead.commercialStatus)}
@@ -16284,11 +17074,25 @@ export function LeadTable({ leads, role }: LeadTableProps) {
                   </td>
                   <td>{formatCommentCount(currentLead.commentCount)}</td>
                   <td>
-                    <LeadTreatmentModal
-                      lead={currentLead}
-                      mode={role === "seller" ? "write" : "read"}
-                      onSubmitted={role === "seller" ? onSubmitted : undefined}
-                    />
+                    <div className="lead-actions">
+                      <LeadTreatmentModal
+                        lead={currentLead}
+                        mode={role === "seller" ? "write" : "read"}
+                        onSubmitted={role === "seller" ? onSubmitted : undefined}
+                      />
+                      {role === "admin" ? (
+                        <LeadTransferModal
+                          lead={currentLead}
+                          targets={transferTargets}
+                          onSuccess={(sellerName) => {
+                            setLeadOverrides((current) => ({
+                              ...current,
+                              [currentLead.id]: { ...currentLead, sellerName },
+                            }));
+                          }}
+                        />
+                      ) : null}
+                    </div>
                   </td>
                 </tr>
               );
@@ -16297,6 +17101,99 @@ export function LeadTable({ leads, role }: LeadTableProps) {
         </table>
       )}
     </section>
+  );
+}
+````
+
+## Snapshot de código: `apps/web/src/components/lead-transfer-modal.tsx`
+
+````tsx
+"use client";
+
+import { useActionState, useEffect, useState } from "react";
+
+import type { ManagedUser, OperationalLead } from "../lib/api/types";
+import {
+  initialTransferActionState,
+  transferLeadOwnershipAction,
+} from "../lib/operations/transfer-actions";
+
+export function LeadTransferModal({
+  lead,
+  targets,
+  onSuccess,
+}: {
+  lead: OperationalLead;
+  targets: ManagedUser[];
+  onSuccess?: (sellerName: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [selectedSellerName, setSelectedSellerName] = useState("");
+  const [state, formAction, pending] = useActionState(
+    transferLeadOwnershipAction,
+    initialTransferActionState,
+  );
+  useEffect(() => {
+    if (state.status === "success") {
+      const timer = window.setTimeout(() => {
+        setOpen(false);
+        onSuccess?.(selectedSellerName);
+      }, 0);
+      return () => window.clearTimeout(timer);
+    }
+  }, [onSuccess, selectedSellerName, state.status]);
+  if (!open) {
+    return (
+      <button type="button" className="table-action secondary-button" onClick={() => setOpen(true)}>
+        Transferir propriedade
+      </button>
+    );
+  }
+  return (
+    <div className="inline-transfer" role="dialog" aria-label={`Transferir ${lead.contactName}`}>
+      <form action={formAction}>
+        <input type="hidden" name="leadId" value={lead.id} />
+        <label>
+          Novo responsável
+          <select
+            name="sellerId"
+            defaultValue=""
+            required
+            onChange={(event) => {
+              setSelectedSellerName(event.currentTarget.selectedOptions[0]?.text ?? "");
+            }}
+          >
+            <option value="" disabled>
+              Selecione
+            </option>
+            {targets
+              .filter((target) => target.active && target.role === "seller")
+              .map((target) => (
+                <option key={target.id} value={target.id}>
+                  {target.fullName}
+                </option>
+              ))}
+          </select>
+        </label>
+        <label>
+          Motivo
+          <input name="reason" required maxLength={2000} placeholder="Motivo da transferência" />
+        </label>
+        {state.status === "error" ? (
+          <p className="form-error" role="status">
+            {state.message}
+          </p>
+        ) : null}
+        <div className="inline-transfer__actions">
+          <button type="button" className="secondary-button" onClick={() => setOpen(false)}>
+            Cancelar
+          </button>
+          <button type="submit" className="table-action" disabled={pending}>
+            {pending ? "Transferindo…" : "Confirmar"}
+          </button>
+        </div>
+      </form>
+    </div>
   );
 }
 ````
@@ -16376,6 +17273,17 @@ describe("acessibilidade e interação do modal de tratativa", () => {
       (screen.getByRole("button", { name: "Salvar tratativa" }) as HTMLButtonElement).disabled,
     ).toBe(true);
     expect(actions.submit).not.toHaveBeenCalled();
+  });
+
+  it("gera a chave de idempotência depois da hidratação, sem aleatoriedade no HTML inicial", async () => {
+    const user = userEvent.setup();
+    render(<LeadTreatmentModal lead={lead} mode="write" />);
+
+    await user.click(screen.getByRole("button", { name: "Registrar tratativa" }));
+    await waitFor(() => {
+      const input = document.querySelector('input[name="idempotencyKey"]') as HTMLInputElement;
+      expect(input?.value).toBeTruthy();
+    });
   });
 
   it("mantém Tab e Shift+Tab dentro do formulário com múltiplos controles", async () => {
@@ -16575,7 +17483,12 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
-import { applySubmissionToLead, commentCountsAfterSubmission, LeadTable } from "./lead-table";
+import {
+  applySubmissionToLead,
+  commentCountsAfterSubmission,
+  formatBrazilianPhone,
+  LeadTable,
+} from "./lead-table";
 import { LeadTreatmentModal, validateTreatmentDraft } from "./lead-treatment-modal";
 
 const lead = {
@@ -16603,12 +17516,21 @@ describe("tabela de leads e tratativa", () => {
 
     expect(admin).toContain("Responsável");
     expect(admin).toContain("Renato");
-    expect(admin).toContain("Empresa da Débora");
-    expect(admin).toContain("Campanha WTG");
+    expect(admin).not.toContain("Empresa da Débora");
+    expect(admin).not.toContain("Campanha WTG");
+    expect(admin).not.toContain("E-mail");
+    expect(admin).toContain("(11) 98830-8029");
     expect(admin).toContain("2 comentários");
     expect(admin).not.toContain("Registrar tratativa");
     expect(seller).not.toContain("Responsável");
     expect(seller).toContain("Registrar tratativa");
+  });
+
+  it("normaliza telefones brasileiros com ou sem o código 55", () => {
+    expect(formatBrazilianPhone("+55 (11) 98830-8029")).toBe("(11) 98830-8029");
+    expect(formatBrazilianPhone("11988308029")).toBe("(11) 98830-8029");
+    expect(formatBrazilianPhone("5511998765432")).toBe("(11) 99876-5432");
+    expect(formatBrazilianPhone("telefone ausente")).toBe("Não informado");
   });
 
   it("exibe somente os campos comerciais e o histórico em modo leitura", () => {
@@ -16739,7 +17661,7 @@ describe("tabela de leads e tratativa", () => {
 ````tsx
 "use client";
 
-import { useActionState, useCallback, useEffect, useRef, useState } from "react";
+import { useActionState, useCallback, useEffect, useId, useRef, useState } from "react";
 
 import type {
   CommercialStatus,
@@ -16793,22 +17715,23 @@ function historyItem(item: Treatment, index: number) {
   );
 }
 
-function newIdempotencyKey(): string {
-  return globalThis.crypto?.randomUUID?.() ?? `tratativa-${Date.now()}-${Math.random()}`;
-}
-
 function TreatmentForm({
   lead,
   onSuccess,
+  sessionNumber,
 }: {
   lead: OperationalLead;
   onSuccess: (submission: TreatmentSubmission) => void;
+  sessionNumber: number;
 }) {
   const [state, formAction, pending] = useActionState(
     submitLeadTreatmentAction,
     initialTreatmentActionState,
   );
-  const [idempotencyKey] = useState(newIdempotencyKey);
+  // React IDs are stable between SSR and hydration. The session number makes
+  // a new idempotency key whenever the modal is opened again.
+  const reactId = useId();
+  const idempotencyKey = `tratativa-${lead.id}-${sessionNumber}-${reactId}`;
   const [comment, setComment] = useState("");
   const draftIsValid = validateTreatmentDraft({
     comment,
@@ -16887,6 +17810,7 @@ export function LeadTreatmentModal({
   const [historyMessage, setHistoryMessage] = useState<string | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [treatmentSession, setTreatmentSession] = useState(0);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const dialogRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -16905,6 +17829,7 @@ export function LeadTreatmentModal({
   }, [lead.id]);
   const openModal = useCallback(() => {
     setSuccessMessage(null);
+    setTreatmentSession((current) => current + 1);
     setOpen(true);
     refreshHistory();
   }, [refreshHistory]);
@@ -17000,7 +17925,9 @@ export function LeadTreatmentModal({
               </button>
             </header>
 
-            {mode === "write" ? <TreatmentForm lead={lead} onSuccess={onSuccess} /> : null}
+            {mode === "write" ? (
+              <TreatmentForm lead={lead} onSuccess={onSuccess} sessionNumber={treatmentSession} />
+            ) : null}
 
             <section className="treatment-history" aria-label="Histórico de tratativas">
               <h4>Histórico de tratativas</h4>
@@ -17365,6 +18292,10 @@ function TreatmentPreview({ item }: { item: Treatment }) {
 
 export function SellerDashboard({ dashboard }: { dashboard: SellerDashboardData }) {
   const nextDeadline = dashboard.leads.items[0]?.feedbackDueAt ?? null;
+  const queuePosition =
+    typeof dashboard.queue.position === "number" && Number.isFinite(dashboard.queue.position)
+      ? dashboard.queue.position
+      : null;
 
   return (
     <>
@@ -17384,9 +18315,9 @@ export function SellerDashboard({ dashboard }: { dashboard: SellerDashboardData 
         <article className="metric-card metric-card--next">
           <span>Minha posição na fila</span>
           <strong className="metric-card__text">
-            {dashboard.queue.position === null
+            {queuePosition === null
               ? "Não informado"
-              : `Posição ${dashboard.queue.position}`}
+              : `Posição ${queuePosition}`}
           </strong>
         </article>
       </section>
@@ -17421,6 +18352,126 @@ export function SellerDashboard({ dashboard }: { dashboard: SellerDashboardData 
 
       <LeadTable leads={dashboard.leads.items} role="seller" />
     </>
+  );
+}
+````
+
+## Snapshot de código: `apps/web/src/components/seller-queue-table.test.tsx`
+
+````tsx
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it } from "vitest";
+
+import { SellerQueueTable } from "./seller-queue-table";
+
+describe("SellerQueueTable", () => {
+  it("mostra a posição e disponibilidade do vendedor sem dados globais da fila", () => {
+    const markup = renderToStaticMarkup(
+      createElement(SellerQueueTable, {
+        queue: { position: 3, availability: "active", skipBalance: 0 },
+        leads: [],
+      }),
+    );
+
+    expect(markup).toContain("Minha fila");
+    expect(markup).toContain("Posição 3");
+    expect(markup).toContain("Disponível para novas atribuições");
+    expect(markup).not.toContain("Renato");
+    expect(markup).not.toContain("Jessica");
+  });
+
+  it("informa quando a posição não está disponível", () => {
+    const markup = renderToStaticMarkup(
+      createElement(SellerQueueTable, {
+        queue: { position: null, availability: "blocked_overdue", skipBalance: 2 },
+        leads: [],
+      }),
+    );
+
+    expect(markup).toContain("Posição não informada");
+    expect(markup).toContain("Bloqueado por atraso");
+    expect(markup).toContain("Saldo de pulos: 2");
+  });
+});
+````
+
+## Snapshot de código: `apps/web/src/components/seller-queue-table.tsx`
+
+````tsx
+import type { OperationalLead, SellerAvailability, SellerQueue } from "../lib/api/types";
+import { formatDateTime, formatSlaDeadline } from "../lib/dashboard/format";
+
+function availabilityLabel(availability: SellerAvailability): string {
+  return {
+    active: "Disponível para novas atribuições",
+    blocked_overdue: "Bloqueado por atraso",
+    paused: "Pausado pelo administrador",
+  }[availability];
+}
+
+export function SellerQueueTable({
+  queue,
+  leads,
+}: {
+  queue: SellerQueue;
+  leads: OperationalLead[];
+}) {
+  return (
+    <section className="table-card seller-queue-card" aria-labelledby="seller-queue-title">
+      <div className="table-head">
+        <div>
+          <p className="eyebrow">Minha distribuição</p>
+          <h2 id="seller-queue-title">Minha fila</h2>
+        </div>
+        <dl className="queue-table-summary">
+          <div>
+            <dt>Minha posição</dt>
+            <dd>
+              {queue.position === null ? "Posição não informada" : `Posição ${queue.position}`}
+            </dd>
+          </div>
+          <div>
+            <dt>Disponibilidade</dt>
+            <dd>
+              <span className={`status-badge status-badge--${queue.availability}`}>
+                {availabilityLabel(queue.availability)}
+              </span>
+            </dd>
+          </div>
+          <div>
+            <dt>Saldo</dt>
+            <dd>Saldo de pulos: {queue.skipBalance}</dd>
+          </div>
+        </dl>
+      </div>
+      {leads.length === 0 ? (
+        <p className="empty">Nenhum lead atribuído a você.</p>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th>Lead</th>
+              <th>Atribuído em</th>
+              <th>Última atualização</th>
+              <th>Prazo de feedback</th>
+            </tr>
+          </thead>
+          <tbody>
+            {leads.map((lead) => (
+              <tr key={lead.id}>
+                <td>
+                  <strong>{lead.contactName}</strong>
+                </td>
+                <td>{formatDateTime(lead.assignedAt)}</td>
+                <td>{formatDateTime(lead.lastUpdatedAt)}</td>
+                <td>{formatSlaDeadline(lead.feedbackDueAt)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </section>
   );
 }
 ````
@@ -18526,7 +19577,13 @@ function managedUser(value: unknown): ManagedUser {
   const fullName = text(record.fullName);
   const id = text(record.id);
   const role = record.role;
-  if (!id || !fullName || !email || (role !== "admin" && role !== "seller") || typeof record.active !== "boolean") {
+  if (
+    !id ||
+    !fullName ||
+    !email ||
+    (role !== "admin" && role !== "seller") ||
+    typeof record.active !== "boolean"
+  ) {
     throw new ApiRequestError("A resposta de usuários é inválida.", 502);
   }
   return {
@@ -18567,7 +19624,11 @@ function managedUserPage(value: unknown): Page<ManagedUser> {
   };
 }
 
-export async function getManagedUsers(sessionToken: string, page = 1, limit = 50): Promise<Page<ManagedUser>> {
+export async function getManagedUsers(
+  sessionToken: string,
+  page = 1,
+  limit = 50,
+): Promise<Page<ManagedUser>> {
   return managedUserPage(
     await apiFetch<unknown>(`/api/admin/users?page=${page}&limit=${limit}`, {
       cache: "no-store",
@@ -18642,6 +19703,20 @@ export async function getLeadTreatments(
       headers: { Cookie: `gerec_session=${sessionToken}` },
     },
   );
+}
+
+export async function transferLeadOwnership(
+  leadId: string,
+  sellerId: string,
+  reason: string,
+  commandId: string,
+  sessionToken: string,
+): Promise<{ leadId: string; sellerId: string; status: string }> {
+  return apiFetch(`/api/admin/leads/${encodeURIComponent(leadId)}/transfer-owner`, {
+    method: "POST",
+    headers: sessionHeaders(sessionToken),
+    body: JSON.stringify({ seller_id: sellerId, reason, command_id: commandId, confirmed: true }),
+  });
 }
 ````
 
@@ -19225,6 +20300,52 @@ export function validateAttempt(input: {
 }) {
   const comment = input.comment.trim();
   if (comment.length < 6) throw new Error("O comentário deve ter pelo menos 6 caracteres.");
+}
+````
+
+## Snapshot de código: `apps/web/src/lib/operations/transfer-actions.ts`
+
+````typescript
+"use server";
+
+import { randomUUID } from "node:crypto";
+
+import { ApiRequestError, transferLeadOwnership } from "../api/client";
+import { getSessionContext } from "../auth/session";
+
+export type TransferActionState = {
+  status: "idle" | "success" | "error";
+  message: string;
+};
+
+export const initialTransferActionState: TransferActionState = { status: "idle", message: "" };
+
+export async function transferLeadOwnershipAction(
+  _previous: TransferActionState,
+  formData: FormData,
+): Promise<TransferActionState> {
+  const leadId = String(formData.get("leadId") ?? "").trim();
+  const sellerId = String(formData.get("sellerId") ?? "").trim();
+  const reason = String(formData.get("reason") ?? "").trim();
+  if (!leadId || !sellerId || reason.length < 1) {
+    return { status: "error", message: "Selecione um vendedor e informe o motivo." };
+  }
+  const session = await getSessionContext();
+  if (session.status !== "authenticated" || session.profile.role !== "admin") {
+    return { status: "error", message: "Sessão expirada ou sem permissão." };
+  }
+  try {
+    await transferLeadOwnership(leadId, sellerId, reason, randomUUID(), session.sessionToken);
+    return { status: "success", message: "Propriedade transferida." };
+  } catch (error) {
+    return {
+      status: "error",
+      message:
+        error instanceof ApiRequestError
+          ? error.message
+          : "Não foi possível transferir a propriedade.",
+    };
+  }
 }
 ````
 

@@ -33,6 +33,12 @@ class TransferOwnerRequest(CommandRequest):
     confirmed: bool
 
 
+class TransferLeadRequest(CommandRequest):
+    seller_id: str
+    reason: str = Field(min_length=1, max_length=2_000)
+    confirmed: bool
+
+
 def get_queue_service(request: Request) -> QueueService:
     service = getattr(request.app.state, "queue_service", None)
     if not isinstance(service, QueueService):
@@ -139,6 +145,30 @@ def transfer_owner(
     return _run(
         lambda: service.with_actor(_object_id(current_user.id)).transfer_owner(
             _object_id(company_id),
+            _object_id(payload.seller_id),
+            payload.reason,
+            payload.command_id,
+        )
+    )
+
+
+@router.post(
+    "/api/admin/leads/{lead_id}/transfer-owner",
+)
+def transfer_lead_owner(
+    lead_id: str,
+    payload: TransferLeadRequest,
+    service: QueueService = Depends(get_queue_service),
+    current_user: CurrentUser = Depends(require_admin),
+) -> dict[str, Any]:
+    if payload.confirmed is not True:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Lead transfer requires explicit confirmation",
+        )
+    return _run(
+        lambda: service.with_actor(_object_id(current_user.id)).transfer_lead(
+            _object_id(lead_id),
             _object_id(payload.seller_id),
             payload.reason,
             payload.command_id,

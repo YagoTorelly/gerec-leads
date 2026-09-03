@@ -354,6 +354,13 @@ def test_admin_treatments_are_paginated_descending_and_seller_cannot_read_anothe
         service.lead_treatments_for_user("lead-b", _seller_a())
 
 
+def test_previous_seller_cannot_read_treatments_after_lead_transfer() -> None:
+    database = _database()
+    database["leads"].documents[0]["assigneeId"] = "seller-b"
+    with pytest.raises(PermissionDenied):
+        DashboardService(database).lead_treatments_for_user("lead-a", _seller_a())
+
+
 def test_read_endpoints_enforce_the_same_role_contract() -> None:
     database = _database()
     app = FastAPI()
