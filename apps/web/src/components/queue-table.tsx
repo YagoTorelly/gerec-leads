@@ -3,7 +3,6 @@ import type { AdminQueue, QueueEntry } from "../lib/api/types";
 function availabilityLabel(availability: QueueEntry["availability"]): string {
   return {
     active: "Ativo",
-    blocked_overdue: "Bloqueado por atraso",
     paused: "Pausado",
   }[availability];
 }

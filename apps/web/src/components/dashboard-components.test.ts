@@ -44,8 +44,8 @@ const adminDashboard = {
       {
         sellerName: "Nelma",
         position: 2,
-        availability: "blocked_overdue" as const,
-        reason: "Feedback vencido",
+        availability: "active" as const,
+        reason: null,
         skipBalance: 0,
       },
     ],
@@ -113,7 +113,7 @@ describe("dashboards por papel", () => {
     expect(markup).toContain("Fila comercial");
     expect(markup).toContain("Jessica");
     expect(markup).toContain("Nelma");
-    expect(markup).toContain("Bloqueado por atraso");
+    expect(markup).not.toContain("Bloqueado por atraso");
   });
 
   it("orienta o administrador quando não há vendedores disponíveis na fila", () => {
@@ -142,7 +142,7 @@ describe("dashboards por papel", () => {
 
     expect(markup).toContain("Meus leads");
     expect(markup).toContain("Meus comentários");
-    expect(markup).toContain("Prazo de feedback");
+    expect(markup).not.toContain("Prazo de feedback");
     expect(markup).toContain("Minha posição na fila");
     expect(markup).toContain("Posição 3");
     expect(markup).toContain("Débora Souza");

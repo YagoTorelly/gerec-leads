@@ -1,14 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 
 import type { ManagedUser, OperationalLead, TreatmentSubmission, UserRole } from "../lib/api/types";
 import {
   formatCommentCount,
   formatCommercialStatus,
+  formatDateTime,
   formatDisqualificationMarker,
-  formatSlaDeadline,
-  getSlaState,
 } from "../lib/dashboard/format";
 import { LeadTreatmentModal } from "./lead-treatment-modal";
 import { LeadTransferModal } from "./lead-transfer-modal";
@@ -57,15 +56,6 @@ function statusClass(status: OperationalLead["commercialStatus"]): string {
 
 export function LeadTable({ leads, role, transferTargets = [] }: LeadTableProps) {
   const [leadOverrides, setLeadOverrides] = useState<Record<string, OperationalLead>>({});
-  // Do not read the wall clock during SSR and hydration: the same lead can
-  // otherwise receive different SLA classes across those two renders.
-  const [hydratedAt, setHydratedAt] = useState<Date | null>(null);
-  useEffect(() => {
-    // Defer the clock read until after the initial paint so SSR and hydration
-    // produce identical markup without triggering a synchronous effect update.
-    const timer = window.setTimeout(() => setHydratedAt(new Date()), 0);
-    return () => window.clearTimeout(timer);
-  }, []);
   const onSubmitted = useCallback(
     (submission: TreatmentSubmission) => {
       setLeadOverrides((current) => {
@@ -102,7 +92,6 @@ export function LeadTable({ leads, role, transferTargets = [] }: LeadTableProps)
               <th>Marcador</th>
               <th>Atribuído em</th>
               <th>Última atualização</th>
-              <th>Prazo</th>
               <th>Comentários</th>
               <th>Ação</th>
             </tr>
@@ -110,7 +99,6 @@ export function LeadTable({ leads, role, transferTargets = [] }: LeadTableProps)
           <tbody>
             {leads.map((lead) => {
               const currentLead = leadOverrides[lead.id] ?? lead;
-              const sla = hydratedAt ? getSlaState(currentLead.feedbackDueAt, hydratedAt) : "none";
               return (
                 <tr key={lead.id}>
                   <td>
@@ -132,13 +120,8 @@ export function LeadTable({ leads, role, transferTargets = [] }: LeadTableProps)
                       "—"
                     )}
                   </td>
-                  <td>{formatSlaDeadline(currentLead.assignedAt)}</td>
-                  <td>{formatSlaDeadline(currentLead.lastUpdatedAt)}</td>
-                  <td>
-                    <span className={`sla ${sla}`}>
-                      {formatSlaDeadline(currentLead.feedbackDueAt)}
-                    </span>
-                  </td>
+                  <td>{formatDateTime(currentLead.assignedAt)}</td>
+                  <td>{formatDateTime(currentLead.lastUpdatedAt)}</td>
                   <td>{formatCommentCount(currentLead.commentCount)}</td>
                   <td>
                     <div className="lead-actions">

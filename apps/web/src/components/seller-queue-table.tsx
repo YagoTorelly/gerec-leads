@@ -1,10 +1,9 @@
 import type { OperationalLead, SellerAvailability, SellerQueue } from "../lib/api/types";
-import { formatDateTime, formatSlaDeadline } from "../lib/dashboard/format";
+import { formatDateTime } from "../lib/dashboard/format";
 
 function availabilityLabel(availability: SellerAvailability): string {
   return {
     active: "Disponível para novas atribuições",
-    blocked_overdue: "Bloqueado por atraso",
     paused: "Pausado pelo administrador",
   }[availability];
 }
@@ -53,7 +52,6 @@ export function SellerQueueTable({
               <th>Lead</th>
               <th>Atribuído em</th>
               <th>Última atualização</th>
-              <th>Prazo de feedback</th>
             </tr>
           </thead>
           <tbody>
@@ -64,7 +62,6 @@ export function SellerQueueTable({
                 </td>
                 <td>{formatDateTime(lead.assignedAt)}</td>
                 <td>{formatDateTime(lead.lastUpdatedAt)}</td>
-                <td>{formatSlaDeadline(lead.feedbackDueAt)}</td>
               </tr>
             ))}
           </tbody>

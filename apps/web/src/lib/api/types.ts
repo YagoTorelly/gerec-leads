@@ -2,7 +2,7 @@ export type UserRole = "admin" | "seller";
 
 export type CommercialStatus = "undefined" | "negotiation" | "won";
 
-export type SellerAvailability = "active" | "paused" | "blocked_overdue";
+export type SellerAvailability = "active" | "paused";
 
 export type ApiUser = { id: string; email: string; role: UserRole };
 

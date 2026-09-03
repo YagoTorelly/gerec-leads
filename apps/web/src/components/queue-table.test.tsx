@@ -23,8 +23,8 @@ describe("QueueTable", () => {
             {
               sellerName: "Nelma",
               position: 4,
-              availability: "blocked_overdue",
-              reason: "Feedback vencido",
+              availability: "active",
+              reason: null,
               skipBalance: 0,
             },
             {
@@ -47,8 +47,7 @@ describe("QueueTable", () => {
     expect(markup).toContain("Posição base");
     expect(markup).toContain("<td>1</td>");
     expect(markup).toContain("<td>3</td>");
-    expect(markup).toContain("Bloqueado por atraso");
-    expect(markup).toContain("Feedback vencido");
+    expect(markup).not.toContain("Bloqueado por atraso");
     expect(markup).toContain("Pausado");
     expect(markup).toContain("Créditos de pulo");
   });

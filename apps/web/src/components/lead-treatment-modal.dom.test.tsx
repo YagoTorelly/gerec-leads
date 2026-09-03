@@ -268,6 +268,6 @@ describe("acessibilidade e interação do modal de tratativa", () => {
 
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(screen.getByText("Desqualificado")).toBeTruthy();
-    expect(screen.getByText("Não informado")).toBeTruthy();
+    expect(screen.queryByText("Não informado")).toBeNull();
   });
 });

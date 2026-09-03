@@ -15,7 +15,6 @@ import { LeadTable } from "./lead-table";
 function availabilityLabel(availability: QueueEntry["availability"]): string {
   return {
     active: "Ativo",
-    blocked_overdue: "Bloqueado por atraso",
     paused: "Pausado",
   }[availability];
 }

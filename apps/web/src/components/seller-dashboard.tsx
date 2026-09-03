@@ -8,14 +8,12 @@ import {
   formatCommercialStatus,
   formatDateTime,
   formatDisqualificationMarker,
-  formatSlaDeadline,
 } from "../lib/dashboard/format";
 import { LeadTable } from "./lead-table";
 
 function availabilityLabel(availability: SellerAvailability): string {
   return {
     active: "Disponível para novas atribuições",
-    blocked_overdue: "Bloqueado por atraso",
     paused: "Pausado pelo administrador",
   }[availability];
 }
@@ -41,7 +39,6 @@ function TreatmentPreview({ item }: { item: Treatment }) {
 }
 
 export function SellerDashboard({ dashboard }: { dashboard: SellerDashboardData }) {
-  const nextDeadline = dashboard.leads.items[0]?.feedbackDueAt ?? null;
   const queuePosition =
     typeof dashboard.queue.position === "number" && Number.isFinite(dashboard.queue.position)
       ? dashboard.queue.position
@@ -57,10 +54,6 @@ export function SellerDashboard({ dashboard }: { dashboard: SellerDashboardData 
         <article className="metric-card">
           <span>Meus comentários</span>
           <strong>{formatCommentCount(dashboard.history.total)}</strong>
-        </article>
-        <article className="metric-card">
-          <span>Prazo de feedback</span>
-          <strong className="metric-card__text">{formatSlaDeadline(nextDeadline)}</strong>
         </article>
         <article className="metric-card metric-card--next">
           <span>Minha posição na fila</span>

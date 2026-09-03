@@ -23,13 +23,13 @@ describe("SellerQueueTable", () => {
   it("informa quando a posição não está disponível", () => {
     const markup = renderToStaticMarkup(
       createElement(SellerQueueTable, {
-        queue: { position: null, availability: "blocked_overdue", skipBalance: 2 },
+        queue: { position: null, availability: "paused", skipBalance: 2 },
         leads: [],
       }),
     );
 
     expect(markup).toContain("Posição não informada");
-    expect(markup).toContain("Bloqueado por atraso");
+    expect(markup).toContain("Pausado pelo administrador");
     expect(markup).toContain("Saldo de pulos: 2");
   });
 });
