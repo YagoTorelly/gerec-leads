@@ -213,7 +213,7 @@ function dashboard(state, user, url) {
       history: page(ownTreatments, url),
       queue: {
         position: item ? queue(state).findIndex((entry) => entry.sellerId === user.id) + 1 : null,
-        availability: item?.availability ?? "blocked_overdue",
+        availability: item?.availability === "paused" ? "paused" : "active",
         skipBalance: item?.skipBalance ?? 0,
       },
     };

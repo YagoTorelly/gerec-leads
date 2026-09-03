@@ -1,10 +1,7 @@
 import type { AdminQueue, QueueEntry } from "../lib/api/types";
 
 function availabilityLabel(availability: QueueEntry["availability"]): string {
-  return {
-    active: "Ativo",
-    paused: "Pausado",
-  }[availability];
+  return availability === "paused" ? "Pausado" : "Ativo";
 }
 
 function availabilityReason(item: QueueEntry): string {
@@ -53,7 +50,7 @@ export function QueueTable({ queue }: { queue: AdminQueue }) {
                   <strong>{item.sellerName}</strong>
                 </td>
                 <td>
-                  <span className={`status-badge status-badge--${item.availability}`}>
+                  <span className={`status-badge status-badge--${item.availability === "paused" ? "paused" : "active"}`}>
                     {availabilityLabel(item.availability)}
                   </span>
                 </td>

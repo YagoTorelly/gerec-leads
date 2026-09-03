@@ -13,23 +13,21 @@ import {
 import { LeadTable } from "./lead-table";
 
 function availabilityLabel(availability: QueueEntry["availability"]): string {
-  return {
-    active: "Ativo",
-    paused: "Pausado",
-  }[availability];
+  return availability === "paused" ? "Pausado" : "Ativo";
 }
 
 function QueueCard({ item, currentPosition }: { item: QueueEntry; currentPosition: number }) {
-  const label = availabilityLabel(item.availability);
+  const normalizedAvailability = item.availability === "paused" ? "paused" : "active";
+  const label = availabilityLabel(normalizedAvailability);
   return (
     <li className="queue-card">
       <div className="queue-card__header">
         <span className="queue-card__position">#{currentPosition}</span>
-        <span className={`status-badge status-badge--${item.availability}`}>{label}</span>
+        <span className={`status-badge status-badge--${normalizedAvailability}`}>{label}</span>
       </div>
       <strong>{item.sellerName}</strong>
       <small>
-        Ordem base {item.position}. {item.reason ?? "Disponível para novas atribuições"}
+        Ordem base {item.position}. {normalizedAvailability === "paused" ? "Pausado manualmente" : "Disponível para novas atribuições"}
       </small>
     </li>
   );

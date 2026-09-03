@@ -12,10 +12,7 @@ import {
 import { LeadTable } from "./lead-table";
 
 function availabilityLabel(availability: SellerAvailability): string {
-  return {
-    active: "Disponível para novas atribuições",
-    paused: "Pausado pelo administrador",
-  }[availability];
+  return availability === "paused" ? "Pausado pelo administrador" : "Disponível para novas atribuições";
 }
 
 function TreatmentPreview({ item }: { item: Treatment }) {

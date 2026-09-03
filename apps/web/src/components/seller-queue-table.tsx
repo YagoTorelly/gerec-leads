@@ -2,10 +2,7 @@ import type { OperationalLead, SellerAvailability, SellerQueue } from "../lib/ap
 import { formatDateTime } from "../lib/dashboard/format";
 
 function availabilityLabel(availability: SellerAvailability): string {
-  return {
-    active: "Disponível para novas atribuições",
-    paused: "Pausado pelo administrador",
-  }[availability];
+  return availability === "paused" ? "Pausado pelo administrador" : "Disponível para novas atribuições";
 }
 
 export function SellerQueueTable({
@@ -32,7 +29,7 @@ export function SellerQueueTable({
           <div>
             <dt>Disponibilidade</dt>
             <dd>
-              <span className={`status-badge status-badge--${queue.availability}`}>
+              <span className={`status-badge status-badge--${queue.availability === "paused" ? "paused" : "active"}`}>
                 {availabilityLabel(queue.availability)}
               </span>
             </dd>
