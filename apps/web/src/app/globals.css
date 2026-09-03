@@ -523,7 +523,8 @@ button:disabled {
   border-bottom: 0;
 }
 .table-card tbody tr:hover {
-  background: #fbfdff;
+  background: var(--wtg-blue-soft);
+  color: var(--text-strong);
 }
 .table-card td strong {
   color: var(--text-strong);
@@ -828,6 +829,7 @@ button:disabled {
 .table-action:not(:disabled):hover {
   border-color: var(--wtg-blue-hover);
   background: var(--wtg-blue-hover);
+  color: #fff;
 }
 .secondary-button {
   border: 1px solid var(--line-strong);

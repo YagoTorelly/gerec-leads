@@ -22,11 +22,11 @@ export async function transferLeadOwnershipAction(
   if (!leadId || !sellerId || reason.length < 1) {
     return { status: "error", message: "Selecione um vendedor e informe o motivo." };
   }
-  const session = await getSessionContext();
-  if (session.status !== "authenticated" || session.profile.role !== "admin") {
-    return { status: "error", message: "Sessão expirada ou sem permissão." };
-  }
   try {
+    const session = await getSessionContext();
+    if (session.status !== "authenticated" || session.profile.role !== "admin") {
+      return { status: "error", message: "Sessão expirada ou sem permissão." };
+    }
     await transferLeadOwnership(leadId, sellerId, reason, randomUUID(), session.sessionToken);
     return { status: "success", message: "Propriedade transferida." };
   } catch (error) {

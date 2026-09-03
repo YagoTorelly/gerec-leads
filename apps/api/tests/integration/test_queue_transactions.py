@@ -660,3 +660,38 @@ def test_admin_routes_propagate_actor_and_require_transfer_confirmation() -> Non
     assert lead_unconfirmed.status_code == 422
     assert confirmed.status_code == 200
     assert all(item["actorId"] == admin_id for item in database["audit_log"].documents)
+
+
+def test_admin_lead_transfer_route_returns_assignment_result_when_confirmed() -> None:
+    """The production admin action must receive the assignment result, not crash at HTTP serialization."""
+    database = FakeDatabase()
+    renato, sandra, _, _ = _seed_queue(database)
+    lead_id, _ = _seed_lead(database)
+    service = _service(database)
+    service.distribute_normal(lead_id, "route-lead-initial")
+    admin_id = ObjectId()
+    settings = Settings(
+        MONGODB_URI="mongodb://localhost:27017/?replicaSet=rs0",
+        MONGODB_DATABASE="gerec_leads",
+        APP_SECRET="queue-route-secret",
+    )
+    app = create_app(settings=settings, database=database)
+    app.state.queue_service = service
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        id=str(admin_id), email="admin@example.test", role="admin"
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/admin/leads/{lead_id}/transfer-owner",
+        json={
+            "seller_id": str(sandra),
+            "reason": "Cobertura administrativa",
+            "command_id": "route-lead-transfer-yes",
+            "confirmed": True,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["leadId"] == str(lead_id)
+    assert response.json()["sellerId"] == str(sandra)
