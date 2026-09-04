@@ -8,12 +8,11 @@ from gerec_api.infrastructure.mongo.collections import MongoCollections
 from gerec_api.infrastructure.mongo.indexes import INDEXES
 
 
-def _seller(*, active: bool = True, paused: bool = False, overdue: bool = False, credits: int = 0):
+def _seller(*, active: bool = True, paused: bool = False, credits: int = 0):
     return SellerState(
         seller_id=ObjectId(),
         active=active,
         paused=paused,
-        has_overdue_feedback=overdue,
         skip_balance=credits,
     )
 
@@ -33,10 +32,9 @@ def test_ac01_rotation_assigns_each_seller_once_and_returns_to_renato() -> None:
     assert cursor == sellers[0].seller_id
 
 
-def test_overdue_feedback_does_not_change_fifo_eligibility() -> None:
-    """SLA history must not create an automatic queue state."""
+def test_active_seller_remains_eligible_for_fifo() -> None:
+    """An active seller at the cursor receives the next normal lead."""
     renato, sandra, jessica, nelma = [_seller() for _ in range(4)]
-    renato = SellerState(renato.seller_id, True, False, True, 0)
 
     decision = QueueRules.select_normal([renato, sandra, jessica, nelma], renato.seller_id)
 
@@ -45,12 +43,12 @@ def test_overdue_feedback_does_not_change_fifo_eligibility() -> None:
 
 
 def test_only_manual_pause_or_inactive_user_is_unavailable() -> None:
-    """Overdue history alone never removes a seller from the queue."""
+    """Availability is defined only by the account and manual pause."""
     sellers = [
-        _seller(overdue=True),
+        _seller(),
         _seller(paused=True),
         _seller(active=False),
-        _seller(overdue=True),
+        _seller(),
     ]
 
     decision = QueueRules.select_normal(sellers, sellers[0].seller_id)
@@ -63,8 +61,8 @@ def test_only_manual_pause_or_inactive_user_is_unavailable() -> None:
 
 def test_availability_has_only_active_and_paused_states() -> None:
     """Availability is controlled only by account activity and manual pause."""
-    paused_and_overdue = _seller(paused=True, overdue=True)
-    blocked_only = _seller(overdue=True)
+    paused_and_overdue = _seller(paused=True)
+    blocked_only = _seller()
     active = _seller()
 
     assert QueueRules.availability(paused_and_overdue).status == "paused"
@@ -77,7 +75,7 @@ def test_availability_has_only_active_and_paused_states() -> None:
 def test_snapshot_starts_with_next_eligible_seller_and_keeps_unavailable_entries() -> None:
     """Breaks if the displayed queue starts from storage order instead of the real cursor."""
     renato = _seller(paused=True)
-    sandra = _seller(overdue=True)
+    sandra = _seller()
     jessica = _seller()
     nelma = _seller()
 
@@ -127,11 +125,10 @@ def test_ac08_credits_cross_rotations_and_are_consumed_exactly_once() -> None:
         assigned.append(decision.seller_id)
         consumed += decision.consumed_credit_seller_ids.count(renato.seller_id)
         renato = SellerState(
-            renato.seller_id,
-            True,
-            False,
-            False,
-            renato.skip_balance - decision.consumed_credit_seller_ids.count(renato.seller_id),
+        renato.seller_id,
+        True,
+        False,
+        renato.skip_balance - decision.consumed_credit_seller_ids.count(renato.seller_id),
         )
         sellers = [renato, sandra, jessica, nelma]
         cursor = decision.next_seller_id

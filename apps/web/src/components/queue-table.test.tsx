@@ -47,7 +47,6 @@ describe("QueueTable", () => {
     expect(markup).toContain("Posição base");
     expect(markup).toContain("<td>1</td>");
     expect(markup).toContain("<td>3</td>");
-    expect(markup).not.toContain("Bloqueado por atraso");
     expect(markup).toContain("Pausado");
     expect(markup).toContain("Créditos de pulo");
   });

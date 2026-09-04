@@ -75,8 +75,6 @@ describe("ação de tratativa", () => {
       commercialStatus: "won",
       isDisqualified: true,
       commentCount: 3,
-      reminderAt: null,
-      dueAt: null,
       lastUpdatedAt: "2026-08-29T15:00:00.000Z",
     });
 

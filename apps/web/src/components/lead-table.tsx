@@ -45,7 +45,6 @@ export function applySubmissionToLead(
     commercialStatus: submission.commercialStatus,
     isDisqualified: submission.isDisqualified,
     commentCount: submission.commentCount,
-    feedbackDueAt: submission.dueAt,
     lastUpdatedAt: submission.lastUpdatedAt,
   };
 }

@@ -13,7 +13,6 @@ class SellerState:
     seller_id: Any
     active: bool
     paused: bool
-    has_overdue_feedback: bool
     skip_balance: int
     position: int = 0
 
@@ -53,9 +52,6 @@ class QueueRules:
             return SellerAvailability("paused", "Pausa manual ativa.")
         if not seller.active:
             return SellerAvailability("paused", "Vendedor inativo.")
-        # Feedback/SLA fields remain historical data, but do not affect the
-        # current operational availability. Only manual pause (or account
-        # deactivation) can remove a seller from the rotation.
         return SellerAvailability("active", None)
 
     @classmethod
@@ -207,6 +203,8 @@ class TransferResult:
 
 
 class QueuePersistence(Protocol):
+    def reconcile_pending(self, command_prefix: str, *, actor_id: Any) -> list[AssignmentResult]: ...
+
     def distribute_ready(
         self, lead_id: Any, command_id: str, *, actor_id: Any
     ) -> AssignmentResult: ...
@@ -275,6 +273,12 @@ class QueueService:
             lead_id,
             _required(command_id, "command id"),
             actor_id=self._actor_id,
+        )
+
+    def reconcile_pending(self, command_prefix: str) -> list[AssignmentResult]:
+        """Retry FIFO-safe leads parked before a seller became available."""
+        return self._persistence.reconcile_pending(
+            _required(command_prefix, "command prefix"), actor_id=self._actor_id
         )
 
     def assign_recurring(self, lead_id: Any, command_id: str) -> AssignmentResult:

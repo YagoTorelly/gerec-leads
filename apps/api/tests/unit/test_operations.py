@@ -53,15 +53,12 @@ class RecordingPersistence:
         self.attempts = []
         self.outcomes = []
 
-    def register_feedback(self, command, *, actor_id, actor_role, now, reminder_at, due_at):
-        self.feedbacks.append((command, actor_id, actor_role, now, reminder_at, due_at))
+    def register_feedback(self, command, *, actor_id, actor_role, now):
+        self.feedbacks.append((command, actor_id, actor_role, now))
         return FeedbackResult(
             lead_id=str(command.lead_id),
             feedback_id="feedback-1",
-            cycle_id="cycle-1",
             status="recorded",
-            reminder_at=reminder_at,
-            due_at=due_at,
         )
 
     def register_attempt(self, command, *, actor_id, actor_role, now, business_date):
@@ -110,25 +107,13 @@ def test_ac19_short_feedback_comment_does_not_reach_persistence_or_renew_sla() -
     assert persistence.feedbacks == []
 
 
-def test_ac20_valid_feedback_opens_24_business_hour_cycle_with_four_hour_reminder() -> None:
-    """Breaks if feedback deadlines are client-provided or use elapsed calendar hours."""
+def test_valid_feedback_is_recorded_without_a_deadline() -> None:
+    """Feedback manual não cria ciclo, prazo ou lembrete."""
     result = _service().register_feedback(
         FeedbackCommand("lead-1", " Retorno confirmado ", True, "feedback-valid")
     )
 
     assert result.status == "recorded"
-    assert result.reminder_at == datetime(2026, 9, 2, 16, 0, tzinfo=SAO_PAULO)
-    assert result.due_at == datetime(2026, 9, 3, 11, 0, tzinfo=SAO_PAULO)
-
-
-def test_feedback_derives_the_reminder_by_subtracting_from_its_deadline() -> None:
-    """Breaks if OperationsService calculates the reminder independently from the due date."""
-    result = _service(business_clock=DeadlineDerivedClock()).register_feedback(
-        FeedbackCommand("lead-1", "Retorno confirmado", True, "feedback-derived-reminder")
-    )
-
-    assert result.due_at == DeadlineDerivedClock.due_at
-    assert result.reminder_at == DeadlineDerivedClock.reminder_at
 
 
 def test_feedback_requires_an_explicit_contact_action() -> None:

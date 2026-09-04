@@ -10,7 +10,7 @@ export type Page<T> = { items: T[]; page: number; pageSize: number; total: numbe
 
 /**
  * Identificadores são chaves técnicas para mutações e nunca rótulos da interface.
- * O backend já resolve nomes, status e prazos autorizados para cada perfil.
+ * O backend já resolve nomes e status autorizados para cada perfil.
  */
 export type OperationalLead = {
   id: string;
@@ -24,7 +24,6 @@ export type OperationalLead = {
   isDisqualified: boolean;
   commentCount: number;
   assignedAt: string | null;
-  feedbackDueAt: string | null;
   lastUpdatedAt: string | null;
 };
 
@@ -111,6 +110,4 @@ export type TreatmentSubmission = {
   isDisqualified: boolean;
   commentCount: number;
   lastUpdatedAt: string;
-  reminderAt: string | null;
-  dueAt: string | null;
 };

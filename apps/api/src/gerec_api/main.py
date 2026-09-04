@@ -55,13 +55,12 @@ def create_app(
     )
     database_clock = MongoClock(database)
     app.state.queue_service = QueueService(
-        QueueRepository(database, business_clock=business_clock)
+        QueueRepository(database)
     )
     app.state.operations_service = OperationsService(
         MongoOperationsRepository(
             database,
             clock=database_clock,
-            business_clock=business_clock,
         ),
         business_clock=business_clock,
         clock=database_clock,

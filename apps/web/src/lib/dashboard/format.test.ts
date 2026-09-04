@@ -7,9 +7,7 @@ import {
   formatDateTime,
   formatDisqualificationMarker,
   formatPhone,
-  formatSlaDeadline,
   formatText,
-  getSlaState,
 } from "./format";
 
 describe("formatDateTime", () => {
@@ -34,22 +32,7 @@ describe("formatação de projeção operacional", () => {
   it("formata contador, prazo, telefone e texto ausente para o operador", () => {
     expect(formatCommentCount(1)).toBe("1 comentário");
     expect(formatCommentCount(2)).toBe("2 comentários");
-    expect(formatSlaDeadline("2026-08-26T15:30:00.000Z")).toBe("26/08/2026, 12:30");
     expect(formatPhone("5511988308029")).toBe("(11) 98830-8029");
     expect(formatText("   ")).toBe(NOT_INFORMED);
-  });
-});
-
-describe("getSlaState", () => {
-  it("marca feedback vencido como atrasado", () => {
-    expect(getSlaState("2026-08-26T10:00:00.000Z", new Date("2026-08-26T11:00:00.000Z"))).toBe(
-      "overdue",
-    );
-  });
-
-  it("marca feedback do dia como vence hoje", () => {
-    expect(getSlaState("2026-08-26T21:00:00.000Z", new Date("2026-08-26T11:00:00.000Z"))).toBe(
-      "today",
-    );
   });
 });

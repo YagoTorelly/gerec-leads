@@ -60,19 +60,13 @@ class TreatmentCommand:
 class FeedbackResult:
     lead_id: str
     feedback_id: str
-    cycle_id: str | None
     status: str
-    reminder_at: datetime | None
-    due_at: datetime | None
 
     def to_document(self) -> dict[str, Any]:
         return {
             "leadId": self.lead_id,
             "feedbackId": self.feedback_id,
-            "cycleId": self.cycle_id,
             "status": self.status,
-            "reminderAt": self.reminder_at,
-            "dueAt": self.due_at,
         }
 
     @classmethod
@@ -80,10 +74,7 @@ class FeedbackResult:
         return cls(
             lead_id=str(value["leadId"]),
             feedback_id=str(value["feedbackId"]),
-            cycle_id=str(value["cycleId"]) if value.get("cycleId") is not None else None,
             status=str(value["status"]),
-            reminder_at=value.get("reminderAt"),
-            due_at=value.get("dueAt"),
         )
 
 
@@ -157,8 +148,6 @@ class TreatmentResult:
     is_disqualified: bool
     comment_count: int
     last_updated_at: datetime
-    reminder_at: datetime | None
-    due_at: datetime | None
 
     def to_document(self) -> dict[str, Any]:
         return {
@@ -169,8 +158,6 @@ class TreatmentResult:
             "isDisqualified": self.is_disqualified,
             "commentCount": self.comment_count,
             "lastUpdatedAt": self.last_updated_at,
-            "reminderAt": self.reminder_at,
-            "dueAt": self.due_at,
         }
 
     @classmethod
@@ -183,8 +170,6 @@ class TreatmentResult:
             is_disqualified=bool(value["isDisqualified"]),
             comment_count=int(value["commentCount"]),
             last_updated_at=value["lastUpdatedAt"],
-            reminder_at=value.get("reminderAt"),
-            due_at=value.get("dueAt"),
         )
 
 
@@ -205,8 +190,6 @@ class OperationsPersistence(Protocol):
         actor_id: Any,
         actor_role: str,
         now: datetime,
-        reminder_at: datetime,
-        due_at: datetime,
     ) -> TreatmentResult: ...
 
     def register_feedback(
@@ -216,8 +199,6 @@ class OperationsPersistence(Protocol):
         actor_id: Any,
         actor_role: str,
         now: datetime,
-        reminder_at: datetime | None,
-        due_at: datetime | None,
     ) -> FeedbackResult: ...
 
     def register_attempt(
@@ -281,21 +262,16 @@ class OperationsService:
         if command.administrative_note:
             if self._actor_role != "admin":
                 raise ValueError("administrative notes require an admin actor")
-            reminder_at = due_at = None
         else:
             if self._actor_role != "seller":
                 raise ValueError("seller feedback requires a seller actor")
             if not command.contact_started:
                 raise ValueError("feedback requires an explicit contact action")
-            due_at = self._business_clock.add_business_hours(now, 24)
-            reminder_at = self._business_clock.subtract_business_hours(due_at, 4)
         return self._persistence.register_feedback(
             command,
             actor_id=self._actor_id,
             actor_role=self._actor_role,
             now=now,
-            reminder_at=reminder_at,
-            due_at=due_at,
         )
 
     def register_treatment(self, command: TreatmentCommand) -> TreatmentResult:
@@ -313,15 +289,11 @@ class OperationsService:
             _required(command.idempotency_key, "idempotency key"),
         )
         now = self._aware_now()
-        due_at = self._business_clock.add_business_hours(now, 24)
-        reminder_at = self._business_clock.subtract_business_hours(due_at, 4)
         return self._persistence.register_treatment(
             command,
             actor_id=self._actor_id,
             actor_role=self._actor_role,
             now=now,
-            reminder_at=reminder_at,
-            due_at=due_at,
         )
 
     def register_attempt(self, command: AttemptCommand) -> AttemptResult:

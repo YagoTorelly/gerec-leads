@@ -17,7 +17,7 @@ export function LoginForm() {
           <br />
           de Leads
         </h1>
-        <p className="login-copy">Entre para acompanhar sua fila, prazos e resultados.</p>
+        <p className="login-copy">Entre para acompanhar sua fila e resultados.</p>
         <label>
           E-mail
           <input name="email" type="email" placeholder="voce@gerec.local" required />

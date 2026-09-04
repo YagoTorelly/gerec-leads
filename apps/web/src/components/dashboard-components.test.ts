@@ -71,7 +71,6 @@ const sellerDashboard = {
         isDisqualified: false,
         commentCount: 2,
         assignedAt: "2026-08-28T15:30:00.000Z",
-        feedbackDueAt: "2026-08-29T16:03:04.876Z",
         lastUpdatedAt: "2026-08-28T16:03:04.876Z",
       },
     ],
@@ -113,7 +112,6 @@ describe("dashboards por papel", () => {
     expect(markup).toContain("Fila comercial");
     expect(markup).toContain("Jessica");
     expect(markup).toContain("Nelma");
-    expect(markup).not.toContain("Bloqueado por atraso");
   });
 
   it("orienta o administrador quando não há vendedores disponíveis na fila", () => {
@@ -142,7 +140,6 @@ describe("dashboards por papel", () => {
 
     expect(markup).toContain("Meus leads");
     expect(markup).toContain("Meus comentários");
-    expect(markup).not.toContain("Prazo de feedback");
     expect(markup).toContain("Minha posição na fila");
     expect(markup).toContain("Posição 3");
     expect(markup).toContain("Débora Souza");

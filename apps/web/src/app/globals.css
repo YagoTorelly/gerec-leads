@@ -23,18 +23,10 @@
   --status-won-text: #075d3f;
   --status-disqualified-bg: #e7eaed;
   --status-disqualified-text: #414a54;
-  --status-overdue-bg: #fde8e7;
-  --status-overdue-text: #9d2420;
-  --status-today-bg: #fff0c8;
-  --status-today-text: #7a4c00;
-  --status-scheduled-bg: #e7f2ff;
-  --status-scheduled-text: #174c9e;
   --status-active-bg: #e7f2ff;
   --status-active-text: #174c9e;
   --status-paused-bg: #fde8e7;
   --status-paused-text: #9d2420;
-  --status-blocked-bg: #fff0c8;
-  --status-blocked-text: #7a4c00;
   --shadow-modal: 0 20px 60px rgb(9 29 53 / 28%);
 }
 
@@ -349,7 +341,6 @@ button:disabled {
 .status-badge,
 .commercial-status,
 .disqualification-marker,
-.sla,
 .pill {
   display: inline-flex;
   align-items: center;
@@ -364,10 +355,6 @@ button:disabled {
 .status-badge--active {
   background: var(--status-active-bg);
   color: var(--status-active-text);
-}
-.status-badge--blocked_overdue {
-  background: var(--status-blocked-bg);
-  color: var(--status-blocked-text);
 }
 .status-badge--paused {
   background: var(--status-paused-bg);
@@ -394,22 +381,6 @@ button:disabled {
 .pill.won {
   background: var(--status-won-bg);
   color: var(--status-won-text);
-}
-.sla.overdue {
-  background: var(--status-overdue-bg);
-  color: var(--status-overdue-text);
-}
-.sla.today {
-  background: var(--status-today-bg);
-  color: var(--status-today-text);
-}
-.sla.scheduled {
-  background: var(--status-scheduled-bg);
-  color: var(--status-scheduled-text);
-}
-.sla.none {
-  background: var(--surface-muted);
-  color: var(--muted);
 }
 
 .activity-item {
@@ -470,7 +441,7 @@ button:disabled {
   text-align: center;
 }
 .unavailable-state {
-  border-left: 4px solid var(--status-overdue-text);
+  border-left: 4px solid var(--status-paused-text);
 }
 
 .table-card {
@@ -615,14 +586,6 @@ button:disabled {
 .lead-table-card--admin th:nth-child(10),
 .lead-table-card--admin td:nth-child(10) {
   width: 13%;
-}
-.lead-table-card--admin td:nth-child(8) .sla {
-  display: block;
-  max-width: 100%;
-  overflow: hidden;
-  white-space: normal;
-  overflow-wrap: anywhere;
-  text-overflow: ellipsis;
 }
 .lead-table-card--admin td:nth-child(9) {
   white-space: normal;

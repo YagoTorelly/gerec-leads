@@ -55,8 +55,6 @@ SCHEMA_VALIDATORS: Final[dict[str, dict[str, Any]]] = {
                 "isDisqualified": {"bsonType": "bool"},
                 "commentCount": {"bsonType": "int", "minimum": 0},
                 "lastCommentAt": {"bsonType": ["date", "null"]},
-                "feedbackDueAt": {"bsonType": ["date", "null"]},
-                "feedbackReminderAt": {"bsonType": ["date", "null"]},
             },
         }
     },
@@ -114,9 +112,17 @@ def ensure_schema(db: Database) -> None:
             _ensure_collection_validator(db, name, validator)
 
     run_migrations(db)
+    _drop_retired_indexes(db)
 
     for index in INDEXES:
         index.apply(collection(db, index.collection_name))
+
+
+def _drop_retired_indexes(db: Database) -> None:
+    """Remove índices legados fora da transação de migração, onde Mongo permite DDL."""
+    cycles = collection(db, MongoCollections.FEEDBACK_CYCLES)
+    if "feedback_cycles_open_lead_unique" in cycles.index_information():
+        cycles.drop_index("feedback_cycles_open_lead_unique")
 
 
 def _ensure_collection_validator(db: Database, name: str, validator: dict[str, Any]) -> None:

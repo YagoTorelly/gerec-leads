@@ -108,6 +108,8 @@ class FakeCollection:
             return SimpleNamespace(matched_count=0, modified_count=0)
         before = deepcopy(document)
         document.update(deepcopy(update.get("$set", {})))
+        for key in update.get("$unset", {}):
+            document.pop(key, None)
         for key, amount in update.get("$inc", {}).items():
             document[key] = document.get(key, 0) + amount
         return SimpleNamespace(matched_count=1, modified_count=int(document != before))
@@ -178,7 +180,6 @@ def _service(database: FakeDatabase, seller_id: Any, *, role: str = "seller") ->
     repository = MongoOperationsRepository(
         database,
         clock=FixedClock(),
-        business_clock=BusinessClock(NoHolidays()),
     )
     return OperationsService(
         repository,
@@ -199,27 +200,13 @@ def test_ac20_feedback_closes_previous_cycle_and_opens_the_next_atomically() -> 
         FeedbackCommand(lead_id, "Cliente pediu retorno", True, "feedback-cycle")
     )
 
-    previous = database["feedback_cycles"].find_one({"_id": previous_cycle_id})
-    lead = database["leads"].find_one({"_id": lead_id})
-    assert previous["closedAt"] == NOW
-    assert result.cycle_id != str(previous_cycle_id)
-    assert lead["feedbackDueAt"] == result.due_at
     assert len(database["feedbacks"].documents) == 1
     assert replay == result
     events = database["notification_outbox"].documents
-    assert [event["eventType"] for event in events] == [
-        "lead.feedback_recorded",
-        "lead.feedback_due_soon",
-    ]
-    reminder = events[1]
-    assert reminder["scheduledFor"] == result.reminder_at
-    assert reminder["idempotencyKey"] == f"{lead_id}:{result.cycle_id}:feedback_due_soon"
+    assert [event["eventType"] for event in events] == ["lead.feedback_recorded"]
     assert all(event["attempts"] == 0 for event in events)
     audit = database["audit_log"].documents[-1]
-    assert audit["before"]["lead"]["feedbackDueAt"] == NOW - timedelta(hours=1)
-    assert audit["after"]["lead"]["feedbackDueAt"] == result.due_at
-    assert audit["before"]["cycle"]["closedAt"] is None
-    assert audit["after"]["cycle"]["closedAt"] is None
+    assert audit["after"]["lead"]["updatedAt"] == NOW
     assert audit["correlationId"] == "feedback-cycle"
 
 
@@ -277,7 +264,6 @@ def test_ac21_no_answer_disqualification_is_manual_and_requires_five_attempts() 
 
     assert result.outcome == "disqualified"
     assert database["leads"].find_one({"_id": lead_id})["qualificationStatus"] == "disqualified"
-    assert database["feedback_cycles"].find_one({"_id": cycle_id})["closedAt"] == NOW
 
 
 def test_ac22_closed_without_conversion_stays_qualified_and_closes_sla() -> None:
@@ -299,7 +285,6 @@ def test_ac22_closed_without_conversion_stays_qualified_and_closes_sla() -> None
     lead = database["leads"].find_one({"_id": lead_id})
     assert lead["qualificationStatus"] == "qualified"
     assert lead["conversionStatus"] == "closed_no_conversion"
-    assert database["feedback_cycles"].find_one({"_id": cycle_id})["closedAt"] == NOW
 
 
 def test_ac23_outside_sp_remains_active_until_explicit_manual_outcome() -> None:
@@ -370,14 +355,13 @@ def test_ac24_ac28_won_is_idempotent_marks_client_and_preserves_owner() -> None:
     assert database["companies"].find_one({"_id": company_id})["ownerId"] == owner_id
     assert database["companies"].find_one({"_id": company_id})["clientSince"] == NOW
     assert database["sales"].documents[0]["creditedSellerId"] == temporary_seller
-    assert database["feedback_cycles"].find_one({"_id": cycle_id})["closedAt"] == NOW
     outcome_audit = database["audit_log"].documents[-1]
     assert outcome_audit["before"]["company"]["clientSince"] is None
     assert outcome_audit["after"]["company"]["clientSince"] == NOW
 
 
-def test_terminal_outcome_cancels_the_open_cycle_scheduled_reminder() -> None:
-    """Breaks if a closed lead still sends its four-hour SLA reminder."""
+def test_terminal_outcome_does_not_create_or_control_sla_reminders() -> None:
+    """Resultado comercial não depende de lembrete ou ciclo de SLA."""
     database = FakeDatabase()
     lead_id, _, seller_id, cycle_id = _seed_assigned_lead(database)
     database["notification_outbox"].insert_one(
@@ -393,16 +377,14 @@ def test_terminal_outcome_cancels_the_open_cycle_scheduled_reminder() -> None:
     )
 
     reminder = database["notification_outbox"].find_one({"cycleId": cycle_id})
-    assert reminder["status"] == "cancelled"
-    assert reminder["cancelledAt"] == NOW
+    assert reminder["status"] == "scheduled"
 
 
-def test_ac30_administrative_note_does_not_change_deadline_or_close_cycle() -> None:
-    """Breaks if an administrator can regularize a seller through a note."""
+def test_administrative_note_does_not_change_commercial_treatment() -> None:
+    """Nota administrativa não cria prazo nem altera a tratativa do vendedor."""
     database = FakeDatabase()
     lead_id, _, _, cycle_id = _seed_assigned_lead(database)
     admin_id = ObjectId()
-    before_due = database["leads"].find_one({"_id": lead_id})["feedbackDueAt"]
 
     result = _service(database, admin_id, role="admin").register_feedback(
         FeedbackCommand(
@@ -415,14 +397,9 @@ def test_ac30_administrative_note_does_not_change_deadline_or_close_cycle() -> N
     )
 
     assert result.status == "administrative_note"
-    assert database["leads"].find_one({"_id": lead_id})["feedbackDueAt"] == before_due
-    assert database["feedback_cycles"].find_one({"_id": cycle_id})["closedAt"] is None
     assert database["feedbacks"].documents[0]["kind"] == "administrative_note"
     audit = database["audit_log"].documents[-1]
-    assert audit["before"]["lead"]["feedbackDueAt"] == before_due
-    assert audit["after"]["lead"]["feedbackDueAt"] == before_due
-    assert audit["before"]["cycle"]["closedAt"] is None
-    assert audit["after"]["cycle"]["closedAt"] is None
+    assert "cycle" not in audit["before"]
 
 
 def test_won_rolls_back_lead_company_cycle_and_event_when_sale_insert_fails() -> None:
@@ -452,7 +429,6 @@ def test_public_feedback_reuses_the_server_timestamp_without_a_command_in_transa
     repository = MongoOperationsRepository(
         database,
         clock=transaction_clock,
-        business_clock=BusinessClock(NoHolidays()),
     )
     service = OperationsService(
         repository,
@@ -464,7 +440,6 @@ def test_public_feedback_reuses_the_server_timestamp_without_a_command_in_transa
         FeedbackCommand(lead_id, "Cliente pediu retorno", True, "database-clock")
     )
 
-    assert result.due_at == datetime(2026, 9, 9, 11, 0, tzinfo=SAO_PAULO)
     assert process_clock.sessions == [None]
     assert transaction_clock.sessions == []
 
@@ -646,12 +621,10 @@ def test_treatment_materializes_projection_records_event_and_is_idempotent() -> 
     assert lead["isDisqualified"] is False
     assert lead["commentCount"] == 1
     assert lead["lastCommentAt"] == NOW
-    assert database["feedback_cycles"].find_one({"_id": previous_cycle_id})["closedAt"] == NOW
     assert len(database["lead_treatments"].documents) == 1
     assert len(database["audit_log"].documents) == 1
     assert [event["eventType"] for event in database["notification_outbox"].documents] == [
-        "lead.treatment_recorded",
-        "lead.feedback_due_soon",
+        "lead.treatment_recorded"
     ]
 
 
@@ -673,9 +646,6 @@ def test_won_plus_disqualified_closes_sla_and_later_treatment_does_not_reopen_it
     assert later.is_disqualified is True
     assert lead["commercialStatus"] == "won"
     assert lead["isDisqualified"] is True
-    assert lead["feedbackDueAt"] is None
-    assert lead["feedbackReminderAt"] is None
-    assert database["feedback_cycles"].find_one({"_id": cycle_id})["closedAt"] == NOW
     assert len(database["feedback_cycles"].documents) == 1
 
 

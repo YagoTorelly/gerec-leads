@@ -232,8 +232,6 @@ describe("cliente HTTP operacional", () => {
             commercialStatus: "negotiation",
             isDisqualified: false,
             commentCount: 2,
-            reminderAt: "2026-08-28T16:00:00.000Z",
-            dueAt: "2026-08-28T20:00:00.000Z",
           }),
           { status: 201 },
         ),

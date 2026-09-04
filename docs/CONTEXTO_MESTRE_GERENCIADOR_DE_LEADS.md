@@ -1,6 +1,6 @@
 ﻿# Contexto Mestre - Gerenciador de Leads WTG
 
-> Gerado em 2026-09-03 16:16:38 UTC por `scripts/generate-master-context.ps1`.
+> Gerado em 2026-09-04 11:40:00 UTC por `scripts/generate-master-context.ps1`.
 
 ## Como usar este documento
 
@@ -3643,6 +3643,48 @@ Desativar o alerta deve ser uma configuração operacional independente da fila.
 ## 17. Próximo passo
 
 Após a revisão e aprovação deste documento, criar o plano executável em `docs/superpowers/plans/` com tarefas TDD pequenas, implementação por subagentes, revisão independente e evidências no ledger.
+
+## Desenho de produto: `docs/superpowers/specs/2026-09-04-remocao-sla-e-reconciliacao.md`
+
+# DEC-031 — Remoção integral de SLA e reconciliação da fila
+
+Status: aprovada por Yago em 04/09/2026.
+
+## Decisão
+
+O fluxo vigente não cria, calcula, expõe ou entrega prazo, lembrete, ciclo de
+SLA ou bloqueio automático. A disponibilidade da fila é exclusivamente
+`Ativo` ou `Pausado`; a pausa é manual e administrativa.
+
+Após importar o lote inteiro, a sincronização reconcilia em FIFO os leads
+normais sem responsável que estejam `ready` ou estacionados exclusivamente por
+`no_eligible_seller`. Assim, um lead que chegou quando não havia vendedor
+elegível volta automaticamente à distribuição em uma sincronização posterior.
+
+Leads recorrentes cujo proprietário está indisponível continuam estacionados
+com `owner_unavailable` e não interrompem a distribuição dos leads normais.
+
+## Migração e histórico
+
+A migração versionada `20260904_remove_operational_sla` remove as projeções de
+prazo dos leads, fecha ciclos legados abertos e cancela alertas de prazo ainda
+não terminais. O bootstrap remove de forma idempotente o índice ativo desses
+ciclos fora da transação, pois MongoDB não permite DDL em transações.
+Comentários, atribuições, ciclos e alertas já concluídos permanecem como
+histórico de auditoria.
+
+O worker também recusa entregar um alerta legado caso ele tenha sido obtido por
+um worker concorrente durante a execução da migração.
+
+## Critérios de aceite
+
+- Nenhuma API ou tela vigente contém prazo, lembrete ou bloqueio por atraso.
+- Novo comentário altera somente a tratativa e sua situação comercial.
+- O próximo sync atribui em FIFO os leads normais antes estacionados assim que
+  houver vendedor ativo.
+- Reexecutar sync sem mudança de disponibilidade não duplica eventos de
+  estacionamento.
+- O histórico legado não é apagado.
 
 ## Plano histórico ou executável: `docs/superpowers/plans/2026-08-25-etapa-1-esqueleto-executavel.md`
 
@@ -8595,7 +8637,6 @@ class DashboardService:
                 "isDisqualified": bool(lead.get("isDisqualified", False)),
                 "commentCount": int(lead.get("commentCount", 0)),
                 "assignedAt": lead.get("assignedAt"),
-                "feedbackDueAt": lead.get("feedbackDueAt"),
                 "lastUpdatedAt": lead.get("lastCommentAt")
                 or lead.get("updatedAt")
                 or lead.get("assignedAt"),
@@ -9163,6 +9204,8 @@ class OutboxRepository(Protocol):
         self, event: OutboxEvent, error: Exception, now: datetime, max_attempts: int
     ) -> bool: ...
 
+    def cancel(self, event: OutboxEvent, now: datetime) -> bool: ...
+
 
 class MongoOutboxRepository:
     """Use atomic Mongo claims so concurrent workers cannot deliver an event twice."""
@@ -9249,6 +9292,22 @@ class MongoOutboxRepository:
             )
         return True
 
+    def cancel(self, event: OutboxEvent, now: datetime) -> bool:
+        if not event.claim_token:
+            return False
+        result = self._outbox.update_one(
+            {"_id": event.event_id, "status": "processing", "claimToken": event.claim_token},
+            {
+                "$set": {
+                    "status": "cancelled",
+                    "cancelledAt": now,
+                    "cancelledByMigration": "20260904_remove_operational_sla",
+                },
+                "$unset": {"lockedUntil": "", "claimToken": ""},
+            },
+        )
+        return result.matched_count == 1
+
 
 class OutboxWorker:
     """Deliver only claimed events and leave domain data untouched on delivery errors."""
@@ -9272,6 +9331,9 @@ class OutboxWorker:
         timestamp = now or datetime.now(UTC)
         delivered = 0
         for event in self._repository.claim(batch_size, timestamp, self._max_attempts):
+            if event.event_type == "lead.feedback_due_soon":
+                self._repository.cancel(event, timestamp)
+                continue
             try:
                 self._deliver(event)
             except Exception as error:  # external providers are retried; domain commits remain intact
@@ -9525,7 +9587,6 @@ from pymongo.errors import DuplicateKeyError
 from gerec_api.automation.workbook_adapter import WorkbookAdapter
 from gerec_api.config import Settings
 from gerec_api.domain.leads import LeadService
-from gerec_api.domain.business_time import BusinessClock, MongoHolidayRepository
 from gerec_api.domain.queue import QueueService
 from gerec_api.domain.normalization import NormalizedSourceRow, normalize_source_row
 from gerec_api.infrastructure.mongo.client import MongoClientFactory
@@ -9668,7 +9729,6 @@ class SyncJob:
             return SyncResult(snapshot_id, 0, 0, 0, 0, 0, 0, 0, skipped=True)
         counts = {"created": 0, "updated": 0, "ignored": 0, "pending": 0}
         read_rows = 0
-        distributed_leads: set[str] = set()
         try:
             for raw_row in self._rows(source):
                 self._heartbeat(lease)
@@ -9678,17 +9738,8 @@ class SyncJob:
                 read_rows += 1
                 if result.status in counts:
                     counts[result.status] += 1
-                if (
-                    self._queue_service is not None
-                    and result.assignment_status == "ready"
-                    and result.lead_id is not None
-                    and result.lead_id not in distributed_leads
-                ):
-                    self._queue_service.distribute_ready(
-                        _mongo_id(result.lead_id),
-                        f"sync:{snapshot_id}:distribute:{result.lead_id}",
-                    )
-                    distributed_leads.add(result.lead_id)
+            if self._queue_service is not None:
+                self._queue_service.reconcile_pending(f"sync:{snapshot_id}:reconcile")
             self._heartbeat(lease)
             archive = self._lead_service.archive_missing(snapshot_id)
         except Exception:
@@ -9728,13 +9779,10 @@ def run_sync(source: Any, run_id: str) -> SyncResult:
     """Railway entry point; credentials stay in the Python process environment."""
     settings = Settings.from_env()
     database = MongoClientFactory.create(settings)
-    business_clock = BusinessClock(
-        MongoHolidayRepository(database[MongoCollections.HOLIDAYS])
-    )
     return SyncJob(
         LeadService(LeadRepository(database)),
         queue_service=QueueService(
-            QueueRepository(database, business_clock=business_clock), actor_id="google-sheets-sync"
+            QueueRepository(database), actor_id="google-sheets-sync"
         ),
         leases=MongoSyncLeaseRepository(database),
     ).run(source, run_id)
@@ -10458,19 +10506,13 @@ class TreatmentCommand:
 class FeedbackResult:
     lead_id: str
     feedback_id: str
-    cycle_id: str | None
     status: str
-    reminder_at: datetime | None
-    due_at: datetime | None
 
     def to_document(self) -> dict[str, Any]:
         return {
             "leadId": self.lead_id,
             "feedbackId": self.feedback_id,
-            "cycleId": self.cycle_id,
             "status": self.status,
-            "reminderAt": self.reminder_at,
-            "dueAt": self.due_at,
         }
 
     @classmethod
@@ -10478,10 +10520,7 @@ class FeedbackResult:
         return cls(
             lead_id=str(value["leadId"]),
             feedback_id=str(value["feedbackId"]),
-            cycle_id=str(value["cycleId"]) if value.get("cycleId") is not None else None,
             status=str(value["status"]),
-            reminder_at=value.get("reminderAt"),
-            due_at=value.get("dueAt"),
         )
 
 
@@ -10555,8 +10594,6 @@ class TreatmentResult:
     is_disqualified: bool
     comment_count: int
     last_updated_at: datetime
-    reminder_at: datetime | None
-    due_at: datetime | None
 
     def to_document(self) -> dict[str, Any]:
         return {
@@ -10567,8 +10604,6 @@ class TreatmentResult:
             "isDisqualified": self.is_disqualified,
             "commentCount": self.comment_count,
             "lastUpdatedAt": self.last_updated_at,
-            "reminderAt": self.reminder_at,
-            "dueAt": self.due_at,
         }
 
     @classmethod
@@ -10581,8 +10616,6 @@ class TreatmentResult:
             is_disqualified=bool(value["isDisqualified"]),
             comment_count=int(value["commentCount"]),
             last_updated_at=value["lastUpdatedAt"],
-            reminder_at=value.get("reminderAt"),
-            due_at=value.get("dueAt"),
         )
 
 
@@ -10603,8 +10636,6 @@ class OperationsPersistence(Protocol):
         actor_id: Any,
         actor_role: str,
         now: datetime,
-        reminder_at: datetime,
-        due_at: datetime,
     ) -> TreatmentResult: ...
 
     def register_feedback(
@@ -10614,8 +10645,6 @@ class OperationsPersistence(Protocol):
         actor_id: Any,
         actor_role: str,
         now: datetime,
-        reminder_at: datetime | None,
-        due_at: datetime | None,
     ) -> FeedbackResult: ...
 
     def register_attempt(
@@ -10679,21 +10708,16 @@ class OperationsService:
         if command.administrative_note:
             if self._actor_role != "admin":
                 raise ValueError("administrative notes require an admin actor")
-            reminder_at = due_at = None
         else:
             if self._actor_role != "seller":
                 raise ValueError("seller feedback requires a seller actor")
             if not command.contact_started:
                 raise ValueError("feedback requires an explicit contact action")
-            due_at = self._business_clock.add_business_hours(now, 24)
-            reminder_at = self._business_clock.subtract_business_hours(due_at, 4)
         return self._persistence.register_feedback(
             command,
             actor_id=self._actor_id,
             actor_role=self._actor_role,
             now=now,
-            reminder_at=reminder_at,
-            due_at=due_at,
         )
 
     def register_treatment(self, command: TreatmentCommand) -> TreatmentResult:
@@ -10711,15 +10735,11 @@ class OperationsService:
             _required(command.idempotency_key, "idempotency key"),
         )
         now = self._aware_now()
-        due_at = self._business_clock.add_business_hours(now, 24)
-        reminder_at = self._business_clock.subtract_business_hours(due_at, 4)
         return self._persistence.register_treatment(
             command,
             actor_id=self._actor_id,
             actor_role=self._actor_role,
             now=now,
-            reminder_at=reminder_at,
-            due_at=due_at,
         )
 
     def register_attempt(self, command: AttemptCommand) -> AttemptResult:
@@ -10815,14 +10835,13 @@ class SellerState:
     seller_id: Any
     active: bool
     paused: bool
-    has_overdue_feedback: bool
     skip_balance: int
     position: int = 0
 
 
 @dataclass(frozen=True)
 class SellerAvailability:
-    status: Literal["active", "paused", "blocked_overdue"]
+    status: Literal["active", "paused"]
     reason: str | None
 
 
@@ -10855,8 +10874,6 @@ class QueueRules:
             return SellerAvailability("paused", "Pausa manual ativa.")
         if not seller.active:
             return SellerAvailability("paused", "Vendedor inativo.")
-        if seller.has_overdue_feedback:
-            return SellerAvailability("blocked_overdue", "Possui ciclo de SLA vencido.")
         return SellerAvailability("active", None)
 
     @classmethod
@@ -11008,6 +11025,8 @@ class TransferResult:
 
 
 class QueuePersistence(Protocol):
+    def reconcile_pending(self, command_prefix: str, *, actor_id: Any) -> list[AssignmentResult]: ...
+
     def distribute_ready(
         self, lead_id: Any, command_id: str, *, actor_id: Any
     ) -> AssignmentResult: ...
@@ -11076,6 +11095,12 @@ class QueueService:
             lead_id,
             _required(command_id, "command id"),
             actor_id=self._actor_id,
+        )
+
+    def reconcile_pending(self, command_prefix: str) -> list[AssignmentResult]:
+        """Retry FIFO-safe leads parked before a seller became available."""
+        return self._persistence.reconcile_pending(
+            _required(command_prefix, "command prefix"), actor_id=self._actor_id
         )
 
     def assign_recurring(self, lead_id: Any, command_id: str) -> AssignmentResult:
@@ -11353,8 +11378,6 @@ SCHEMA_VALIDATORS: Final[dict[str, dict[str, Any]]] = {
                 "isDisqualified": {"bsonType": "bool"},
                 "commentCount": {"bsonType": "int", "minimum": 0},
                 "lastCommentAt": {"bsonType": ["date", "null"]},
-                "feedbackDueAt": {"bsonType": ["date", "null"]},
-                "feedbackReminderAt": {"bsonType": ["date", "null"]},
             },
         }
     },
@@ -11412,9 +11435,17 @@ def ensure_schema(db: Database) -> None:
             _ensure_collection_validator(db, name, validator)
 
     run_migrations(db)
+    _drop_retired_indexes(db)
 
     for index in INDEXES:
         index.apply(collection(db, index.collection_name))
+
+
+def _drop_retired_indexes(db: Database) -> None:
+    """Remove índices legados fora da transação de migração, onde Mongo permite DDL."""
+    cycles = collection(db, MongoCollections.FEEDBACK_CYCLES)
+    if "feedback_cycles_open_lead_unique" in cycles.index_information():
+        cycles.drop_index("feedback_cycles_open_lead_unique")
 
 
 def _ensure_collection_validator(db: Database, name: str, validator: dict[str, Any]) -> None:
@@ -11720,13 +11751,6 @@ INDEXES: Final[tuple[MongoIndex, ...]] = (
         (("leadId", ASCENDING), ("businessDate", ASCENDING)),
         "contact_attempts_lead_business_date_unique",
         unique=True,
-    ),
-    MongoIndex(
-        MongoCollections.FEEDBACK_CYCLES,
-        (("leadId", ASCENDING),),
-        "feedback_cycles_open_lead_unique",
-        unique=True,
-        partial_filter={"closedAt": None},
     ),
     MongoIndex(
         MongoCollections.SESSIONS,
@@ -12513,6 +12537,52 @@ def _legacy_datetime(value: Any) -> datetime | None:
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 ````
 
+## Snapshot de código: `apps/api/src/gerec_api/infrastructure/mongo/migrations/20260904_remove_operational_sla.py`
+
+````python
+"""Disable legacy SLA projections without deleting historical audit records."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from typing import Any
+
+from gerec_api.infrastructure.mongo.collections import MongoCollections
+
+
+VERSION = "20260904_remove_operational_sla"
+
+
+def apply(database: Any, *, session: Any | None = None) -> None:
+    """Clear active deadline state and cancel every nonterminal legacy reminder."""
+    options = {} if session is None else {"session": session}
+    now = datetime.now(UTC)
+    database[MongoCollections.LEADS].update_many(
+        {},
+        {
+            "$unset": {
+                "feedbackCycleId": "",
+                "feedbackDueAt": "",
+                "feedbackReminderAt": "",
+            }
+        },
+        **options,
+    )
+    database[MongoCollections.FEEDBACK_CYCLES].update_many(
+        {"closedAt": None},
+        {"$set": {"closedAt": now, "closedByMigration": VERSION}},
+        **options,
+    )
+    database[MongoCollections.NOTIFICATION_OUTBOX].update_many(
+        {
+            "eventType": "lead.feedback_due_soon",
+            "status": {"$nin": ["sent", "dead_letter", "cancelled"]},
+        },
+        {"$set": {"status": "cancelled", "cancelledAt": now, "cancelledByMigration": VERSION}},
+        **options,
+    )
+````
+
 ## Snapshot de código: `apps/api/src/gerec_api/infrastructure/mongo/migrations/runner.py`
 
 ````python
@@ -12533,8 +12603,12 @@ Migration = tuple[str, Callable[..., None]]
 _operacao_comercial = import_module(
     "gerec_api.infrastructure.mongo.migrations.20260828_operacao_comercial"
 )
+_remove_operational_sla = import_module(
+    "gerec_api.infrastructure.mongo.migrations.20260904_remove_operational_sla"
+)
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     (_operacao_comercial.VERSION, _operacao_comercial.apply),
+    (_remove_operational_sla.VERSION, _remove_operational_sla.apply),
 )
 
 
@@ -12611,7 +12685,6 @@ from gerec_api.domain.operations import (
     Clock,
     SystemClock,
 )
-from gerec_api.domain.business_time import BusinessClock
 from gerec_api.infrastructure.mongo.collections import MongoCollections
 
 
@@ -12639,11 +12712,9 @@ class MongoOperationsRepository:
         database: Any,
         *,
         clock: Clock | None = None,
-        business_clock: BusinessClock | None = None,
     ) -> None:
         self._database = database
         self._clock = clock or SystemClock()
-        self._business_clock = business_clock
 
     def register_feedback(
         self,
@@ -12652,8 +12723,6 @@ class MongoOperationsRepository:
         actor_id: Any,
         actor_role: str,
         now: datetime,
-        reminder_at: datetime | None,
-        due_at: datetime | None,
     ) -> FeedbackResult:
         return self._execute(
             FEEDBACK_COMMAND,
@@ -12665,8 +12734,6 @@ class MongoOperationsRepository:
                 actor_id,
                 actor_role,
                 transaction_now,
-                reminder_at,
-                due_at,
                 session,
             ),
         )
@@ -12678,8 +12745,6 @@ class MongoOperationsRepository:
         actor_id: Any,
         actor_role: str,
         now: datetime,
-        reminder_at: datetime,
-        due_at: datetime,
     ) -> TreatmentResult:
         return self._execute(
             TREATMENT_COMMAND,
@@ -12691,8 +12756,6 @@ class MongoOperationsRepository:
                 actor_id,
                 actor_role,
                 transaction_now,
-                reminder_at,
-                due_at,
                 session,
             ),
             actor_id=actor_id,
@@ -12835,17 +12898,10 @@ class MongoOperationsRepository:
         actor_id: Any,
         actor_role: str,
         now: datetime,
-        reminder_at: datetime | None,
-        due_at: datetime | None,
         session: Any,
     ) -> FeedbackResult:
         lead = self._lead(command.lead_id, session)
         lead_before = deepcopy(lead)
-        open_cycle_before = deepcopy(
-            self._feedback_cycles.find_one(
-                {"leadId": command.lead_id, "closedAt": None}, session=session
-            )
-        )
         feedback_id = ObjectId()
         if command.administrative_note:
             if actor_role != "admin":
@@ -12867,44 +12923,19 @@ class MongoOperationsRepository:
                     "lead.administrative_note_added",
                     command.lead_id,
                     command.idempotency_key,
-                    {"lead": lead_before, "cycle": open_cycle_before},
+                    {"lead": lead_before},
                     {
                         "lead": self._leads.find_one({"_id": command.lead_id}, session=session),
-                        "cycle": self._feedback_cycles.find_one(
-                            {"leadId": command.lead_id, "closedAt": None}, session=session
-                        ),
                         "feedbackId": feedback_id,
                     },
                     now,
                 ),
                 session=session,
             )
-            return FeedbackResult(
-                str(command.lead_id), str(feedback_id), None, "administrative_note", None, None
-            )
+            return FeedbackResult(str(command.lead_id), str(feedback_id), "administrative_note")
 
-        if self._business_clock is None:
-            raise OperationsStateError("business clock is required for seller feedback")
-        due_at = self._business_clock.add_business_hours(now, 24)
-        reminder_at = self._business_clock.subtract_business_hours(due_at, 4)
         self._require_current_seller(lead, actor_id, actor_role)
         self._require_active(lead)
-        cycle = self._feedback_cycles.find_one(
-            {"leadId": command.lead_id, "closedAt": None}, session=session
-        )
-        cycle_before = deepcopy(cycle)
-        if cycle is None:
-            raise OperationsStateError("active lead does not have an open feedback cycle")
-        closed = self._feedback_cycles.update_one(
-            {"_id": cycle["_id"], "closedAt": None},
-            {"$set": {"closedAt": now, "closedByFeedbackId": feedback_id}},
-            session=session,
-        )
-        if closed.matched_count != 1:
-            raise OperationsStateError("feedback cycle changed concurrently")
-        self._cancel_cycle_reminder(cycle["_id"], now, session)
-
-        cycle_id = ObjectId()
         self._feedbacks.insert_one(
             {
                 "_id": feedback_id,
@@ -12917,27 +12948,9 @@ class MongoOperationsRepository:
             },
             session=session,
         )
-        self._feedback_cycles.insert_one(
-            {
-                "_id": cycle_id,
-                "leadId": command.lead_id,
-                "startAt": now,
-                "reminderAt": reminder_at,
-                "dueAt": due_at,
-                "closedAt": None,
-            },
-            session=session,
-        )
         updated = self._leads.update_one(
             {"_id": command.lead_id},
-            {
-                "$set": {
-                    "feedbackCycleId": cycle_id,
-                    "feedbackReminderAt": reminder_at,
-                    "feedbackDueAt": due_at,
-                    "updatedAt": now,
-                }
-            },
+            {"$set": {"updatedAt": now}},
             session=session,
         )
         if updated.matched_count != 1:
@@ -12947,29 +12960,12 @@ class MongoOperationsRepository:
             command.lead_id,
             actor_id,
             command.idempotency_key,
-            {"lead": lead_before, "cycle": cycle_before},
-            {"lead": self._leads.find_one({"_id": command.lead_id}, session=session), "cycle": self._feedback_cycles.find_one({"_id": cycle_id}, session=session)},
+            {"lead": lead_before},
+            {"lead": self._leads.find_one({"_id": command.lead_id}, session=session)},
             now,
             session,
         )
-        self._schedule_reminder(
-            command.lead_id,
-            cycle_id,
-            reminder_at,
-            due_at,
-            actor_id,
-            command.idempotency_key,
-            now,
-            session,
-        )
-        return FeedbackResult(
-            str(command.lead_id),
-            str(feedback_id),
-            str(cycle_id),
-            "recorded",
-            reminder_at,
-            due_at,
-        )
+        return FeedbackResult(str(command.lead_id), str(feedback_id), "recorded")
 
     def _register_treatment(
         self,
@@ -12977,17 +12973,11 @@ class MongoOperationsRepository:
         actor_id: Any,
         actor_role: str,
         now: datetime,
-        reminder_at: datetime,
-        due_at: datetime,
         session: Any,
     ) -> TreatmentResult:
         lead = self._lead(command.lead_id, session)
         self._require_current_seller(lead, actor_id, actor_role)
         lead_before = deepcopy(lead)
-        cycle = self._feedback_cycles.find_one(
-            {"leadId": command.lead_id, "closedAt": None}, session=session
-        )
-        cycle_before = deepcopy(cycle)
         treatment_id = ObjectId()
         effective_disqualification = bool(lead.get("isDisqualified")) or command.is_disqualified
         comment_count = int(lead.get("commentCount", 0)) + 1
@@ -13013,54 +13003,12 @@ class MongoOperationsRepository:
             "lastCommentAt": now,
             "updatedAt": now,
         }
-        after_cycle = None
-        scheduled_cycle_id = None
-        if effective_disqualification:
-            update.update({"feedbackDueAt": None, "feedbackReminderAt": None})
-            if cycle is not None:
-                closed = self._feedback_cycles.update_one(
-                    {"_id": cycle["_id"], "closedAt": None},
-                    {"$set": {"closedAt": now, "closedByTreatmentId": treatment_id}},
-                    session=session,
-                )
-                if closed.matched_count != 1:
-                    raise OperationsStateError("feedback cycle changed concurrently")
-                self._cancel_cycle_reminder(cycle["_id"], now, session)
-                after_cycle = self._feedback_cycles.find_one({"_id": cycle["_id"]}, session=session)
-        else:
-            if cycle is not None:
-                closed = self._feedback_cycles.update_one(
-                    {"_id": cycle["_id"], "closedAt": None},
-                    {"$set": {"closedAt": now, "closedByTreatmentId": treatment_id}},
-                    session=session,
-                )
-                if closed.matched_count != 1:
-                    raise OperationsStateError("feedback cycle changed concurrently")
-                self._cancel_cycle_reminder(cycle["_id"], now, session)
-            cycle_id = ObjectId()
-            self._feedback_cycles.insert_one(
-                {
-                    "_id": cycle_id,
-                    "leadId": command.lead_id,
-                    "startAt": now,
-                    "reminderAt": reminder_at,
-                    "dueAt": due_at,
-                    "closedAt": None,
-                },
-                session=session,
-            )
-            update.update(
-                {
-                    "feedbackCycleId": cycle_id,
-                    "feedbackReminderAt": reminder_at,
-                    "feedbackDueAt": due_at,
-                }
-            )
-            after_cycle = self._feedback_cycles.find_one({"_id": cycle_id}, session=session)
-            scheduled_cycle_id = cycle_id
-
         changed = self._leads.update_one(
-            {"_id": command.lead_id}, {"$set": update}, session=session
+            {
+                "_id": command.lead_id
+            },
+            {"$set": update},
+            session=session,
         )
         if changed.matched_count != 1:
             raise OperationsStateError("lead changed concurrently")
@@ -13070,22 +13018,11 @@ class MongoOperationsRepository:
             command.lead_id,
             actor_id,
             command.idempotency_key,
-            {"lead": lead_before, "cycle": cycle_before},
-            {"lead": lead_after, "cycle": after_cycle, "treatmentId": treatment_id},
+            {"lead": lead_before},
+            {"lead": lead_after, "treatmentId": treatment_id},
             now,
             session,
         )
-        if scheduled_cycle_id is not None:
-            self._schedule_reminder(
-                command.lead_id,
-                scheduled_cycle_id,
-                reminder_at,
-                due_at,
-                actor_id,
-                command.idempotency_key,
-                now,
-                session,
-            )
         return TreatmentResult(
             str(command.lead_id),
             str(treatment_id),
@@ -13094,8 +13031,6 @@ class MongoOperationsRepository:
             effective_disqualification,
             comment_count,
             lead_after["updatedAt"],
-            lead_after.get("feedbackReminderAt"),
-            lead_after.get("feedbackDueAt"),
         )
 
     def _register_attempt(
@@ -13190,7 +13125,6 @@ class MongoOperationsRepository:
 
         outcome_event_id = ObjectId()
         qualification_status, conversion_status = self._statuses(command.outcome, lead)
-        terminal = command.outcome != "qualified_follow_up"
         update: dict[str, Any] = {
             "qualificationStatus": qualification_status,
             "conversionStatus": conversion_status,
@@ -13198,21 +13132,6 @@ class MongoOperationsRepository:
             "outcomeEventId": outcome_event_id,
             "updatedAt": now,
         }
-        if terminal:
-            update.update({"feedbackDueAt": None, "feedbackReminderAt": None})
-            cycle = self._feedback_cycles.find_one(
-                {"leadId": command.lead_id, "closedAt": None}, session=session
-            )
-            cycle_before = deepcopy(cycle)
-            if cycle is not None:
-                closed = self._feedback_cycles.update_one(
-                    {"_id": cycle["_id"], "closedAt": None},
-                    {"$set": {"closedAt": now, "closedByOutcomeId": outcome_event_id}},
-                    session=session,
-                )
-                if closed.matched_count != 1:
-                    raise OperationsStateError("feedback cycle changed concurrently")
-                self._cancel_cycle_reminder(cycle["_id"], now, session)
 
         sale_id: ObjectId | None = None
         company_before = None
@@ -13241,7 +13160,11 @@ class MongoOperationsRepository:
             update["wonAt"] = now
 
         changed = self._leads.update_one(
-            {"_id": command.lead_id}, {"$set": update}, session=session
+            {
+                "_id": command.lead_id
+            },
+            {"$set": update},
+            session=session,
         )
         if changed.matched_count != 1:
             raise OperationsStateError("lead changed concurrently")
@@ -13262,8 +13185,8 @@ class MongoOperationsRepository:
             command.lead_id,
             actor_id,
             command.idempotency_key,
-            {"lead": lead_before, "cycle": cycle_before if terminal else None, "company": company_before},
-            {"lead": self._leads.find_one({"_id": command.lead_id}, session=session), "cycle": (self._feedback_cycles.find_one({"_id": cycle["_id"]}, session=session) if terminal and cycle is not None else None), "company": (self._companies.find_one({"_id": lead["companyId"]}, session=session) if company_before is not None else None), "outcomeEventId": outcome_event_id, "saleId": sale_id},
+            {"lead": lead_before, "company": company_before},
+            {"lead": self._leads.find_one({"_id": command.lead_id}, session=session), "company": (self._companies.find_one({"_id": lead["companyId"]}, session=session) if company_before is not None else None), "outcomeEventId": outcome_event_id, "saleId": sale_id},
             now,
             session,
         )
@@ -13365,47 +13288,6 @@ class MongoOperationsRepository:
             session=session,
         )
 
-    def _schedule_reminder(
-        self,
-        lead_id: Any,
-        cycle_id: Any,
-        reminder_at: datetime | None,
-        due_at: datetime | None,
-        actor_id: Any,
-        command_id: str,
-        now: datetime,
-        session: Any,
-    ) -> None:
-        if reminder_at is None:
-            return
-        self._notification_outbox.insert_one(
-            {
-                "_id": ObjectId(),
-                "eventType": "lead.feedback_due_soon",
-                "aggregateId": lead_id,
-                "actorId": actor_id,
-                "idempotencyKey": f"{lead_id}:{cycle_id}:feedback_due_soon",
-                "cycleId": cycle_id,
-                "scheduledFor": reminder_at,
-                "dueAt": due_at,
-                "status": "scheduled",
-                "attempts": 0,
-                "payload": {"leadId": lead_id, "cycleId": cycle_id},
-                "createdAt": now,
-            },
-            session=session,
-        )
-
-    def _cancel_cycle_reminder(self, cycle_id: Any, now: datetime, session: Any) -> None:
-        self._notification_outbox.update_one(
-            {
-                "cycleId": cycle_id,
-                "eventType": "lead.feedback_due_soon",
-                "status": "scheduled",
-            },
-            {"$set": {"status": "cancelled", "cancelledAt": now}},
-            session=session,
-        )
 
     @property
     def _leads(self):
@@ -13414,10 +13296,6 @@ class MongoOperationsRepository:
     @property
     def _companies(self):
         return self._database[MongoCollections.COMPANIES]
-
-    @property
-    def _feedback_cycles(self):
-        return self._database[MongoCollections.FEEDBACK_CYCLES]
 
     @property
     def _feedbacks(self):
@@ -13466,7 +13344,6 @@ from typing import Any, Callable, TypeVar
 from bson import ObjectId
 from pymongo.errors import DuplicateKeyError
 
-from gerec_api.domain.business_time import BusinessClock
 from gerec_api.domain.queue import (
     AssignmentResult,
     QueueSnapshot,
@@ -13505,11 +13382,9 @@ class QueueRepository:
         database: Any,
         *,
         now: Callable[[], datetime] | None = None,
-        business_clock: BusinessClock | None = None,
     ) -> None:
         self._database = database
         self._now = now or (lambda: datetime.now(UTC))
-        self._business_clock = business_clock
 
     def distribute_normal(
         self, lead_id: Any, command_id: str, *, actor_id: Any
@@ -13548,6 +13423,39 @@ class QueueRepository:
             AssignmentResult,
             lambda session: self._distribute_ready(lead_id, command_id, actor_id, session),
         )
+
+    def reconcile_pending(self, command_prefix: str, *, actor_id: Any) -> list[AssignmentResult]:
+        """Retry unassigned FIFO leads after availability changes or a sync replay."""
+        candidates = list(
+            self._leads.find(
+                {
+                    "assignmentStatus": {"$in": ["ready", "parked"]},
+                    "assigneeId": None,
+                    "currentAssignmentId": None,
+                    "archivedAt": None,
+                }
+            )
+        )
+        candidates = [
+            lead
+            for lead in candidates
+            if lead.get("parkReason") in (None, "no_eligible_seller")
+        ]
+        candidates.sort(
+            key=lambda lead: (
+                lead.get("sourceEnteredAt") or datetime.max.replace(tzinfo=UTC),
+                lead.get("sourceLeadId") or str(lead["_id"]),
+            )
+        )
+        results: list[AssignmentResult] = []
+        for lead in candidates:
+            result = self.distribute_ready(
+                lead["_id"], f"{command_prefix}:{lead['_id']}", actor_id=actor_id
+            )
+            if result.status == "parked" and result.assignment_type == "normal":
+                break
+            results.append(result)
+        return results
 
     def assign_recurring(
         self, lead_id: Any, command_id: str, *, actor_id: Any
@@ -13687,6 +13595,19 @@ class QueueRepository:
             raise QueueStateError("global queue state is not initialized")
         sellers = self._seller_states(now, session)
         decision = QueueRules.select_normal(sellers, queue_state["nextSellerId"])
+        if (
+            decision.seller_id is None
+            and lead.get("assignmentStatus") == "parked"
+            and lead.get("parkReason") == "no_eligible_seller"
+        ):
+            return AssignmentResult(
+                lead_id=str(lead_id),
+                assignment_id=None,
+                seller_id=None,
+                assignment_type="normal",
+                status="parked",
+                owner_id=self._owner_id(lead, session),
+            )
 
         state_update = self._queue_state.update_one(
             {"_id": QUEUE_STATE_ID, "version": queue_state["version"]},
@@ -13938,13 +13859,6 @@ class QueueRepository:
             )
             if ended.matched_count != 1:
                 raise QueueStateError("current assignment changed concurrently")
-        current_cycle_id = lead.get("feedbackCycleId")
-        if current_cycle_id is not None:
-            self._feedback_cycles.update_one(
-                {"_id": current_cycle_id, "closedAt": None},
-                {"$set": {"closedAt": now}},
-                session=session,
-            )
         cleared = self._leads.update_one(
             {"_id": lead_id, "currentAssignmentId": current_assignment_id},
             {"$set": {"currentAssignmentId": None}},
@@ -14014,28 +13928,6 @@ class QueueRepository:
             "assignedAt": now,
             "updatedAt": now,
         }
-        if self._business_clock is not None:
-            cycle_id = ObjectId()
-            due_at = self._business_clock.add_business_hours(now, 24)
-            reminder_at = self._business_clock.subtract_business_hours(due_at, 4)
-            self._feedback_cycles.insert_one(
-                {
-                    "_id": cycle_id,
-                    "leadId": lead["_id"],
-                    "startAt": now,
-                    "reminderAt": reminder_at,
-                    "dueAt": due_at,
-                    "closedAt": None,
-                },
-                session=session,
-            )
-            lead_update.update(
-                {
-                    "feedbackCycleId": cycle_id,
-                    "feedbackReminderAt": reminder_at,
-                    "feedbackDueAt": due_at,
-                }
-            )
         updated = self._leads.update_one(
             {"_id": lead["_id"], "currentAssignmentId": None},
             {"$set": lead_update},
@@ -14077,26 +13969,6 @@ class QueueRepository:
             session=session,
             reason=reason,
         )
-        if self._business_clock is not None:
-            cycle_id = lead_update["feedbackCycleId"]
-            reminder_at = lead_update["feedbackReminderAt"]
-            due_at = lead_update["feedbackDueAt"]
-            self._notification_outbox.insert_one(
-                {
-                    "eventType": "lead.feedback_due_soon",
-                    "aggregateId": lead["_id"],
-                    "actorId": actor_id,
-                    "idempotencyKey": f"{lead['_id']}:{cycle_id}:feedback_due_soon",
-                    "cycleId": cycle_id,
-                    "scheduledFor": reminder_at,
-                    "dueAt": due_at,
-                    "status": "scheduled",
-                    "attempts": 0,
-                    "payload": {"leadId": lead["_id"], "cycleId": cycle_id},
-                    "createdAt": now,
-                },
-                session=session,
-            )
         return AssignmentResult(
             lead_id=str(lead["_id"]),
             assignment_id=str(assignment_id),
@@ -14123,7 +13995,6 @@ class QueueRepository:
             active=self._users.find_one({"_id": seller_id, "active": True}, session=session)
             is not None,
             paused=bool(queue.get("paused", False)),
-            has_overdue_feedback=self._seller_has_overdue(seller_id, now, session),
             skip_balance=self._balance(seller_id, session),
             position=int(queue["position"]),
         )
@@ -14135,26 +14006,6 @@ class QueueRepository:
         if queue is None:
             return SellerAvailability("paused", "Vendedor não participa da fila.")
         return QueueRules.availability(self._seller_state(queue, now, session))
-
-    def _seller_has_overdue(self, seller_id: Any, now: datetime, session: Any) -> bool:
-        for cycle in self._feedback_cycles.find(
-            {"closedAt": None, "dueAt": {"$lt": now}}, session=session
-        ):
-            lead = self._leads.find_one(
-                {"_id": cycle["leadId"], "assigneeId": seller_id, "archivedAt": None},
-                session=session,
-            )
-            if lead is not None and not self._lead_sla_closed(lead):
-                return True
-        return False
-
-    @staticmethod
-    def _lead_sla_closed(lead: dict[str, Any]) -> bool:
-        return bool(
-            lead.get("isDisqualified")
-            or lead.get("qualificationStatus") == "disqualified"
-            or lead.get("conversionStatus") == "disqualified"
-        )
 
     def _balance(self, seller_id: Any, session: Any) -> int:
         document = self._skip_balances.find_one({"sellerId": seller_id}, session=session)
@@ -14306,10 +14157,6 @@ class QueueRepository:
     @property
     def _assignments(self):
         return self._database[MongoCollections.ASSIGNMENTS]
-
-    @property
-    def _feedback_cycles(self):
-        return self._database[MongoCollections.FEEDBACK_CYCLES]
 
     @property
     def _audit_log(self):
@@ -14709,13 +14556,12 @@ def create_app(
     )
     database_clock = MongoClock(database)
     app.state.queue_service = QueueService(
-        QueueRepository(database, business_clock=business_clock)
+        QueueRepository(database)
     )
     app.state.operations_service = OperationsService(
         MongoOperationsRepository(
             database,
             clock=database_clock,
-            business_clock=business_clock,
         ),
         business_clock=business_clock,
         clock=database_clock,
@@ -15676,18 +15522,10 @@ export default async function QueuePage({
   --status-won-text: #075d3f;
   --status-disqualified-bg: #e7eaed;
   --status-disqualified-text: #414a54;
-  --status-overdue-bg: #fde8e7;
-  --status-overdue-text: #9d2420;
-  --status-today-bg: #fff0c8;
-  --status-today-text: #7a4c00;
-  --status-scheduled-bg: #e7f2ff;
-  --status-scheduled-text: #174c9e;
   --status-active-bg: #e7f2ff;
   --status-active-text: #174c9e;
   --status-paused-bg: #fde8e7;
   --status-paused-text: #9d2420;
-  --status-blocked-bg: #fff0c8;
-  --status-blocked-text: #7a4c00;
   --shadow-modal: 0 20px 60px rgb(9 29 53 / 28%);
 }
 
@@ -16002,7 +15840,6 @@ button:disabled {
 .status-badge,
 .commercial-status,
 .disqualification-marker,
-.sla,
 .pill {
   display: inline-flex;
   align-items: center;
@@ -16017,10 +15854,6 @@ button:disabled {
 .status-badge--active {
   background: var(--status-active-bg);
   color: var(--status-active-text);
-}
-.status-badge--blocked_overdue {
-  background: var(--status-blocked-bg);
-  color: var(--status-blocked-text);
 }
 .status-badge--paused {
   background: var(--status-paused-bg);
@@ -16047,22 +15880,6 @@ button:disabled {
 .pill.won {
   background: var(--status-won-bg);
   color: var(--status-won-text);
-}
-.sla.overdue {
-  background: var(--status-overdue-bg);
-  color: var(--status-overdue-text);
-}
-.sla.today {
-  background: var(--status-today-bg);
-  color: var(--status-today-text);
-}
-.sla.scheduled {
-  background: var(--status-scheduled-bg);
-  color: var(--status-scheduled-text);
-}
-.sla.none {
-  background: var(--surface-muted);
-  color: var(--muted);
 }
 
 .activity-item {
@@ -16123,7 +15940,7 @@ button:disabled {
   text-align: center;
 }
 .unavailable-state {
-  border-left: 4px solid var(--status-overdue-text);
+  border-left: 4px solid var(--status-paused-text);
 }
 
 .table-card {
@@ -16268,14 +16085,6 @@ button:disabled {
 .lead-table-card--admin th:nth-child(10),
 .lead-table-card--admin td:nth-child(10) {
   width: 13%;
-}
-.lead-table-card--admin td:nth-child(8) .sla {
-  display: block;
-  max-width: 100%;
-  overflow: hidden;
-  white-space: normal;
-  overflow-wrap: anywhere;
-  text-overflow: ellipsis;
 }
 .lead-table-card--admin td:nth-child(9) {
   white-space: normal;
@@ -17073,24 +16882,21 @@ import {
 import { LeadTable } from "./lead-table";
 
 function availabilityLabel(availability: QueueEntry["availability"]): string {
-  return {
-    active: "Ativo",
-    blocked_overdue: "Bloqueado por atraso",
-    paused: "Pausado",
-  }[availability];
+  return availability === "paused" ? "Pausado" : "Ativo";
 }
 
 function QueueCard({ item, currentPosition }: { item: QueueEntry; currentPosition: number }) {
-  const label = availabilityLabel(item.availability);
+  const normalizedAvailability = item.availability === "paused" ? "paused" : "active";
+  const label = availabilityLabel(normalizedAvailability);
   return (
     <li className="queue-card">
       <div className="queue-card__header">
         <span className="queue-card__position">#{currentPosition}</span>
-        <span className={`status-badge status-badge--${item.availability}`}>{label}</span>
+        <span className={`status-badge status-badge--${normalizedAvailability}`}>{label}</span>
       </div>
       <strong>{item.sellerName}</strong>
       <small>
-        Ordem base {item.position}. {item.reason ?? "Disponível para novas atribuições"}
+        Ordem base {item.position}. {normalizedAvailability === "paused" ? "Pausado manualmente" : "Disponível para novas atribuições"}
       </small>
     </li>
   );
@@ -17415,8 +17221,8 @@ const adminDashboard = {
       {
         sellerName: "Nelma",
         position: 2,
-        availability: "blocked_overdue" as const,
-        reason: "Feedback vencido",
+        availability: "active" as const,
+        reason: null,
         skipBalance: 0,
       },
     ],
@@ -17442,7 +17248,6 @@ const sellerDashboard = {
         isDisqualified: false,
         commentCount: 2,
         assignedAt: "2026-08-28T15:30:00.000Z",
-        feedbackDueAt: "2026-08-29T16:03:04.876Z",
         lastUpdatedAt: "2026-08-28T16:03:04.876Z",
       },
     ],
@@ -17484,7 +17289,6 @@ describe("dashboards por papel", () => {
     expect(markup).toContain("Fila comercial");
     expect(markup).toContain("Jessica");
     expect(markup).toContain("Nelma");
-    expect(markup).toContain("Bloqueado por atraso");
   });
 
   it("orienta o administrador quando não há vendedores disponíveis na fila", () => {
@@ -17513,7 +17317,6 @@ describe("dashboards por papel", () => {
 
     expect(markup).toContain("Meus leads");
     expect(markup).toContain("Meus comentários");
-    expect(markup).toContain("Prazo de feedback");
     expect(markup).toContain("Minha posição na fila");
     expect(markup).toContain("Posição 3");
     expect(markup).toContain("Débora Souza");
@@ -17563,15 +17366,14 @@ describe("dashboards por papel", () => {
 ````tsx
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 
 import type { ManagedUser, OperationalLead, TreatmentSubmission, UserRole } from "../lib/api/types";
 import {
   formatCommentCount,
   formatCommercialStatus,
+  formatDateTime,
   formatDisqualificationMarker,
-  formatSlaDeadline,
-  getSlaState,
 } from "../lib/dashboard/format";
 import { LeadTreatmentModal } from "./lead-treatment-modal";
 import { LeadTransferModal } from "./lead-transfer-modal";
@@ -17609,7 +17411,6 @@ export function applySubmissionToLead(
     commercialStatus: submission.commercialStatus,
     isDisqualified: submission.isDisqualified,
     commentCount: submission.commentCount,
-    feedbackDueAt: submission.dueAt,
     lastUpdatedAt: submission.lastUpdatedAt,
   };
 }
@@ -17620,15 +17421,6 @@ function statusClass(status: OperationalLead["commercialStatus"]): string {
 
 export function LeadTable({ leads, role, transferTargets = [] }: LeadTableProps) {
   const [leadOverrides, setLeadOverrides] = useState<Record<string, OperationalLead>>({});
-  // Do not read the wall clock during SSR and hydration: the same lead can
-  // otherwise receive different SLA classes across those two renders.
-  const [hydratedAt, setHydratedAt] = useState<Date | null>(null);
-  useEffect(() => {
-    // Defer the clock read until after the initial paint so SSR and hydration
-    // produce identical markup without triggering a synchronous effect update.
-    const timer = window.setTimeout(() => setHydratedAt(new Date()), 0);
-    return () => window.clearTimeout(timer);
-  }, []);
   const onSubmitted = useCallback(
     (submission: TreatmentSubmission) => {
       setLeadOverrides((current) => {
@@ -17665,7 +17457,6 @@ export function LeadTable({ leads, role, transferTargets = [] }: LeadTableProps)
               <th>Marcador</th>
               <th>Atribuído em</th>
               <th>Última atualização</th>
-              <th>Prazo</th>
               <th>Comentários</th>
               <th>Ação</th>
             </tr>
@@ -17673,7 +17464,6 @@ export function LeadTable({ leads, role, transferTargets = [] }: LeadTableProps)
           <tbody>
             {leads.map((lead) => {
               const currentLead = leadOverrides[lead.id] ?? lead;
-              const sla = hydratedAt ? getSlaState(currentLead.feedbackDueAt, hydratedAt) : "none";
               return (
                 <tr key={lead.id}>
                   <td>
@@ -17695,13 +17485,8 @@ export function LeadTable({ leads, role, transferTargets = [] }: LeadTableProps)
                       "—"
                     )}
                   </td>
-                  <td>{formatSlaDeadline(currentLead.assignedAt)}</td>
-                  <td>{formatSlaDeadline(currentLead.lastUpdatedAt)}</td>
-                  <td>
-                    <span className={`sla ${sla}`}>
-                      {formatSlaDeadline(currentLead.feedbackDueAt)}
-                    </span>
-                  </td>
+                  <td>{formatDateTime(currentLead.assignedAt)}</td>
+                  <td>{formatDateTime(currentLead.lastUpdatedAt)}</td>
                   <td>{formatCommentCount(currentLead.commentCount)}</td>
                   <td>
                     <div className="lead-actions">
@@ -17865,7 +17650,6 @@ const lead = {
   isDisqualified: false,
   commentCount: 2,
   assignedAt: "2026-08-28T12:00:00.000Z",
-  feedbackDueAt: null,
   lastUpdatedAt: "2026-08-28T12:00:00.000Z",
 };
 
@@ -18019,8 +17803,6 @@ describe("acessibilidade e interação do modal de tratativa", () => {
         commercialStatus: "negotiation",
         isDisqualified: false,
         commentCount: 3,
-        reminderAt: null,
-        dueAt: null,
         lastUpdatedAt: "2026-08-29T15:00:00.000Z",
       },
     });
@@ -18055,7 +17837,7 @@ describe("acessibilidade e interação do modal de tratativa", () => {
     expect(screen.getByRole("dialog")).toBeTruthy();
   });
 
-  it("encerra o SLA visível quando a tratativa desqualifica o lead", async () => {
+  it("atualiza a situação e o marcador ao desqualificar uma tratativa", async () => {
     actions.submit.mockResolvedValue({
       status: "success",
       message: "Tratativa registrada.",
@@ -18066,8 +17848,6 @@ describe("acessibilidade e interação do modal de tratativa", () => {
         commercialStatus: "won",
         isDisqualified: true,
         commentCount: 3,
-        reminderAt: null,
-        dueAt: null,
         lastUpdatedAt: "2026-08-29T15:00:00.000Z",
       },
     });
@@ -18088,7 +17868,7 @@ describe("acessibilidade e interação do modal de tratativa", () => {
       });
     const user = userEvent.setup();
     render(
-      <LeadTable leads={[{ ...lead, feedbackDueAt: "2026-08-29T16:03:04.876Z" }]} role="seller" />,
+      <LeadTable leads={[lead]} role="seller" />,
     );
 
     await user.click(screen.getByRole("button", { name: "Registrar tratativa" }));
@@ -18101,7 +17881,7 @@ describe("acessibilidade e interação do modal de tratativa", () => {
 
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(screen.getByText("Desqualificado")).toBeTruthy();
-    expect(screen.getByText("Não informado")).toBeTruthy();
+    expect(screen.queryByText("Não informado")).toBeNull();
   });
 });
 ````
@@ -18133,7 +17913,6 @@ const lead = {
   isDisqualified: false,
   commentCount: 2,
   assignedAt: "2026-08-28T16:03:04.876Z",
-  feedbackDueAt: "2026-08-29T16:03:04.876Z",
   lastUpdatedAt: "2026-08-28T16:03:04.876Z",
 };
 
@@ -18229,8 +18008,6 @@ describe("tabela de leads e tratativa", () => {
           commercialStatus: "won",
           isDisqualified: false,
           commentCount: 3,
-          reminderAt: null,
-          dueAt: null,
           lastUpdatedAt: "2026-08-29T15:00:00.000Z",
         },
       ),
@@ -18246,15 +18023,12 @@ describe("tabela de leads e tratativa", () => {
         commercialStatus: "won",
         isDisqualified: true,
         commentCount: 3,
-        reminderAt: null,
-        dueAt: null,
         lastUpdatedAt: "2026-08-29T15:00:00.000Z",
       }),
     ).toMatchObject({
       commercialStatus: "won",
       isDisqualified: true,
       commentCount: 3,
-      feedbackDueAt: null,
     });
   });
 
@@ -18269,8 +18043,6 @@ describe("tabela de leads e tratativa", () => {
         commercialStatus: "negotiation",
         isDisqualified: false,
         commentCount: 3,
-        reminderAt: null,
-        dueAt: null,
         lastUpdatedAt: "2026-08-29T15:00:00.000Z",
       });
       const markup = renderToStaticMarkup(
@@ -18606,7 +18378,7 @@ export function LoginForm() {
           <br />
           de Leads
         </h1>
-        <p className="login-copy">Entre para acompanhar sua fila, prazos e resultados.</p>
+        <p className="login-copy">Entre para acompanhar sua fila e resultados.</p>
         <label>
           E-mail
           <input name="email" type="email" placeholder="voce@gerec.local" required />
@@ -18768,8 +18540,8 @@ describe("QueueTable", () => {
             {
               sellerName: "Nelma",
               position: 4,
-              availability: "blocked_overdue",
-              reason: "Feedback vencido",
+              availability: "active",
+              reason: null,
               skipBalance: 0,
             },
             {
@@ -18792,8 +18564,6 @@ describe("QueueTable", () => {
     expect(markup).toContain("Posição base");
     expect(markup).toContain("<td>1</td>");
     expect(markup).toContain("<td>3</td>");
-    expect(markup).toContain("Bloqueado por atraso");
-    expect(markup).toContain("Feedback vencido");
     expect(markup).toContain("Pausado");
     expect(markup).toContain("Créditos de pulo");
   });
@@ -18806,11 +18576,7 @@ describe("QueueTable", () => {
 import type { AdminQueue, QueueEntry } from "../lib/api/types";
 
 function availabilityLabel(availability: QueueEntry["availability"]): string {
-  return {
-    active: "Ativo",
-    blocked_overdue: "Bloqueado por atraso",
-    paused: "Pausado",
-  }[availability];
+  return availability === "paused" ? "Pausado" : "Ativo";
 }
 
 function availabilityReason(item: QueueEntry): string {
@@ -18859,7 +18625,7 @@ export function QueueTable({ queue }: { queue: AdminQueue }) {
                   <strong>{item.sellerName}</strong>
                 </td>
                 <td>
-                  <span className={`status-badge status-badge--${item.availability}`}>
+                  <span className={`status-badge status-badge--${item.availability === "paused" ? "paused" : "active"}`}>
                     {availabilityLabel(item.availability)}
                   </span>
                 </td>
@@ -18888,16 +18654,11 @@ import {
   formatCommercialStatus,
   formatDateTime,
   formatDisqualificationMarker,
-  formatSlaDeadline,
 } from "../lib/dashboard/format";
 import { LeadTable } from "./lead-table";
 
 function availabilityLabel(availability: SellerAvailability): string {
-  return {
-    active: "Disponível para novas atribuições",
-    blocked_overdue: "Bloqueado por atraso",
-    paused: "Pausado pelo administrador",
-  }[availability];
+  return availability === "paused" ? "Pausado pelo administrador" : "Disponível para novas atribuições";
 }
 
 function TreatmentPreview({ item }: { item: Treatment }) {
@@ -18921,7 +18682,6 @@ function TreatmentPreview({ item }: { item: Treatment }) {
 }
 
 export function SellerDashboard({ dashboard }: { dashboard: SellerDashboardData }) {
-  const nextDeadline = dashboard.leads.items[0]?.feedbackDueAt ?? null;
   const queuePosition =
     typeof dashboard.queue.position === "number" && Number.isFinite(dashboard.queue.position)
       ? dashboard.queue.position
@@ -18937,10 +18697,6 @@ export function SellerDashboard({ dashboard }: { dashboard: SellerDashboardData 
         <article className="metric-card">
           <span>Meus comentários</span>
           <strong>{formatCommentCount(dashboard.history.total)}</strong>
-        </article>
-        <article className="metric-card">
-          <span>Prazo de feedback</span>
-          <strong className="metric-card__text">{formatSlaDeadline(nextDeadline)}</strong>
         </article>
         <article className="metric-card metric-card--next">
           <span>Minha posição na fila</span>
@@ -19014,13 +18770,13 @@ describe("SellerQueueTable", () => {
   it("informa quando a posição não está disponível", () => {
     const markup = renderToStaticMarkup(
       createElement(SellerQueueTable, {
-        queue: { position: null, availability: "blocked_overdue", skipBalance: 2 },
+        queue: { position: null, availability: "paused", skipBalance: 2 },
         leads: [],
       }),
     );
 
     expect(markup).toContain("Posição não informada");
-    expect(markup).toContain("Bloqueado por atraso");
+    expect(markup).toContain("Pausado pelo administrador");
     expect(markup).toContain("Saldo de pulos: 2");
   });
 });
@@ -19030,14 +18786,10 @@ describe("SellerQueueTable", () => {
 
 ````tsx
 import type { OperationalLead, SellerAvailability, SellerQueue } from "../lib/api/types";
-import { formatDateTime, formatSlaDeadline } from "../lib/dashboard/format";
+import { formatDateTime } from "../lib/dashboard/format";
 
 function availabilityLabel(availability: SellerAvailability): string {
-  return {
-    active: "Disponível para novas atribuições",
-    blocked_overdue: "Bloqueado por atraso",
-    paused: "Pausado pelo administrador",
-  }[availability];
+  return availability === "paused" ? "Pausado pelo administrador" : "Disponível para novas atribuições";
 }
 
 export function SellerQueueTable({
@@ -19064,7 +18816,7 @@ export function SellerQueueTable({
           <div>
             <dt>Disponibilidade</dt>
             <dd>
-              <span className={`status-badge status-badge--${queue.availability}`}>
+              <span className={`status-badge status-badge--${queue.availability === "paused" ? "paused" : "active"}`}>
                 {availabilityLabel(queue.availability)}
               </span>
             </dd>
@@ -19084,7 +18836,6 @@ export function SellerQueueTable({
               <th>Lead</th>
               <th>Atribuído em</th>
               <th>Última atualização</th>
-              <th>Prazo de feedback</th>
             </tr>
           </thead>
           <tbody>
@@ -19095,7 +18846,6 @@ export function SellerQueueTable({
                 </td>
                 <td>{formatDateTime(lead.assignedAt)}</td>
                 <td>{formatDateTime(lead.lastUpdatedAt)}</td>
-                <td>{formatSlaDeadline(lead.feedbackDueAt)}</td>
               </tr>
             ))}
           </tbody>
@@ -20066,8 +19816,6 @@ describe("cliente HTTP operacional", () => {
             commercialStatus: "negotiation",
             isDisqualified: false,
             commentCount: 2,
-            reminderAt: "2026-08-28T16:00:00.000Z",
-            dueAt: "2026-08-28T20:00:00.000Z",
           }),
           { status: 201 },
         ),
@@ -20357,7 +20105,7 @@ export type UserRole = "admin" | "seller";
 
 export type CommercialStatus = "undefined" | "negotiation" | "won";
 
-export type SellerAvailability = "active" | "paused" | "blocked_overdue";
+export type SellerAvailability = "active" | "paused";
 
 export type ApiUser = { id: string; email: string; role: UserRole };
 
@@ -20365,7 +20113,7 @@ export type Page<T> = { items: T[]; page: number; pageSize: number; total: numbe
 
 /**
  * Identificadores são chaves técnicas para mutações e nunca rótulos da interface.
- * O backend já resolve nomes, status e prazos autorizados para cada perfil.
+ * O backend já resolve nomes e status autorizados para cada perfil.
  */
 export type OperationalLead = {
   id: string;
@@ -20379,7 +20127,6 @@ export type OperationalLead = {
   isDisqualified: boolean;
   commentCount: number;
   assignedAt: string | null;
-  feedbackDueAt: string | null;
   lastUpdatedAt: string | null;
 };
 
@@ -20466,8 +20213,6 @@ export type TreatmentSubmission = {
   isDisqualified: boolean;
   commentCount: number;
   lastUpdatedAt: string;
-  reminderAt: string | null;
-  dueAt: string | null;
 };
 ````
 
@@ -20677,9 +20422,7 @@ import {
   formatDateTime,
   formatDisqualificationMarker,
   formatPhone,
-  formatSlaDeadline,
   formatText,
-  getSlaState,
 } from "./format";
 
 describe("formatDateTime", () => {
@@ -20704,23 +20447,8 @@ describe("formatação de projeção operacional", () => {
   it("formata contador, prazo, telefone e texto ausente para o operador", () => {
     expect(formatCommentCount(1)).toBe("1 comentário");
     expect(formatCommentCount(2)).toBe("2 comentários");
-    expect(formatSlaDeadline("2026-08-26T15:30:00.000Z")).toBe("26/08/2026, 12:30");
     expect(formatPhone("5511988308029")).toBe("(11) 98830-8029");
     expect(formatText("   ")).toBe(NOT_INFORMED);
-  });
-});
-
-describe("getSlaState", () => {
-  it("marca feedback vencido como atrasado", () => {
-    expect(getSlaState("2026-08-26T10:00:00.000Z", new Date("2026-08-26T11:00:00.000Z"))).toBe(
-      "overdue",
-    );
-  });
-
-  it("marca feedback do dia como vence hoje", () => {
-    expect(getSlaState("2026-08-26T21:00:00.000Z", new Date("2026-08-26T11:00:00.000Z"))).toBe(
-      "today",
-    );
   });
 });
 ````
@@ -20729,8 +20457,6 @@ describe("getSlaState", () => {
 
 ````typescript
 import type { CommercialStatus } from "../api/types";
-
-export type SlaState = "overdue" | "today" | "scheduled" | "none";
 
 export const NOT_INFORMED = "Não informado";
 
@@ -20746,13 +20472,6 @@ const dateTimeFormatter = new Intl.DateTimeFormat("pt-BR", {
   year: "numeric",
 });
 
-const dateKeyFormatter = new Intl.DateTimeFormat("en-CA", {
-  day: "2-digit",
-  month: "2-digit",
-  timeZone: SAO_PAULO_TIME_ZONE,
-  year: "numeric",
-});
-
 export function formatText(value: string | null | undefined): string {
   return value?.trim() || NOT_INFORMED;
 }
@@ -20760,10 +20479,6 @@ export function formatText(value: string | null | undefined): string {
 export function formatDateTime(value: string | null | undefined): string {
   if (!value || Number.isNaN(new Date(value).getTime())) return NOT_INFORMED;
   return dateTimeFormatter.format(new Date(value));
-}
-
-export function formatSlaDeadline(value: string | null | undefined): string {
-  return formatDateTime(value);
 }
 
 export function formatCommercialStatus(value: CommercialStatus): string {
@@ -20789,18 +20504,6 @@ export function formatPhone(value: string | null | undefined): string {
   if (digits.length === 11) return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7)}`;
   if (digits.length === 10) return `(${digits.slice(0, 2)}) ${digits.slice(2, 6)}-${digits.slice(6)}`;
   return digits || NOT_INFORMED;
-}
-
-export function getSaoPauloDateKey(value: Date): string {
-  return dateKeyFormatter.format(value);
-}
-
-export function getSlaState(value: string | null | undefined, now = new Date()): SlaState {
-  if (!value || Number.isNaN(new Date(value).getTime())) return "none";
-  const dueDate = new Date(value);
-  if (dueDate.getTime() < now.getTime()) return "overdue";
-  if (getSaoPauloDateKey(dueDate) === getSaoPauloDateKey(now)) return "today";
-  return "scheduled";
 }
 ````
 
@@ -20881,55 +20584,6 @@ export async function getDashboardData(sessionToken: string, page = 1): Promise<
 /** A API define o papel; a web apenas escolhe a composição de apresentação. */
 export function isAdminDashboard(dashboard: ApiDashboard): dashboard is AdminDashboard {
   return dashboard.user.role === "admin";
-}
-````
-
-## Snapshot de código: `apps/web/src/lib/operations/attempt-rules.test.ts`
-
-````typescript
-import { describe, expect, it } from "vitest";
-import { nextFeedbackDueAt, validateAttempt } from "./attempt-rules";
-
-describe("regras de tentativa", () => {
-  it("agenda o próximo prazo 24 horas depois", () => {
-    const start = new Date("2026-08-26T12:00:00.000Z");
-    expect(nextFeedbackDueAt(start).toISOString()).toBe("2026-08-27T12:00:00.000Z");
-  });
-});
-````
-
-## Snapshot de código: `apps/web/src/lib/operations/attempt-rules.ts`
-
-````typescript
-export const FEEDBACK_INTERVAL_HOURS = 24;
-
-export function toSaoPauloDateKey(date: Date) {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "America/Sao_Paulo",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(date);
-}
-
-export function isBusinessDate(date: Date, holidays: string[] = []) {
-  const weekday = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/Sao_Paulo",
-    weekday: "short",
-  }).format(date);
-  return weekday !== "Sat" && weekday !== "Sun" && !holidays.includes(toSaoPauloDateKey(date));
-}
-
-export function nextFeedbackDueAt(attemptAt: Date) {
-  return new Date(attemptAt.getTime() + FEEDBACK_INTERVAL_HOURS * 60 * 60 * 1000);
-}
-
-export function validateAttempt(input: {
-  comment: string;
-  attemptCount: number;
-}) {
-  const comment = input.comment.trim();
-  if (comment.length < 6) throw new Error("O comentário deve ter pelo menos 6 caracteres.");
 }
 ````
 
@@ -21148,8 +20802,6 @@ describe("ação de tratativa", () => {
       commercialStatus: "won",
       isDisqualified: true,
       commentCount: 3,
-      reminderAt: null,
-      dueAt: null,
       lastUpdatedAt: "2026-08-29T15:00:00.000Z",
     });
 

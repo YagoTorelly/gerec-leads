@@ -69,13 +69,17 @@ def test_sync_job_replays_a_complete_snapshot_with_stable_per_row_keys() -> None
 class RecordingQueueService:
     def __init__(self) -> None:
         self.commands: list[tuple[str, str]] = []
+        self.reconciliations: list[str] = []
 
     def distribute_ready(self, lead_id: str, command_id: str) -> None:
         self.commands.append((lead_id, command_id))
 
+    def reconcile_pending(self, command_prefix: str) -> None:
+        self.reconciliations.append(command_prefix)
 
-def test_sync_job_distributes_each_ready_lead_through_queue_service() -> None:
-    """Breaks if synchronization leaves ready leads idle or assigns outside QueueService."""
+
+def test_sync_job_reconciles_all_pending_leads_after_the_complete_import() -> None:
+    """Breaks if newer rows bypass older parked leads during the same sync."""
     service = RecordingLeadService()
     queue = RecordingQueueService()
 
@@ -83,10 +87,8 @@ def test_sync_job_distributes_each_ready_lead_through_queue_service() -> None:
         [_row("source-a"), _row("source-b")], "run-20260827-1000"
     )
 
-    assert queue.commands == [
-        ("source-a", "sync:run-20260827-1000:distribute:source-a"),
-        ("source-b", "sync:run-20260827-1000:distribute:source-b"),
-    ]
+    assert queue.commands == []
+    assert queue.reconciliations == ["sync:run-20260827-1000:reconcile"]
 
 
 class InMemoryOutboxRepository:
@@ -95,6 +97,7 @@ class InMemoryOutboxRepository:
         self.sent: set[str] = set()
         self.retries: list[str] = []
         self.dead_letters: list[str] = []
+        self.cancelled: list[str] = []
 
     def claim(self, batch_size: int, now: datetime, max_attempts: int) -> list[OutboxEvent]:
         claimed = []
@@ -120,6 +123,10 @@ class InMemoryOutboxRepository:
             self.retries.append(event.event_id)
         return True
 
+    def cancel(self, event: OutboxEvent, now: datetime) -> bool:
+        self.cancelled.append(event.event_id)
+        return True
+
 
 def test_outbox_worker_retries_once_and_never_delivers_an_event_twice() -> None:
     """Breaks if an alert is sent twice after a retry or a completed worker replay."""
@@ -141,6 +148,21 @@ def test_outbox_worker_retries_once_and_never_delivers_an_event_twice() -> None:
     assert calls == ["alert-1", "alert-1"]
     assert repository.retries == ["event-1"]
     assert repository.sent == {"event-1"}
+
+
+def test_outbox_worker_never_delivers_legacy_deadline_alerts() -> None:
+    """Breaks if a claimed pre-migration SLA event can still reach an external provider."""
+    event = OutboxEvent("event-1", "lead.feedback_due_soon", "alert-1", {"leadId": "lead-1"})
+    repository = InMemoryOutboxRepository([event])
+    delivered: list[str] = []
+
+    processed = OutboxWorker(repository, lambda message: delivered.append(message.event_id)).process(
+        10, now=datetime(2026, 9, 4, 13, tzinfo=UTC)
+    )
+
+    assert processed == 0
+    assert delivered == []
+    assert repository.cancelled == ["event-1"]
 
 
 def test_scheduler_runs_the_five_minute_slot_once_and_allows_next_slot() -> None:

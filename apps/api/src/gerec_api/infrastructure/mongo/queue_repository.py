@@ -9,7 +9,6 @@ from typing import Any, Callable, TypeVar
 from bson import ObjectId
 from pymongo.errors import DuplicateKeyError
 
-from gerec_api.domain.business_time import BusinessClock
 from gerec_api.domain.queue import (
     AssignmentResult,
     QueueSnapshot,
@@ -48,11 +47,9 @@ class QueueRepository:
         database: Any,
         *,
         now: Callable[[], datetime] | None = None,
-        business_clock: BusinessClock | None = None,
     ) -> None:
         self._database = database
         self._now = now or (lambda: datetime.now(UTC))
-        self._business_clock = business_clock
 
     def distribute_normal(
         self, lead_id: Any, command_id: str, *, actor_id: Any
@@ -91,6 +88,39 @@ class QueueRepository:
             AssignmentResult,
             lambda session: self._distribute_ready(lead_id, command_id, actor_id, session),
         )
+
+    def reconcile_pending(self, command_prefix: str, *, actor_id: Any) -> list[AssignmentResult]:
+        """Retry unassigned FIFO leads after availability changes or a sync replay."""
+        candidates = list(
+            self._leads.find(
+                {
+                    "assignmentStatus": {"$in": ["ready", "parked"]},
+                    "assigneeId": None,
+                    "currentAssignmentId": None,
+                    "archivedAt": None,
+                }
+            )
+        )
+        candidates = [
+            lead
+            for lead in candidates
+            if lead.get("parkReason") in (None, "no_eligible_seller")
+        ]
+        candidates.sort(
+            key=lambda lead: (
+                lead.get("sourceEnteredAt") or datetime.max.replace(tzinfo=UTC),
+                lead.get("sourceLeadId") or str(lead["_id"]),
+            )
+        )
+        results: list[AssignmentResult] = []
+        for lead in candidates:
+            result = self.distribute_ready(
+                lead["_id"], f"{command_prefix}:{lead['_id']}", actor_id=actor_id
+            )
+            if result.status == "parked" and result.assignment_type == "normal":
+                break
+            results.append(result)
+        return results
 
     def assign_recurring(
         self, lead_id: Any, command_id: str, *, actor_id: Any
@@ -230,6 +260,19 @@ class QueueRepository:
             raise QueueStateError("global queue state is not initialized")
         sellers = self._seller_states(now, session)
         decision = QueueRules.select_normal(sellers, queue_state["nextSellerId"])
+        if (
+            decision.seller_id is None
+            and lead.get("assignmentStatus") == "parked"
+            and lead.get("parkReason") == "no_eligible_seller"
+        ):
+            return AssignmentResult(
+                lead_id=str(lead_id),
+                assignment_id=None,
+                seller_id=None,
+                assignment_type="normal",
+                status="parked",
+                owner_id=self._owner_id(lead, session),
+            )
 
         state_update = self._queue_state.update_one(
             {"_id": QUEUE_STATE_ID, "version": queue_state["version"]},
@@ -481,13 +524,6 @@ class QueueRepository:
             )
             if ended.matched_count != 1:
                 raise QueueStateError("current assignment changed concurrently")
-        current_cycle_id = lead.get("feedbackCycleId")
-        if current_cycle_id is not None:
-            self._feedback_cycles.update_one(
-                {"_id": current_cycle_id, "closedAt": None},
-                {"$set": {"closedAt": now}},
-                session=session,
-            )
         cleared = self._leads.update_one(
             {"_id": lead_id, "currentAssignmentId": current_assignment_id},
             {"$set": {"currentAssignmentId": None}},
@@ -557,28 +593,6 @@ class QueueRepository:
             "assignedAt": now,
             "updatedAt": now,
         }
-        if self._business_clock is not None:
-            cycle_id = ObjectId()
-            due_at = self._business_clock.add_business_hours(now, 24)
-            reminder_at = self._business_clock.subtract_business_hours(due_at, 4)
-            self._feedback_cycles.insert_one(
-                {
-                    "_id": cycle_id,
-                    "leadId": lead["_id"],
-                    "startAt": now,
-                    "reminderAt": reminder_at,
-                    "dueAt": due_at,
-                    "closedAt": None,
-                },
-                session=session,
-            )
-            lead_update.update(
-                {
-                    "feedbackCycleId": cycle_id,
-                    "feedbackReminderAt": reminder_at,
-                    "feedbackDueAt": due_at,
-                }
-            )
         updated = self._leads.update_one(
             {"_id": lead["_id"], "currentAssignmentId": None},
             {"$set": lead_update},
@@ -620,26 +634,6 @@ class QueueRepository:
             session=session,
             reason=reason,
         )
-        if self._business_clock is not None:
-            cycle_id = lead_update["feedbackCycleId"]
-            reminder_at = lead_update["feedbackReminderAt"]
-            due_at = lead_update["feedbackDueAt"]
-            self._notification_outbox.insert_one(
-                {
-                    "eventType": "lead.feedback_due_soon",
-                    "aggregateId": lead["_id"],
-                    "actorId": actor_id,
-                    "idempotencyKey": f"{lead['_id']}:{cycle_id}:feedback_due_soon",
-                    "cycleId": cycle_id,
-                    "scheduledFor": reminder_at,
-                    "dueAt": due_at,
-                    "status": "scheduled",
-                    "attempts": 0,
-                    "payload": {"leadId": lead["_id"], "cycleId": cycle_id},
-                    "createdAt": now,
-                },
-                session=session,
-            )
         return AssignmentResult(
             lead_id=str(lead["_id"]),
             assignment_id=str(assignment_id),
@@ -666,10 +660,6 @@ class QueueRepository:
             active=self._users.find_one({"_id": seller_id, "active": True}, session=session)
             is not None,
             paused=bool(queue.get("paused", False)),
-            # Overdue cycles are retained for historical/audit reads only. They
-            # no longer create an operational availability state or remove a
-            # seller from FIFO; only manual pause controls eligibility.
-            has_overdue_feedback=False,
             skip_balance=self._balance(seller_id, session),
             position=int(queue["position"]),
         )
@@ -681,26 +671,6 @@ class QueueRepository:
         if queue is None:
             return SellerAvailability("paused", "Vendedor não participa da fila.")
         return QueueRules.availability(self._seller_state(queue, now, session))
-
-    def _seller_has_overdue(self, seller_id: Any, now: datetime, session: Any) -> bool:
-        for cycle in self._feedback_cycles.find(
-            {"closedAt": None, "dueAt": {"$lt": now}}, session=session
-        ):
-            lead = self._leads.find_one(
-                {"_id": cycle["leadId"], "assigneeId": seller_id, "archivedAt": None},
-                session=session,
-            )
-            if lead is not None and not self._lead_sla_closed(lead):
-                return True
-        return False
-
-    @staticmethod
-    def _lead_sla_closed(lead: dict[str, Any]) -> bool:
-        return bool(
-            lead.get("isDisqualified")
-            or lead.get("qualificationStatus") == "disqualified"
-            or lead.get("conversionStatus") == "disqualified"
-        )
 
     def _balance(self, seller_id: Any, session: Any) -> int:
         document = self._skip_balances.find_one({"sellerId": seller_id}, session=session)
@@ -852,10 +822,6 @@ class QueueRepository:
     @property
     def _assignments(self):
         return self._database[MongoCollections.ASSIGNMENTS]
-
-    @property
-    def _feedback_cycles(self):
-        return self._database[MongoCollections.FEEDBACK_CYCLES]
 
     @property
     def _audit_log(self):

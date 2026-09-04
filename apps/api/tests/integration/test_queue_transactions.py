@@ -167,7 +167,6 @@ def _service(database: FakeDatabase, *, actor_id: Any = "system") -> QueueServic
         QueueRepository(
             database,
             now=lambda: NOW,
-            business_clock=BusinessClock(NoHolidays()),
         ),
         actor_id=actor_id,
     )
@@ -186,11 +185,10 @@ def test_ac01_normal_rotation_is_atomic_and_first_assignment_defines_owner() -> 
     assert database["queue_state"].documents[0]["nextSellerId"] == sellers[0]
     assert database["queue_state"].documents[0]["version"] == 4
     assert len(database["assignments"].documents) == 4
-    assert len(database["feedback_cycles"].documents) == 4
-    assert all(item["closedAt"] is None for item in database["feedback_cycles"].documents)
+    assert database["feedback_cycles"].documents == []
     assert all(
-        database["leads"].find_one({"_id": lead_id})["feedbackDueAt"]
-        == datetime(2026, 8, 31, 18, tzinfo=ZoneInfo("America/Sao_Paulo"))
+        "feedbackDueAt" not in database["leads"].find_one({"_id": lead_id})
+        and "feedbackReminderAt" not in database["leads"].find_one({"_id": lead_id})
         for lead_id in leads
     )
     reminders = [
@@ -198,18 +196,73 @@ def test_ac01_normal_rotation_is_atomic_and_first_assignment_defines_owner() -> 
         for event in database["notification_outbox"].documents
         if event["eventType"] == "lead.feedback_due_soon"
     ]
-    assert len(reminders) == 4
-    for reminder in reminders:
-        assert reminder["idempotencyKey"] == (
-            f"{reminder['aggregateId']}:{reminder['cycleId']}:feedback_due_soon"
-        )
+    assert reminders == []
     assert len(database["audit_log"].documents) == 4
-    assert len(database["notification_outbox"].documents) == 8
+    assert len(database["notification_outbox"].documents) == 4
     for lead_id in leads:
         lead = database["leads"].find_one({"_id": lead_id})
         company = database["companies"].find_one({"_id": lead["companyId"]})
         assert lead["assignmentStatus"] == "assigned"
         assert company["ownerId"] == lead["assigneeId"]
+
+
+def test_reconcile_pending_assigns_parked_leads_in_source_fifo_order() -> None:
+    """Breaks if a later sync leaves no-eligible-seller leads stranded or reorders them."""
+    database = FakeDatabase()
+    sellers = _seed_queue(database)
+    newer_lead, _ = _seed_lead(database, entered_offset=2)
+    older_lead, _ = _seed_lead(database, entered_offset=1)
+    for lead_id in (newer_lead, older_lead):
+        database["leads"].update_one(
+            {"_id": lead_id},
+            {"$set": {"assignmentStatus": "parked", "parkReason": "no_eligible_seller"}},
+        )
+
+    results = _service(database).reconcile_pending("sync:retry-pending")
+
+    assert [result.lead_id for result in results] == [str(older_lead), str(newer_lead)]
+    assert [result.seller_id for result in results] == [str(sellers[0]), str(sellers[1])]
+    assert all(
+        database["leads"].find_one({"_id": lead_id})["assignmentStatus"] == "assigned"
+        for lead_id in (older_lead, newer_lead)
+    )
+
+
+def test_reconcile_pending_does_not_block_normal_fifo_for_unavailable_recurring_owner() -> None:
+    """Breaks if a parked recurring lead prevents the next normal lead from being assigned."""
+    database = FakeDatabase()
+    owner, next_seller, *_ = _seed_queue(database)
+    recurring_lead, recurring_company = _seed_lead(database, entered_offset=1)
+    normal_lead, _ = _seed_lead(database, entered_offset=2)
+    database["companies"].update_one({"_id": recurring_company}, {"$set": {"ownerId": owner}})
+    database["seller_queue"].update_one({"sellerId": owner}, {"$set": {"paused": True}})
+
+    results = _service(database).reconcile_pending("sync:retry-pending")
+
+    assert [(result.status, result.assignment_type) for result in results] == [
+        ("parked", "recurring"),
+        ("assigned", "normal"),
+    ]
+    assert database["leads"].find_one({"_id": recurring_lead})["parkReason"] == "owner_unavailable"
+    assert database["leads"].find_one({"_id": normal_lead})["assigneeId"] == next_seller
+
+
+def test_reconcile_pending_does_not_repeat_a_park_event_without_availability_change() -> None:
+    """Breaks if each sync replay creates another parked audit event for the same lead."""
+    database = FakeDatabase()
+    _seed_queue(database)
+    lead_id, _ = _seed_lead(database)
+    for seller in database["seller_queue"].documents:
+        seller["paused"] = True
+
+    _service(database).reconcile_pending("sync:first")
+    first_events = len(database["audit_log"].documents)
+    first_version = database["queue_state"].documents[0]["version"]
+    _service(database).reconcile_pending("sync:second")
+
+    assert database["leads"].find_one({"_id": lead_id})["assignmentStatus"] == "parked"
+    assert len(database["audit_log"].documents) == first_events
+    assert database["queue_state"].documents[0]["version"] == first_version
 
 
 def test_overdue_seller_remains_active_for_normal_distribution() -> None:
@@ -549,7 +602,7 @@ def test_command_replay_returns_original_result_without_duplicate_side_effects()
     assert replay == first
     assert len(database["assignments"].documents) == 1
     assert len(database["audit_log"].documents) == 1
-    assert len(database["notification_outbox"].documents) == 2
+    assert len(database["notification_outbox"].documents) == 1
 
 
 def test_internal_queue_route_calls_the_transactional_service_without_exposing_mongodb() -> None:

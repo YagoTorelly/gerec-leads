@@ -15,8 +15,12 @@ Migration = tuple[str, Callable[..., None]]
 _operacao_comercial = import_module(
     "gerec_api.infrastructure.mongo.migrations.20260828_operacao_comercial"
 )
+_remove_operational_sla = import_module(
+    "gerec_api.infrastructure.mongo.migrations.20260904_remove_operational_sla"
+)
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     (_operacao_comercial.VERSION, _operacao_comercial.apply),
+    (_remove_operational_sla.VERSION, _remove_operational_sla.apply),
 )
 
 

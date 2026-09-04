@@ -21,7 +21,6 @@ from gerec_api.domain.operations import (
     Clock,
     SystemClock,
 )
-from gerec_api.domain.business_time import BusinessClock
 from gerec_api.infrastructure.mongo.collections import MongoCollections
 
 
@@ -49,11 +48,9 @@ class MongoOperationsRepository:
         database: Any,
         *,
         clock: Clock | None = None,
-        business_clock: BusinessClock | None = None,
     ) -> None:
         self._database = database
         self._clock = clock or SystemClock()
-        self._business_clock = business_clock
 
     def register_feedback(
         self,
@@ -62,8 +59,6 @@ class MongoOperationsRepository:
         actor_id: Any,
         actor_role: str,
         now: datetime,
-        reminder_at: datetime | None,
-        due_at: datetime | None,
     ) -> FeedbackResult:
         return self._execute(
             FEEDBACK_COMMAND,
@@ -75,8 +70,6 @@ class MongoOperationsRepository:
                 actor_id,
                 actor_role,
                 transaction_now,
-                reminder_at,
-                due_at,
                 session,
             ),
         )
@@ -88,8 +81,6 @@ class MongoOperationsRepository:
         actor_id: Any,
         actor_role: str,
         now: datetime,
-        reminder_at: datetime,
-        due_at: datetime,
     ) -> TreatmentResult:
         return self._execute(
             TREATMENT_COMMAND,
@@ -101,8 +92,6 @@ class MongoOperationsRepository:
                 actor_id,
                 actor_role,
                 transaction_now,
-                reminder_at,
-                due_at,
                 session,
             ),
             actor_id=actor_id,
@@ -245,17 +234,10 @@ class MongoOperationsRepository:
         actor_id: Any,
         actor_role: str,
         now: datetime,
-        reminder_at: datetime | None,
-        due_at: datetime | None,
         session: Any,
     ) -> FeedbackResult:
         lead = self._lead(command.lead_id, session)
         lead_before = deepcopy(lead)
-        open_cycle_before = deepcopy(
-            self._feedback_cycles.find_one(
-                {"leadId": command.lead_id, "closedAt": None}, session=session
-            )
-        )
         feedback_id = ObjectId()
         if command.administrative_note:
             if actor_role != "admin":
@@ -277,44 +259,19 @@ class MongoOperationsRepository:
                     "lead.administrative_note_added",
                     command.lead_id,
                     command.idempotency_key,
-                    {"lead": lead_before, "cycle": open_cycle_before},
+                    {"lead": lead_before},
                     {
                         "lead": self._leads.find_one({"_id": command.lead_id}, session=session),
-                        "cycle": self._feedback_cycles.find_one(
-                            {"leadId": command.lead_id, "closedAt": None}, session=session
-                        ),
                         "feedbackId": feedback_id,
                     },
                     now,
                 ),
                 session=session,
             )
-            return FeedbackResult(
-                str(command.lead_id), str(feedback_id), None, "administrative_note", None, None
-            )
+            return FeedbackResult(str(command.lead_id), str(feedback_id), "administrative_note")
 
-        if self._business_clock is None:
-            raise OperationsStateError("business clock is required for seller feedback")
-        due_at = self._business_clock.add_business_hours(now, 24)
-        reminder_at = self._business_clock.subtract_business_hours(due_at, 4)
         self._require_current_seller(lead, actor_id, actor_role)
         self._require_active(lead)
-        cycle = self._feedback_cycles.find_one(
-            {"leadId": command.lead_id, "closedAt": None}, session=session
-        )
-        cycle_before = deepcopy(cycle)
-        if cycle is None:
-            raise OperationsStateError("active lead does not have an open feedback cycle")
-        closed = self._feedback_cycles.update_one(
-            {"_id": cycle["_id"], "closedAt": None},
-            {"$set": {"closedAt": now, "closedByFeedbackId": feedback_id}},
-            session=session,
-        )
-        if closed.matched_count != 1:
-            raise OperationsStateError("feedback cycle changed concurrently")
-        self._cancel_cycle_reminder(cycle["_id"], now, session)
-
-        cycle_id = ObjectId()
         self._feedbacks.insert_one(
             {
                 "_id": feedback_id,
@@ -327,27 +284,9 @@ class MongoOperationsRepository:
             },
             session=session,
         )
-        self._feedback_cycles.insert_one(
-            {
-                "_id": cycle_id,
-                "leadId": command.lead_id,
-                "startAt": now,
-                "reminderAt": reminder_at,
-                "dueAt": due_at,
-                "closedAt": None,
-            },
-            session=session,
-        )
         updated = self._leads.update_one(
             {"_id": command.lead_id},
-            {
-                "$set": {
-                    "feedbackCycleId": cycle_id,
-                    "feedbackReminderAt": reminder_at,
-                    "feedbackDueAt": due_at,
-                    "updatedAt": now,
-                }
-            },
+            {"$set": {"updatedAt": now}},
             session=session,
         )
         if updated.matched_count != 1:
@@ -357,29 +296,12 @@ class MongoOperationsRepository:
             command.lead_id,
             actor_id,
             command.idempotency_key,
-            {"lead": lead_before, "cycle": cycle_before},
-            {"lead": self._leads.find_one({"_id": command.lead_id}, session=session), "cycle": self._feedback_cycles.find_one({"_id": cycle_id}, session=session)},
+            {"lead": lead_before},
+            {"lead": self._leads.find_one({"_id": command.lead_id}, session=session)},
             now,
             session,
         )
-        self._schedule_reminder(
-            command.lead_id,
-            cycle_id,
-            reminder_at,
-            due_at,
-            actor_id,
-            command.idempotency_key,
-            now,
-            session,
-        )
-        return FeedbackResult(
-            str(command.lead_id),
-            str(feedback_id),
-            str(cycle_id),
-            "recorded",
-            reminder_at,
-            due_at,
-        )
+        return FeedbackResult(str(command.lead_id), str(feedback_id), "recorded")
 
     def _register_treatment(
         self,
@@ -387,17 +309,11 @@ class MongoOperationsRepository:
         actor_id: Any,
         actor_role: str,
         now: datetime,
-        reminder_at: datetime,
-        due_at: datetime,
         session: Any,
     ) -> TreatmentResult:
         lead = self._lead(command.lead_id, session)
         self._require_current_seller(lead, actor_id, actor_role)
         lead_before = deepcopy(lead)
-        cycle = self._feedback_cycles.find_one(
-            {"leadId": command.lead_id, "closedAt": None}, session=session
-        )
-        cycle_before = deepcopy(cycle)
         treatment_id = ObjectId()
         effective_disqualification = bool(lead.get("isDisqualified")) or command.is_disqualified
         comment_count = int(lead.get("commentCount", 0)) + 1
@@ -423,54 +339,12 @@ class MongoOperationsRepository:
             "lastCommentAt": now,
             "updatedAt": now,
         }
-        after_cycle = None
-        scheduled_cycle_id = None
-        if effective_disqualification:
-            update.update({"feedbackDueAt": None, "feedbackReminderAt": None})
-            if cycle is not None:
-                closed = self._feedback_cycles.update_one(
-                    {"_id": cycle["_id"], "closedAt": None},
-                    {"$set": {"closedAt": now, "closedByTreatmentId": treatment_id}},
-                    session=session,
-                )
-                if closed.matched_count != 1:
-                    raise OperationsStateError("feedback cycle changed concurrently")
-                self._cancel_cycle_reminder(cycle["_id"], now, session)
-                after_cycle = self._feedback_cycles.find_one({"_id": cycle["_id"]}, session=session)
-        else:
-            if cycle is not None:
-                closed = self._feedback_cycles.update_one(
-                    {"_id": cycle["_id"], "closedAt": None},
-                    {"$set": {"closedAt": now, "closedByTreatmentId": treatment_id}},
-                    session=session,
-                )
-                if closed.matched_count != 1:
-                    raise OperationsStateError("feedback cycle changed concurrently")
-                self._cancel_cycle_reminder(cycle["_id"], now, session)
-            cycle_id = ObjectId()
-            self._feedback_cycles.insert_one(
-                {
-                    "_id": cycle_id,
-                    "leadId": command.lead_id,
-                    "startAt": now,
-                    "reminderAt": reminder_at,
-                    "dueAt": due_at,
-                    "closedAt": None,
-                },
-                session=session,
-            )
-            update.update(
-                {
-                    "feedbackCycleId": cycle_id,
-                    "feedbackReminderAt": reminder_at,
-                    "feedbackDueAt": due_at,
-                }
-            )
-            after_cycle = self._feedback_cycles.find_one({"_id": cycle_id}, session=session)
-            scheduled_cycle_id = cycle_id
-
         changed = self._leads.update_one(
-            {"_id": command.lead_id}, {"$set": update}, session=session
+            {
+                "_id": command.lead_id
+            },
+            {"$set": update},
+            session=session,
         )
         if changed.matched_count != 1:
             raise OperationsStateError("lead changed concurrently")
@@ -480,22 +354,11 @@ class MongoOperationsRepository:
             command.lead_id,
             actor_id,
             command.idempotency_key,
-            {"lead": lead_before, "cycle": cycle_before},
-            {"lead": lead_after, "cycle": after_cycle, "treatmentId": treatment_id},
+            {"lead": lead_before},
+            {"lead": lead_after, "treatmentId": treatment_id},
             now,
             session,
         )
-        if scheduled_cycle_id is not None:
-            self._schedule_reminder(
-                command.lead_id,
-                scheduled_cycle_id,
-                reminder_at,
-                due_at,
-                actor_id,
-                command.idempotency_key,
-                now,
-                session,
-            )
         return TreatmentResult(
             str(command.lead_id),
             str(treatment_id),
@@ -504,8 +367,6 @@ class MongoOperationsRepository:
             effective_disqualification,
             comment_count,
             lead_after["updatedAt"],
-            lead_after.get("feedbackReminderAt"),
-            lead_after.get("feedbackDueAt"),
         )
 
     def _register_attempt(
@@ -600,7 +461,6 @@ class MongoOperationsRepository:
 
         outcome_event_id = ObjectId()
         qualification_status, conversion_status = self._statuses(command.outcome, lead)
-        terminal = command.outcome != "qualified_follow_up"
         update: dict[str, Any] = {
             "qualificationStatus": qualification_status,
             "conversionStatus": conversion_status,
@@ -608,21 +468,6 @@ class MongoOperationsRepository:
             "outcomeEventId": outcome_event_id,
             "updatedAt": now,
         }
-        if terminal:
-            update.update({"feedbackDueAt": None, "feedbackReminderAt": None})
-            cycle = self._feedback_cycles.find_one(
-                {"leadId": command.lead_id, "closedAt": None}, session=session
-            )
-            cycle_before = deepcopy(cycle)
-            if cycle is not None:
-                closed = self._feedback_cycles.update_one(
-                    {"_id": cycle["_id"], "closedAt": None},
-                    {"$set": {"closedAt": now, "closedByOutcomeId": outcome_event_id}},
-                    session=session,
-                )
-                if closed.matched_count != 1:
-                    raise OperationsStateError("feedback cycle changed concurrently")
-                self._cancel_cycle_reminder(cycle["_id"], now, session)
 
         sale_id: ObjectId | None = None
         company_before = None
@@ -651,7 +496,11 @@ class MongoOperationsRepository:
             update["wonAt"] = now
 
         changed = self._leads.update_one(
-            {"_id": command.lead_id}, {"$set": update}, session=session
+            {
+                "_id": command.lead_id
+            },
+            {"$set": update},
+            session=session,
         )
         if changed.matched_count != 1:
             raise OperationsStateError("lead changed concurrently")
@@ -672,8 +521,8 @@ class MongoOperationsRepository:
             command.lead_id,
             actor_id,
             command.idempotency_key,
-            {"lead": lead_before, "cycle": cycle_before if terminal else None, "company": company_before},
-            {"lead": self._leads.find_one({"_id": command.lead_id}, session=session), "cycle": (self._feedback_cycles.find_one({"_id": cycle["_id"]}, session=session) if terminal and cycle is not None else None), "company": (self._companies.find_one({"_id": lead["companyId"]}, session=session) if company_before is not None else None), "outcomeEventId": outcome_event_id, "saleId": sale_id},
+            {"lead": lead_before, "company": company_before},
+            {"lead": self._leads.find_one({"_id": command.lead_id}, session=session), "company": (self._companies.find_one({"_id": lead["companyId"]}, session=session) if company_before is not None else None), "outcomeEventId": outcome_event_id, "saleId": sale_id},
             now,
             session,
         )
@@ -775,47 +624,6 @@ class MongoOperationsRepository:
             session=session,
         )
 
-    def _schedule_reminder(
-        self,
-        lead_id: Any,
-        cycle_id: Any,
-        reminder_at: datetime | None,
-        due_at: datetime | None,
-        actor_id: Any,
-        command_id: str,
-        now: datetime,
-        session: Any,
-    ) -> None:
-        if reminder_at is None:
-            return
-        self._notification_outbox.insert_one(
-            {
-                "_id": ObjectId(),
-                "eventType": "lead.feedback_due_soon",
-                "aggregateId": lead_id,
-                "actorId": actor_id,
-                "idempotencyKey": f"{lead_id}:{cycle_id}:feedback_due_soon",
-                "cycleId": cycle_id,
-                "scheduledFor": reminder_at,
-                "dueAt": due_at,
-                "status": "scheduled",
-                "attempts": 0,
-                "payload": {"leadId": lead_id, "cycleId": cycle_id},
-                "createdAt": now,
-            },
-            session=session,
-        )
-
-    def _cancel_cycle_reminder(self, cycle_id: Any, now: datetime, session: Any) -> None:
-        self._notification_outbox.update_one(
-            {
-                "cycleId": cycle_id,
-                "eventType": "lead.feedback_due_soon",
-                "status": "scheduled",
-            },
-            {"$set": {"status": "cancelled", "cancelledAt": now}},
-            session=session,
-        )
 
     @property
     def _leads(self):
@@ -824,10 +632,6 @@ class MongoOperationsRepository:
     @property
     def _companies(self):
         return self._database[MongoCollections.COMPANIES]
-
-    @property
-    def _feedback_cycles(self):
-        return self._database[MongoCollections.FEEDBACK_CYCLES]
 
     @property
     def _feedbacks(self):

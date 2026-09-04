@@ -32,7 +32,6 @@ const lead = {
   isDisqualified: false,
   commentCount: 2,
   assignedAt: "2026-08-28T12:00:00.000Z",
-  feedbackDueAt: null,
   lastUpdatedAt: "2026-08-28T12:00:00.000Z",
 };
 
@@ -186,8 +185,6 @@ describe("acessibilidade e interação do modal de tratativa", () => {
         commercialStatus: "negotiation",
         isDisqualified: false,
         commentCount: 3,
-        reminderAt: null,
-        dueAt: null,
         lastUpdatedAt: "2026-08-29T15:00:00.000Z",
       },
     });
@@ -222,7 +219,7 @@ describe("acessibilidade e interação do modal de tratativa", () => {
     expect(screen.getByRole("dialog")).toBeTruthy();
   });
 
-  it("encerra o SLA visível quando a tratativa desqualifica o lead", async () => {
+  it("atualiza a situação e o marcador ao desqualificar uma tratativa", async () => {
     actions.submit.mockResolvedValue({
       status: "success",
       message: "Tratativa registrada.",
@@ -233,8 +230,6 @@ describe("acessibilidade e interação do modal de tratativa", () => {
         commercialStatus: "won",
         isDisqualified: true,
         commentCount: 3,
-        reminderAt: null,
-        dueAt: null,
         lastUpdatedAt: "2026-08-29T15:00:00.000Z",
       },
     });
@@ -255,7 +250,7 @@ describe("acessibilidade e interação do modal de tratativa", () => {
       });
     const user = userEvent.setup();
     render(
-      <LeadTable leads={[{ ...lead, feedbackDueAt: "2026-08-29T16:03:04.876Z" }]} role="seller" />,
+      <LeadTable leads={[lead]} role="seller" />,
     );
 
     await user.click(screen.getByRole("button", { name: "Registrar tratativa" }));

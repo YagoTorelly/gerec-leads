@@ -200,7 +200,6 @@ def test_admin_lead_projection_is_human_readable_and_omits_internal_foreign_keys
         "isDisqualified": False,
         "commentCount": 2,
         "assignedAt": "2026-08-28T09:00:00+00:00",
-        "feedbackDueAt": "2026-08-31T15:00:00+00:00",
         "lastUpdatedAt": "2026-08-28T12:00:00+00:00",
     }
     assert {"assigneeId", "companyId", "campaignId", "phoneNormalized"}.isdisjoint(lead)

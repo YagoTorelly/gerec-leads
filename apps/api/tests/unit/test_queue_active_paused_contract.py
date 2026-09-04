@@ -10,18 +10,17 @@ from bson import ObjectId
 from gerec_api.domain.queue import QueueRules, SellerState
 
 
-def _seller(*, active: bool = True, paused: bool = False, overdue: bool = False) -> SellerState:
+def _seller(*, active: bool = True, paused: bool = False) -> SellerState:
     return SellerState(
         seller_id=ObjectId(),
         active=active,
         paused=paused,
-        has_overdue_feedback=overdue,
         skip_balance=0,
     )
 
 
 def test_atraso_nao_cria_estado_bloqueado_e_vendedor_continua_ativo() -> None:
-    seller = _seller(overdue=True)
+    seller = _seller()
 
     availability = QueueRules.availability(seller)
 
@@ -30,7 +29,7 @@ def test_atraso_nao_cria_estado_bloqueado_e_vendedor_continua_ativo() -> None:
 
 
 def test_atraso_nao_impede_o_vendedor_de_receber_o_proximo_lead() -> None:
-    overdue = _seller(overdue=True)
+    overdue = _seller()
     next_seller = _seller()
 
     decision = QueueRules.select_normal([overdue, next_seller], overdue.seller_id)
@@ -39,7 +38,7 @@ def test_atraso_nao_impede_o_vendedor_de_receber_o_proximo_lead() -> None:
 
 
 def test_somente_pausa_manual_mantem_vendedor_fora_da_rotacao() -> None:
-    paused = _seller(paused=True, overdue=True)
+    paused = _seller(paused=True)
     active = _seller()
 
     availability = QueueRules.availability(paused)
@@ -50,7 +49,7 @@ def test_somente_pausa_manual_mantem_vendedor_fora_da_rotacao() -> None:
 
 
 def test_snapshot_de_atrasado_exibe_apenas_disponibilidade_operacional_valida() -> None:
-    overdue = _seller(overdue=True)
+    overdue = _seller()
 
     snapshot = QueueRules.snapshot([overdue], overdue.seller_id)
 

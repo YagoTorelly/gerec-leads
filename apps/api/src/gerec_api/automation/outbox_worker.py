@@ -66,6 +66,8 @@ class OutboxRepository(Protocol):
         self, event: OutboxEvent, error: Exception, now: datetime, max_attempts: int
     ) -> bool: ...
 
+    def cancel(self, event: OutboxEvent, now: datetime) -> bool: ...
+
 
 class MongoOutboxRepository:
     """Use atomic Mongo claims so concurrent workers cannot deliver an event twice."""
@@ -152,6 +154,22 @@ class MongoOutboxRepository:
             )
         return True
 
+    def cancel(self, event: OutboxEvent, now: datetime) -> bool:
+        if not event.claim_token:
+            return False
+        result = self._outbox.update_one(
+            {"_id": event.event_id, "status": "processing", "claimToken": event.claim_token},
+            {
+                "$set": {
+                    "status": "cancelled",
+                    "cancelledAt": now,
+                    "cancelledByMigration": "20260904_remove_operational_sla",
+                },
+                "$unset": {"lockedUntil": "", "claimToken": ""},
+            },
+        )
+        return result.matched_count == 1
+
 
 class OutboxWorker:
     """Deliver only claimed events and leave domain data untouched on delivery errors."""
@@ -175,6 +193,9 @@ class OutboxWorker:
         timestamp = now or datetime.now(UTC)
         delivered = 0
         for event in self._repository.claim(batch_size, timestamp, self._max_attempts):
+            if event.event_type == "lead.feedback_due_soon":
+                self._repository.cancel(event, timestamp)
+                continue
             try:
                 self._deliver(event)
             except Exception as error:  # external providers are retried; domain commits remain intact

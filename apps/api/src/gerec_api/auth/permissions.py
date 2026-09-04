@@ -316,7 +316,6 @@ class DashboardService:
                 "isDisqualified": bool(lead.get("isDisqualified", False)),
                 "commentCount": int(lead.get("commentCount", 0)),
                 "assignedAt": lead.get("assignedAt"),
-                "feedbackDueAt": lead.get("feedbackDueAt"),
                 "lastUpdatedAt": lead.get("lastCommentAt")
                 or lead.get("updatedAt")
                 or lead.get("assignedAt"),

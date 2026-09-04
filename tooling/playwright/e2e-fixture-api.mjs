@@ -75,7 +75,6 @@ function fixtureState() {
     commentCount: 0,
     assignedAt: `2026-08-28T1${index}:00:00.000Z`,
     lastUpdatedAt: `2026-08-28T1${index}:00:00.000Z`,
-    feedbackDueAt: index === 0 ? "2026-08-27T18:00:00.000Z" : "2026-08-29T18:00:00.000Z",
   }));
   const nelmaLead = leads.find((lead) => lead.sellerId === "seller-nelma");
   if (nelmaLead) {
@@ -83,7 +82,6 @@ function fixtureState() {
     nelmaLead.commercialStatus = "won";
     nelmaLead.commentCount = 1;
     nelmaLead.lastUpdatedAt = FIXTURE_NOW;
-    nelmaLead.feedbackDueAt = null;
   }
   return {
     users,
@@ -346,9 +344,6 @@ export function createE2eFixtureServer() {
         lead.commentCount += 1;
         const createdAt = `2026-08-28T15:0${state.nextTreatment}:00.000Z`;
         lead.lastUpdatedAt = createdAt;
-        if (lead.isDisqualified) {
-          lead.feedbackDueAt = null;
-        }
         state.treatments.push({
           leadId: lead.id,
           leadName: lead.contactName,
@@ -370,8 +365,6 @@ export function createE2eFixtureServer() {
           isDisqualified: lead.isDisqualified,
           commentCount: lead.commentCount,
           lastUpdatedAt: lead.lastUpdatedAt,
-          reminderAt: lead.isDisqualified ? null : "2026-08-29T14:00:00.000Z",
-          dueAt: lead.feedbackDueAt,
         });
       }
     }

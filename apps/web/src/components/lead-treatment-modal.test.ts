@@ -22,7 +22,6 @@ const lead = {
   isDisqualified: false,
   commentCount: 2,
   assignedAt: "2026-08-28T16:03:04.876Z",
-  feedbackDueAt: "2026-08-29T16:03:04.876Z",
   lastUpdatedAt: "2026-08-28T16:03:04.876Z",
 };
 
@@ -118,8 +117,6 @@ describe("tabela de leads e tratativa", () => {
           commercialStatus: "won",
           isDisqualified: false,
           commentCount: 3,
-          reminderAt: null,
-          dueAt: null,
           lastUpdatedAt: "2026-08-29T15:00:00.000Z",
         },
       ),
@@ -135,15 +132,12 @@ describe("tabela de leads e tratativa", () => {
         commercialStatus: "won",
         isDisqualified: true,
         commentCount: 3,
-        reminderAt: null,
-        dueAt: null,
         lastUpdatedAt: "2026-08-29T15:00:00.000Z",
       }),
     ).toMatchObject({
       commercialStatus: "won",
       isDisqualified: true,
       commentCount: 3,
-      feedbackDueAt: null,
     });
   });
 
@@ -158,8 +152,6 @@ describe("tabela de leads e tratativa", () => {
         commercialStatus: "negotiation",
         isDisqualified: false,
         commentCount: 3,
-        reminderAt: null,
-        dueAt: null,
         lastUpdatedAt: "2026-08-29T15:00:00.000Z",
       });
       const markup = renderToStaticMarkup(

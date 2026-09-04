@@ -113,6 +113,18 @@ def test_operational_migration_materializes_projections_without_losing_history(m
             "closedAt": None,
         }
     )
+    mongo_db["feedback_cycles"].create_index(
+        [("leadId", 1)],
+        unique=True,
+        partialFilterExpression={"closedAt": None},
+        name="feedback_cycles_open_lead_unique",
+    )
+    mongo_db["notification_outbox"].insert_many(
+        [
+            {"eventType": "lead.feedback_due_soon", "status": status, "leadId": lead_id}
+            for status in ("pending", "retry", "scheduled", "processing", "sent", "dead_letter")
+        ]
+    )
     mongo_db["sessions"].insert_one({"_id": session_id, "tokenHash": "historical-token"})
     mongo_db["seller_queue"].insert_one({"sellerId": seller_id, "position": 1, "paused": False})
 
@@ -129,9 +141,20 @@ def test_operational_migration_materializes_projections_without_losing_history(m
     assert lead_after_first_run["isDisqualified"] is True
     assert lead_after_first_run["commentCount"] == 1
     assert lead_after_first_run["lastCommentAt"] == VALID_COMMENT_AT
-    assert lead_after_first_run["feedbackDueAt"] is None
-    assert lead_after_first_run["feedbackReminderAt"] is None
-    assert mongo_db["feedback_cycles"].find_one({"_id": cycle_id})["closedAt"] is not None
+    assert "feedbackDueAt" not in lead_after_first_run
+    assert "feedbackReminderAt" not in lead_after_first_run
+    cycle = mongo_db["feedback_cycles"].find_one({"_id": cycle_id})
+    assert cycle["closedAt"] is not None
+    assert cycle["closedByMigration"] == "20260904_remove_operational_sla"
+    assert "feedback_cycles_open_lead_unique" not in mongo_db["feedback_cycles"].index_information()
+    reminders = list(mongo_db["notification_outbox"].find({"leadId": lead_id}))
+    assert {item["status"] for item in reminders if item["status"] in {"sent", "dead_letter"}} == {
+        "sent",
+        "dead_letter",
+    }
+    cancelled = [item for item in reminders if item["status"] == "cancelled"]
+    assert len(cancelled) == 4
+    assert all(item["cancelledByMigration"] == "20260904_remove_operational_sla" for item in cancelled)
 
     assert len(list(mongo_db["lead_treatments"].find({"leadId": lead_id}))) == 1
     treatment = mongo_db["lead_treatments"].find_one({"leadId": lead_id})
@@ -139,6 +162,7 @@ def test_operational_migration_materializes_projections_without_losing_history(m
     assert treatment["isDisqualified"] is False
     assert treatment["legacyStatusUnavailable"] is True
     assert mongo_db["schema_migrations"].count_documents({"_id": "20260828_operacao_comercial"}) == 1
+    assert mongo_db["schema_migrations"].count_documents({"_id": "20260904_remove_operational_sla"}) == 1
     for name, expected in history_before.items():
         assert list(mongo_db[name].find()) == expected
 
@@ -157,8 +181,8 @@ def test_operational_migration_materializes_projections_without_losing_history(m
     assert queue_indexes["seller_queue_position_present_unique"]["unique"] is True
 
 
-def test_operational_migration_recalculates_open_legacy_cycle_in_business_hours(mongo_db) -> None:
-    """Breaks if an open legacy cycle retains the pre-GOV-004 continuous deadline."""
+def test_operational_migration_deactivates_open_legacy_cycle_without_deleting_history(mongo_db) -> None:
+    """Breaks if a legacy deadline remains operational after the SLA removal."""
     lead_id = ObjectId()
     cycle_id = ObjectId()
     mongo_db["leads"].insert_one(
@@ -191,10 +215,13 @@ def test_operational_migration_recalculates_open_legacy_cycle_in_business_hours(
     assert lead["isDisqualified"] is False
     assert lead["commentCount"] == 0
     assert lead["lastCommentAt"] is None
-    assert lead["feedbackDueAt"] == datetime(2026, 9, 2, 14, 0, tzinfo=SAO_PAULO)
-    assert lead["feedbackReminderAt"] == datetime(2026, 9, 2, 10, 0, tzinfo=SAO_PAULO)
-    assert cycle["dueAt"] == lead["feedbackDueAt"]
-    assert cycle["reminderAt"] == lead["feedbackReminderAt"]
+    assert "feedbackCycleId" not in lead
+    assert "feedbackDueAt" not in lead
+    assert "feedbackReminderAt" not in lead
+    assert cycle["dueAt"] == datetime(2026, 8, 31, 17, 0, tzinfo=SAO_PAULO)
+    assert cycle["reminderAt"] == datetime(2026, 8, 31, 13, 0, tzinfo=SAO_PAULO)
+    assert cycle["closedAt"] is not None
+    assert cycle["closedByMigration"] == "20260904_remove_operational_sla"
 
 
 def test_operational_migration_rebuilds_duplicate_legacy_queue_positions_deterministically(mongo_db) -> None:

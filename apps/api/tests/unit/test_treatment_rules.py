@@ -28,6 +28,14 @@ class RecordingBusinessClock:
         return datetime.fromisoformat("2026-09-08T19:00:00+00:00")
 
 
+class FailingDeadlineClock:
+    def add_business_hours(self, start: datetime, hours: int) -> datetime:
+        raise AssertionError("tratativa não pode criar prazo")
+
+    def subtract_business_hours(self, deadline: datetime, hours: int) -> datetime:
+        raise AssertionError("tratativa não pode criar lembrete")
+
+
 class RecordingPersistence:
     def __init__(self) -> None:
         self.treatments: list[tuple[Any, ...]] = []
@@ -39,10 +47,8 @@ class RecordingPersistence:
         actor_id: Any,
         actor_role: str,
         now: datetime,
-        reminder_at: datetime,
-        due_at: datetime,
     ) -> TreatmentResult:
-        self.treatments.append((command, actor_id, actor_role, now, reminder_at, due_at))
+        self.treatments.append((command, actor_id, actor_role, now))
         return TreatmentResult(
             lead_id=str(command.lead_id),
             treatment_id="treatment-1",
@@ -51,8 +57,6 @@ class RecordingPersistence:
             is_disqualified=command.is_disqualified,
             comment_count=1,
             last_updated_at=now,
-            reminder_at=reminder_at,
-            due_at=due_at,
         )
 
 
@@ -121,9 +125,23 @@ def test_treatment_preserves_won_plus_disqualified_as_independent_values() -> No
         TreatmentCommand("lead-1", "Venda confirmada pelo cliente", "won", True, "won-disqualified")
     )
 
-    command, actor_id, actor_role, _, _, _ = persistence.treatments[0]
+    command, actor_id, actor_role, _ = persistence.treatments[0]
     assert command.comment == "Venda confirmada pelo cliente"
     assert actor_id == "seller-1"
     assert actor_role == "seller"
     assert result.commercial_status == "won"
     assert result.is_disqualified is True
+
+
+def test_treatment_never_calculates_a_deadline_or_reminder() -> None:
+    """A tratativa manual não cria prazo operacional."""
+    persistence = RecordingPersistence()
+    service = OperationsService(
+        persistence,
+        business_clock=FailingDeadlineClock(),
+        clock=FixedClock(),
+    ).with_actor("seller-1", "seller")
+
+    service.register_treatment(
+        TreatmentCommand("lead-1", "Contato registrado", "negotiation", False, "without-deadline")
+    )

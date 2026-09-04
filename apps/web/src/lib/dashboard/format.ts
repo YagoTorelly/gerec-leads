@@ -1,7 +1,5 @@
 import type { CommercialStatus } from "../api/types";
 
-export type SlaState = "overdue" | "today" | "scheduled" | "none";
-
 export const NOT_INFORMED = "Não informado";
 
 const SAO_PAULO_TIME_ZONE = "America/Sao_Paulo";
@@ -16,13 +14,6 @@ const dateTimeFormatter = new Intl.DateTimeFormat("pt-BR", {
   year: "numeric",
 });
 
-const dateKeyFormatter = new Intl.DateTimeFormat("en-CA", {
-  day: "2-digit",
-  month: "2-digit",
-  timeZone: SAO_PAULO_TIME_ZONE,
-  year: "numeric",
-});
-
 export function formatText(value: string | null | undefined): string {
   return value?.trim() || NOT_INFORMED;
 }
@@ -30,10 +21,6 @@ export function formatText(value: string | null | undefined): string {
 export function formatDateTime(value: string | null | undefined): string {
   if (!value || Number.isNaN(new Date(value).getTime())) return NOT_INFORMED;
   return dateTimeFormatter.format(new Date(value));
-}
-
-export function formatSlaDeadline(value: string | null | undefined): string {
-  return formatDateTime(value);
 }
 
 export function formatCommercialStatus(value: CommercialStatus): string {
@@ -59,16 +46,4 @@ export function formatPhone(value: string | null | undefined): string {
   if (digits.length === 11) return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7)}`;
   if (digits.length === 10) return `(${digits.slice(0, 2)}) ${digits.slice(2, 6)}-${digits.slice(6)}`;
   return digits || NOT_INFORMED;
-}
-
-export function getSaoPauloDateKey(value: Date): string {
-  return dateKeyFormatter.format(value);
-}
-
-export function getSlaState(value: string | null | undefined, now = new Date()): SlaState {
-  if (!value || Number.isNaN(new Date(value).getTime())) return "none";
-  const dueDate = new Date(value);
-  if (dueDate.getTime() < now.getTime()) return "overdue";
-  if (getSaoPauloDateKey(dueDate) === getSaoPauloDateKey(now)) return "today";
-  return "scheduled";
 }
