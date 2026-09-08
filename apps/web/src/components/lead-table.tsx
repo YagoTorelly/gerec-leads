@@ -9,6 +9,7 @@ import {
   formatDateTime,
   formatDisqualificationMarker,
 } from "../lib/dashboard/format";
+import { LeadContactModal } from "./lead-contact-modal";
 import { LeadTreatmentModal } from "./lead-treatment-modal";
 import { LeadTransferModal } from "./lead-transfer-modal";
 
@@ -86,7 +87,7 @@ export function LeadTable({ leads, role, transferTargets = [] }: LeadTableProps)
             <tr>
               <th>Nome</th>
               {role === "admin" ? <th>Responsável</th> : null}
-              <th>Telefone</th>
+              <th>Contato</th>
               <th>Situação</th>
               <th>Marcador</th>
               <th>Atribuído em</th>
@@ -104,7 +105,7 @@ export function LeadTable({ leads, role, transferTargets = [] }: LeadTableProps)
                     <strong>{currentLead.contactName}</strong>
                   </td>
                   {role === "admin" ? <td>{currentLead.sellerName}</td> : null}
-                  <td>{formatBrazilianPhone(currentLead.phoneDisplay)}</td>
+                  <td><LeadContactModal lead={currentLead} /></td>
                   <td>
                     <span className={statusClass(currentLead.commercialStatus)}>
                       {formatCommercialStatus(currentLead.commercialStatus)}

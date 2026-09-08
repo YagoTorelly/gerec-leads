@@ -41,6 +41,23 @@ afterEach(() => {
 });
 
 describe("acessibilidade e interação do modal de tratativa", () => {
+  it("abre os dados de contato do lead pela coluna Contato", async () => {
+    const user = userEvent.setup();
+    render(<LeadTable leads={[lead]} role="seller" />);
+
+    expect(screen.getByRole("columnheader", { name: "Contato" })).toBeTruthy();
+    const trigger = screen.getByRole("button", { name: "Ver contato de Débora Souza" });
+    await user.click(trigger);
+
+    expect(screen.getByRole("dialog", { name: "Contato de Débora Souza" })).toBeTruthy();
+    expect(screen.getByText("(11) 98830-8029")).toBeTruthy();
+    expect(screen.getByText("debora@example.com")).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "Fechar contato" }));
+    expect(screen.queryByRole("dialog", { name: "Contato de Débora Souza" })).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
   it("foca o primeiro controle de leitura, prende Tab e devolve foco após Escape", async () => {
     const user = userEvent.setup();
     render(<LeadTreatmentModal lead={lead} mode="read" />);

@@ -37,7 +37,9 @@ describe("tabela de leads e tratativa", () => {
     expect(admin).not.toContain("Empresa da Débora");
     expect(admin).not.toContain("Campanha WTG");
     expect(admin).not.toContain("E-mail");
-    expect(admin).toContain("(11) 98830-8029");
+    expect(admin).toContain("Contato");
+    expect(admin).toContain("Ver contato de Débora Souza");
+    expect(admin).not.toContain("(11) 98830-8029");
     expect(admin).toContain("2 comentários");
     expect(admin).not.toContain("Registrar tratativa");
     expect(seller).not.toContain("Responsável");
