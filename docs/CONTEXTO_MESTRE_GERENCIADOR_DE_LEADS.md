@@ -1,6 +1,6 @@
 ﻿# Contexto Mestre - Gerenciador de Leads WTG
 
-> Gerado em 2026-09-04 11:40:00 UTC por `scripts/generate-master-context.ps1`.
+> Gerado em 2026-09-14 18:30:08 UTC por `scripts/generate-master-context.ps1`.
 
 ## Como usar este documento
 
@@ -1937,6 +1937,19 @@ Uma implementação que tenha uma interface bonita, mas não consiga provar essa
 - **Novos testes de aceite:** vendedor ativo e pausado sÃ£o os Ãºnicos estados; pausa/ativaÃ§Ã£o manual do administrador funciona; lead sem comentÃ¡rio nÃ£o Ã© bloqueado nem muda de posiÃ§Ã£o; nenhuma tela ou alerta apresenta prazo/SLA/Bloqueado por atraso; comentÃ¡rio vÃ¡lido atualiza apenas tratativa/status/marcador; FIFO permanece inalterado.
 - **AprovaÃ§Ã£o:** Yago, em 03 de setembro de 2026.
 
+---
+
+### GOV-007 â€” NotificaÃ§Ãµes internas, situaÃ§Ã£o potencial e relatÃ³rios operacionais
+
+- **Regra anterior:** o SPEC previa notificaÃ§Ãµes de novos leads por e-mail; a situaÃ§Ã£o primÃ¡ria da tratativa era limitada a `Indefinido`, `NegociaÃ§Ã£o` e `Ganho`; a projeÃ§Ã£o atual podia preservar o marcador `Desqualificado` mesmo quando uma tratativa posterior o removesse. A operaÃ§Ã£o nÃ£o possuÃ­a a visÃ£o de relatÃ³rios aprovada nesta etapa.
+- **Nova regra:** novos leads sÃ£o avisados por janela interna, exclusiva do vendedor, consultando atribuiÃ§Ãµes e transferÃªncias posteriores ao cursor persistente de leitura do prÃ³prio vendedor. A primeira implantaÃ§Ã£o inicializa esse cursor e nÃ£o notifica leads antigos. Nenhum e-mail Ã© enviado nesta etapa. `Potencial` passa a ser situaÃ§Ã£o primÃ¡ria vÃ¡lida ao lado de `Indefinido`, `NegociaÃ§Ã£o` e `Ganho`. `Desqualificado` continua marcador adicional, mas o estado materializado do lead reflete exatamente a Ãºltima tratativa; retirar a marca em nova tratativa a remove apenas da projeÃ§Ã£o atual e preserva todo o histÃ³rico. Leads sem tratativa recebem destaque visual amarelo sem mudar FIFO, permissÃ£o ou disponibilidade. Administrador pode filtrar leads pelo responsÃ¡vel atual; administrador e vendedor podem ordenar por situaÃ§Ã£o. RelatÃ³rios por situaÃ§Ã£o e proprietÃ¡rio atual sÃ£o exclusivos de administrador e filtram pela data da atribuiÃ§Ã£o atual, que passa a ser a data de transferÃªncia quando houver transferÃªncia.
+- **Motivo:** alinhar o sistema Ã  rotina real de acompanhamento sem depender de e-mail, tornar a situaÃ§Ã£o comercial mais expressiva, corrigir a projeÃ§Ã£o divergente do marcador e disponibilizar leitura gerencial segura.
+- **Impacto em dados existentes:** criar campo de cursor de leitura no usuÃ¡rio por migraÃ§Ã£o idempotente, inicializado no instante da implantaÃ§Ã£o apenas quando ausente. NÃ£o apagar tratativas, atribuiÃ§Ãµes ou marcaÃ§Ãµes histÃ³ricas. A correÃ§Ã£o da projeÃ§Ã£o vale para novas tratativas; qualquer reparo em massa de dados anteriores exige decisÃ£o e migraÃ§Ã£o prÃ³prias.
+- **Impacto em seguranÃ§a e mÃ©tricas:** vendedor consulta e confirma somente sua prÃ³pria janela; transferÃªncia continua revogando o acesso do vendedor anterior. AgregaÃ§Ãµes globais sÃ£o exclusivas de administrador. A janela e o destaque nÃ£o alteram cursor FIFO, posiÃ§Ã£o, crÃ©ditos ou disponibilidade.
+- **MigraÃ§Ã£o necessÃ¡ria:** nova migraÃ§Ã£o versionada para cursor ausente e expansÃ£o de validadores/contratos para `potential`; nenhuma migraÃ§Ã£o aplicada pode ser editada.
+- **Novos testes de aceite:** validar cursor inicial e concorrente, atribuiÃ§Ã£o e transferÃªncia futuras, negaÃ§Ã£o de acesso cruzado, `Potencial`, remoÃ§Ã£o do marcador atual preservando histÃ³rico, destaque de primeiro comentÃ¡rio, filtro/ordenaÃ§Ã£o autorizados e relatÃ³rios exclusivos de administrador por atribuiÃ§Ã£o atual.
+- **AprovaÃ§Ã£o:** Yago, em 14 de setembro de 2026.
+
 ## Documento de orientação: `AGENTS.md`
 
 # Instruções permanentes do Gerenciador de Leads WTG
@@ -2561,6 +2574,7 @@ As decisões abaixo foram aprovadas na organização inicial do projeto. Mudanç
 | DEC-028 | A operação comercial usa SLA de 24 horas úteis apenas entre 09:00 e 18:00; `isDisqualified` é marcador adicional que encerra o SLA. Ambos impedem somente novas atribuições e preservam os leads existentes. Pausa manual é definida e removida somente pelo administrador. Bloqueado por atraso é derivado de qualquer ciclo de SLA aberto vencido. Ele cessa automaticamente após a regularização de todos os ciclos vencidos. Quando coexistirem, Pausado prevalece na apresentação e na elegibilidade. A regularização não devolve turnos perdidos. O vendedor atualmente responsável é o único autor de tratativa. O administrador possui somente leitura global da tratativa. | Vendedor atrasado fica Bloqueado por atraso sem redistribuir leads; ganhos e desqualificados são métricas independentes. As contas aprovadas neste ambiente são Yago, André, Renato, Sandra, Jessica e Nelma: Yago e André são administradores; os demais são vendedores. Criação e redefinição aceitam senha não vazia, sem política adicional. Histórico é preservado, e prazos, projeções e métricas são recalculados idempotentemente por migração. Administrador não edita comentário, status ou responsável da tratativa. | Aprovada em 28/08/2026 |
 | DEC-029 | Transferência manual de propriedade não altera o cursor ou a ordem FIFO; após a confirmação, o vendedor anterior perde totalmente o acesso ao lead e às tratativas, inclusive leitura. | A transferência é exclusiva do administrador, auditável e preserva os dados para auditoria administrativa e para o novo responsável. | Aprovada em 03/09/2026 |
 | DEC-030 | A disponibilidade operacional possui somente `Ativo` e `Pausado`. `Pausado` Ã© definido e removido manualmente pelo administrador. NÃ£o existe prazo/SLA comercial, lembrete, estado `Bloqueado por atraso` ou bloqueio automÃ¡tico por ausÃªncia de comentÃ¡rio. | Alinhar o produto Ã  operaÃ§Ã£o real: tratativas, situaÃ§Ã£o comercial e marcador de desqualificaÃ§Ã£o sÃ£o registrados manualmente pelo vendedor, sem consequÃªncia automÃ¡tica por demora. A DEC-028 fica superada somente nesses pontos; seus demais controles de permissÃ£o, contas e tratativa permanecem vÃ¡lidos. HistÃ³ricos e campos legados de SLA sÃ£o preservados apenas para auditoria, sem uso operacional. | Aprovada em 03/09/2026 |
+| DEC-031 | Novos leads serÃ£o avisados por janela interna persistente por vendedor, e nÃ£o por e-mail nesta etapa. `Potencial` Ã© situaÃ§Ã£o primÃ¡ria vÃ¡lida. O marcador `Desqualificado` materializado reflete a Ãºltima tratativa e pode ser removido sem alterar o histÃ³rico. RelatÃ³rios por situaÃ§Ã£o e proprietÃ¡rio atual sÃ£o exclusivos de administrador e usam a data da atribuiÃ§Ã£o atual. | A janela usa cursor persistente, inclui atribuiÃ§Ãµes e transferÃªncias futuras e nÃ£o altera FIFO. Leads sem tratativa recebem somente destaque visual. Filtro administrativo por responsÃ¡vel e ordenaÃ§Ã£o alfabÃ©tica por situaÃ§Ã£o sÃ£o consultas de leitura autorizadas no backend. O desenho de e-mail de 03/09/2026 nÃ£o serÃ¡ executado neste pacote. | Aprovada em 14/09/2026 |
 
 ## Desenho de produto: `docs/superpowers/specs/2026-08-25-organizacao-roadmap-design.md`
 
@@ -3685,6 +3699,227 @@ um worker concorrente durante a execução da migração.
 - Reexecutar sync sem mudança de disponibilidade não duplica eventos de
   estacionamento.
 - O histórico legado não é apagado.
+
+## Desenho de produto: `docs/superpowers/specs/2026-09-14-notificacoes-internas-tratativas-relatorios-design.md`
+
+# Design — notificações internas, tratativas, filtros e relatórios
+
+**Data:** 14/09/2026
+**Status:** aprovado para documentação e planejamento; implementação depende da revisão deste documento.
+**Aprovação de produto:** Yago, 14/09/2026.
+
+## 1. Objetivo e escopo
+
+Evoluir a operação comercial sem alterar a fila FIFO, a regra de propriedade ou a permissão de tratativas:
+
+1. avisar internamente cada vendedor sobre leads que lhe foram atribuídos ou transferidos desde sua última visualização;
+2. tornar explícito quais leads ainda não receberam nenhuma tratativa;
+3. adicionar `Potencial` às situações comerciais;
+4. permitir filtro administrativo por responsável e ordenação alfabética por situação nas visões administrativa e comercial;
+5. disponibilizar relatórios administrativos por situação e por proprietário atual, filtráveis pela data da atribuição atual;
+6. corrigir a projeção atual de `Desqualificado`, para que ela reflita a última tratativa e não fique permanentemente marcada.
+
+Não há envio de e-mail neste escopo. O desenho de e-mail de 03/09/2026 fica substituído nesta etapa por notificação interna; nenhum adaptador SMTP, worker ou credencial será criado ou acionado.
+
+## 2. Decisões aprovadas
+
+### 2.1 Situação e tratativa
+
+- As situações primárias permitidas são `Indefinido`, `Potencial`, `Negociação` e `Ganho`.
+- O vendedor atual escolhe exatamente uma situação ao registrar uma tratativa válida, com comentário de ao menos seis caracteres úteis.
+- `Desqualificado` continua marcador adicional e pode coexistir com qualquer situação primária.
+- O estado materializado do lead (`commercialStatus` e `isDisqualified`) representa **exatamente a última tratativa**.
+- Cada tratativa permanece imutável. Portanto, uma tratativa antiga pode continuar exibindo `Desqualificado` mesmo que a tratativa posterior o tenha removido.
+- Desmarcar o checkbox em uma tratativa posterior remove apenas o marcador atual do lead; não apaga ou reescreve o histórico.
+
+### 2.2 Destaque de pendência de tratativa
+
+- Um lead com `commentCount === 0` recebe destaque amarelo na linha completa da tabela de leads.
+- O destaque existe nas visões administrativa e comercial.
+- Ao registrar a primeira tratativa confirmada, a projeção atualiza `commentCount`, e o destaque deixa de aparecer na próxima leitura/revalidação.
+- O destaque é somente visual: não altera fila, disponibilidade, permissão, atribuição ou prioridade.
+
+### 2.3 Notificação interna de novos leads
+
+- A notificação é uma janela interna, exclusiva do vendedor, sem e-mail.
+- Ao abrir o dashboard, o vendedor consulta leads de propriedade atual atribuídos ou transferidos após seu cursor persistente de leitura.
+- Fechar a janela confirma a visualização até a marca d'água retornada pela API. O cursor avança monotonicamente e não pode retroceder.
+- A lista inclui somente leads cujo `assigneeId` atual é o vendedor autenticado. Um lead transferido antes de ser visualizado não é exposto ao proprietário anterior.
+- Transferências entram na janela do novo proprietário; não afetam cursor FIFO, posição ou créditos.
+- Na primeira implantação, todos os cursores ausentes recebem o instante da migração. Assim, somente atribuições e transferências futuras geram aviso.
+- Administradores não recebem a janela; seu acesso global continua pela visão administrativa.
+
+### 2.4 Filtros, ordenação e relatórios
+
+- Administrador pode selecionar um responsável atual ou `Todos` na lista de leads.
+- Administrador e vendedor podem ordenar os leads alfabeticamente pela situação exibida: `Ganho`, `Indefinido`, `Negociação`, `Potencial`.
+- Empates preservam a ordenação secundária atual e determinística da consulta.
+- A aba `/relatorios` é exclusiva de administrador.
+- O período padrão é todo o histórico. A interface oferece atalhos e intervalo personalizado.
+- O período é aplicado à data da atribuição para o proprietário atual. Após transferência, usa-se a data da transferência, porque ela é a atribuição atual.
+- As agregações usam o proprietário atual, inclusive para leads originalmente atribuídos a outro vendedor.
+- Os gráficos exibem distribuição por situação e por vendedor; não há card separado de “quantidade total de leads”.
+
+## 3. Divergências canônicas e governança
+
+O SPEC ainda descreve notificações por e-mail e três situações primárias; o comportamento histórico também preservava `isDisqualified` após uma tratativa posterior sem o marcador. Estas regras são substituídas para esta operação pela decisão aprovada neste documento:
+
+- notificação de novos leads é interna e persistente por vendedor, não um envio SMTP;
+- `Potencial` é situação primária válida;
+- `Desqualificado` é reversível na projeção atual por decisão explícita do vendedor em uma nova tratativa;
+- relatórios globais são exclusivos de administrador.
+
+A implementação deve registrar GOV-007 no SPEC e DEC-031 em `docs/DECISOES.md`, com motivo, impacto, migração e testes de aceite. Não poderá manter o envio de e-mail como efeito colateral deste pacote.
+
+## 4. Alternativas analisadas
+
+| Alternativa | Vantagem | Limitação | Decisão |
+| --- | --- | --- | --- |
+| Cursor persistente no usuário | Funciona entre computadores, preserva transferências e exige pouco estado | Requer marca d'água segura para não perder itens concorrentes | Adotada |
+| Evento individual com estado de leitura | Auditoria detalhada item a item | Nova coleção, endpoints e ciclo operacional sem necessidade atual | Não adotada |
+| `localStorage` | Implementação curta | Falha em outro dispositivo, sessão anônima e limpeza do navegador | Rejeitada |
+
+## 5. Modelo de dados e migração
+
+### 5.1 Usuários
+
+Adicionar o campo opcional abaixo à projeção de usuários vendedores:
+
+```text
+newLeadsSeenAt: datetime | null
+```
+
+Uma nova migração MongoDB versionada preencherá apenas documentos sem esse campo com o instante controlado da migração. Ela será idempotente e não alterará `assignedAt`, histórico de tratativas, fila ou propriedade.
+
+### 5.2 Leads e tratativas
+
+- Expandir os validadores, tipos de domínio, Pydantic e TypeScript para aceitar `potential`.
+- `lead_treatments.isDisqualified` é o valor submetido naquela tratativa e nunca é alterado.
+- `leads.isDisqualified` recebe exatamente `command.is_disqualified`; não pode combinar o valor antigo com OR lógico.
+- `leads.commercialStatus` recebe exatamente a situação da nova tratativa.
+- `assignedAt` já representa a atribuição do proprietário atual e será mantido como fonte do filtro de relatórios e da busca de novos leads.
+
+Não há migração de histórico para apagar desqualificações antigas. A correção aplica-se às novas tratativas; qualquer reparo retrospectivo de projeções divergentes só poderá ser feito em migração separada, com lista de afetados e aprovação explícita.
+
+## 6. Contratos de API
+
+### 6.1 Dashboard e lista de leads
+
+Estender a consulta de leitura de leads com parâmetros opcionais, sempre aplicados no backend:
+
+```text
+GET /api/dashboard?page=&limit=&assigneeId=&sort=situation
+```
+
+- `assigneeId` é aceito apenas para administrador; vendedor sempre recebe a própria projeção, ignorando qualquer identificador externo.
+- `sort=situation` aplica a ordenação alfabética aprovada no banco/read model.
+- A resposta existente continua retornando `commentCount`, situação, marcador, responsável e `assignedAt`.
+
+### 6.2 Novos leads
+
+```text
+GET  /api/lead-notifications/new
+POST /api/lead-notifications/new/acknowledge
+```
+
+A leitura retorna itens mínimos do lead e uma `watermark` do servidor. A confirmação recebe essa marca d'água e atualiza `newLeadsSeenAt` com operação de máximo. A API limita a confirmação à marca d'água emitida para a sessão/consulta, evitando que um fechamento avance sobre atribuições ocorridas depois da leitura.
+
+Ambas as rotas exigem vendedor autenticado. Administrador e vendedor diferente recebem negação de autorização; nenhum identificador de vendedor é aceito no cliente.
+
+### 6.3 Relatórios
+
+```text
+GET /api/admin/reports/lead-distribution?from=&to=
+```
+
+- Exclusivo de administrador.
+- `from` é inclusivo e `to` é exclusivo; atalhos de calendário são convertidos no servidor para intervalos explícitos em `America/Sao_Paulo` e armazenados/consultados como UTC.
+- A consulta filtra pela `assignedAt` vigente do lead e agrega por `commercialStatus` e `assigneeId` atual.
+- A resposta contém somente rótulos e contagens necessários para os dois gráficos; não expõe telefone, e-mail ou histórico de tratativas.
+
+## 7. Interface
+
+### 7.1 Janela de novos leads
+
+O dashboard do vendedor monta uma janela modal acessível quando a consulta retorna itens. Cada item apresenta nome e botão existente de contato, sem expor dados adicionais fora da regra atual. Fechar, usar `Esc` ou clicar no controle de fechar confirma a marca d'água; se a confirmação falhar, a janela informa o erro e não avança o cursor localmente.
+
+### 7.2 Tabelas
+
+- Adicionar classe semântica de linha pendente quando `commentCount` é zero, com amarelo legível e contraste suficiente para texto, selo e hover.
+- Incluir seletor de responsável apenas para administrador.
+- Incluir seletor de ordenação por situação para ambos os perfis.
+- Preservar ações existentes: vendedor registra tratativa; administrador lê histórico e transfere propriedade. Nenhum filtro cria permissão adicional.
+
+### 7.3 Relatórios
+
+A navegação mostra `Relatórios` somente para administrador. A página usa filtro de período, mensagem vazia explícita e dois gráficos de barras acessíveis (rótulos, contagens e equivalente textual), um por situação e outro por vendedor. O estado de carregamento/erro não esconde o shell nem quebra as demais páginas.
+
+## 8. Segurança, concorrência e falhas
+
+- A identidade do vendedor vem apenas da sessão autenticada.
+- A confirmação de leitura é compare-and-max transacional/atômica e não reduz um cursor atualizado por outra aba.
+- O snapshot de novos leads é delimitado por marca d'água: atribuição posterior continua pendente após o fechamento da janela atual.
+- Transferência mantém as garantias existentes de autorização e FIFO; a notificação é leitura derivada, nunca comando de fila.
+- Falha de consulta ou confirmação da notificação resulta em estado legível e tentativa posterior, sem perder dados nem criar e-mail.
+- Agregações de relatório são calculadas no backend e protegidas por papel administrativo.
+- A interface não é a camada de autorização; as novas rotas aplicam escopo no serviço/repositório.
+
+## 9. Testes de aceite
+
+### Domínio e persistência
+
+- aceitar `potential` e rejeitar qualquer situação fora da enumeração;
+- registrar `Desqualificado=true`, depois `Negociação + false`, preservar as duas tratativas e materializar o lead com marcador `false`;
+- repetir o mesmo comando idempotente sem duplicar tratativa ou contador;
+- validar a migração de cursor ausente como idempotente;
+- consulta de novos leads inclui atribuição e transferência futuras, mas não dados anteriores ao cursor;
+- confirmação concorrente nunca reduz cursor nem perde lead atribuído após a marca d'água;
+- filtro administrativo respeita proprietário atual; vendedor não consegue consultar outro responsável;
+- agregações filtram por data da atribuição atual e agrupam por proprietário atual;
+- rota de relatório nega vendedor.
+
+### Web, acessibilidade e E2E
+
+- modal de novos leads abre para vendedor com itens pendentes e confirma visualização ao fechar;
+- modal não aparece para administrador nem mostra lead transferido ao proprietário anterior;
+- linhas sem tratativa possuem destaque amarelo legível e o perdem após primeira tratativa;
+- seletor de `Potencial` aparece e é enviado pela tratativa;
+- filtro de responsável é visível somente ao administrador;
+- ordenação por situação funciona nos dois perfis;
+- aba de relatórios não aparece nem responde para vendedor;
+- gráficos possuem rótulo textual, dados vazios e intervalo personalizado;
+- screenshots desktop 1440×900 cobrem dashboard vendedor, lista administrativa e relatórios.
+
+## 10. Fora do escopo
+
+- e-mail, SMTP, n8n, WhatsApp ou outro canal externo;
+- mudança em FIFO, cursor de distribuição ou créditos de pulo;
+- alteração administrativa de comentários, situação ou marcador;
+- alteração retroativa massiva de `isDisqualified` já materializado;
+- permissões de relatório para vendedor;
+- indicadores financeiros, funil ou campanhas além das distribuições aprovadas.
+
+## 11. Sequência de implementação
+
+1. Governança e atualização documental; regenerar contexto mestre.
+2. Contratos, enumeração `potential` e teste vermelho do marcador reversível.
+3. Migração e serviço de cursor/notificação, com autorização e concorrência.
+4. Filtros, ordenação e projeções administrativas/comerciais.
+5. Endpoint de agregação e página de relatórios exclusiva de administrador.
+6. Interface de notificação, destaque amarelo, filtros e gráficos.
+7. E2E, screenshots 1440×900, testes completos e revisão independente.
+
+## 12. Critérios de aceite finais
+
+1. Nenhum e-mail é disparado por atribuição ou transferência neste pacote.
+2. Vendedor visualiza, em qualquer computador, somente seus leads recebidos desde a última confirmação da janela.
+3. A primeira implantação não notifica leads antigos; atribuições e transferências posteriores são notificadas.
+4. `Potencial` pode ser registrado e aparece nas listas, histórico, filtros e gráficos.
+5. O marcador atual de desqualificação é removido por nova tratativa sem marcador, sem alterar o histórico anterior.
+6. Leads sem tratativa são imediatamente distinguíveis visualmente, sem efeito operacional.
+7. Administrador filtra por responsável; ambos os perfis ordenam por situação.
+8. Relatórios globais só são acessíveis ao administrador e usam período por atribuição atual e proprietário atual.
+9. Toda alteração preserva a fila FIFO, a propriedade, a autorização e as garantias de transferência já aprovadas.
 
 ## Plano histórico ou executável: `docs/superpowers/plans/2026-08-25-etapa-1-esqueleto-executavel.md`
 
@@ -16369,6 +16604,31 @@ button:disabled {
   gap: 8px;
   margin-top: 18px;
 }
+.contact-modal__details {
+  display: grid;
+  gap: 12px;
+  margin: 24px 0 0;
+}
+.contact-modal__details > div {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-muted);
+}
+.contact-modal__details dt {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.contact-modal__details dd {
+  margin: 5px 0 0;
+  color: var(--text-strong);
+  font-size: 15px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
 .treatment-modal__header {
   display: flex;
   align-items: flex-start;
@@ -17361,6 +17621,94 @@ describe("dashboards por papel", () => {
 });
 ````
 
+## Snapshot de código: `apps/web/src/components/lead-contact-modal.tsx`
+
+````tsx
+"use client";
+
+import { useCallback, useEffect, useRef, useState } from "react";
+
+import type { OperationalLead } from "../lib/api/types";
+import { formatPhone, formatText } from "../lib/dashboard/format";
+
+export function LeadContactModal({ lead }: { lead: OperationalLead }) {
+  const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const wasOpenRef = useRef(false);
+  const titleId = `lead-contact-title-${lead.id}`;
+  const close = useCallback(() => setOpen(false), []);
+
+  useEffect(() => {
+    if (open) {
+      closeRef.current?.focus();
+    } else if (wasOpenRef.current) {
+      triggerRef.current?.focus();
+    }
+    wasOpenRef.current = open;
+  }, [open]);
+
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        className="table-action"
+        aria-label={`Ver contato de ${lead.contactName}`}
+        onClick={() => setOpen(true)}
+      >
+        Ver contato
+      </button>
+      {open ? (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) close();
+          }}
+        >
+          <section
+            className="modal-card contact-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={titleId}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") close();
+            }}
+          >
+            <header className="treatment-modal__header">
+              <div>
+                <p className="eyebrow">Contato</p>
+                <h3 id={titleId}>Contato de {lead.contactName}</h3>
+              </div>
+              <button
+                ref={closeRef}
+                type="button"
+                className="secondary-button"
+                aria-label="Fechar contato"
+                onClick={close}
+              >
+                Fechar
+              </button>
+            </header>
+            <dl className="contact-modal__details">
+              <div>
+                <dt>Telefone</dt>
+                <dd>{formatPhone(lead.phoneDisplay)}</dd>
+              </div>
+              <div>
+                <dt>E-mail</dt>
+                <dd>{formatText(lead.email)}</dd>
+              </div>
+            </dl>
+          </section>
+        </div>
+      ) : null}
+    </>
+  );
+}
+````
+
 ## Snapshot de código: `apps/web/src/components/lead-table.tsx`
 
 ````tsx
@@ -17375,6 +17723,7 @@ import {
   formatDateTime,
   formatDisqualificationMarker,
 } from "../lib/dashboard/format";
+import { LeadContactModal } from "./lead-contact-modal";
 import { LeadTreatmentModal } from "./lead-treatment-modal";
 import { LeadTransferModal } from "./lead-transfer-modal";
 
@@ -17452,7 +17801,7 @@ export function LeadTable({ leads, role, transferTargets = [] }: LeadTableProps)
             <tr>
               <th>Nome</th>
               {role === "admin" ? <th>Responsável</th> : null}
-              <th>Telefone</th>
+              <th>Contato</th>
               <th>Situação</th>
               <th>Marcador</th>
               <th>Atribuído em</th>
@@ -17470,7 +17819,7 @@ export function LeadTable({ leads, role, transferTargets = [] }: LeadTableProps)
                     <strong>{currentLead.contactName}</strong>
                   </td>
                   {role === "admin" ? <td>{currentLead.sellerName}</td> : null}
-                  <td>{formatBrazilianPhone(currentLead.phoneDisplay)}</td>
+                  <td><LeadContactModal lead={currentLead} /></td>
                   <td>
                     <span className={statusClass(currentLead.commercialStatus)}>
                       {formatCommercialStatus(currentLead.commercialStatus)}
@@ -17659,6 +18008,23 @@ afterEach(() => {
 });
 
 describe("acessibilidade e interação do modal de tratativa", () => {
+  it("abre os dados de contato do lead pela coluna Contato", async () => {
+    const user = userEvent.setup();
+    render(<LeadTable leads={[lead]} role="seller" />);
+
+    expect(screen.getByRole("columnheader", { name: "Contato" })).toBeTruthy();
+    const trigger = screen.getByRole("button", { name: "Ver contato de Débora Souza" });
+    await user.click(trigger);
+
+    expect(screen.getByRole("dialog", { name: "Contato de Débora Souza" })).toBeTruthy();
+    expect(screen.getByText("(11) 98830-8029")).toBeTruthy();
+    expect(screen.getByText("debora@example.com")).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "Fechar contato" }));
+    expect(screen.queryByRole("dialog", { name: "Contato de Débora Souza" })).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
   it("foca o primeiro controle de leitura, prende Tab e devolve foco após Escape", async () => {
     const user = userEvent.setup();
     render(<LeadTreatmentModal lead={lead} mode="read" />);
@@ -17928,7 +18294,9 @@ describe("tabela de leads e tratativa", () => {
     expect(admin).not.toContain("Empresa da Débora");
     expect(admin).not.toContain("Campanha WTG");
     expect(admin).not.toContain("E-mail");
-    expect(admin).toContain("(11) 98830-8029");
+    expect(admin).toContain("Contato");
+    expect(admin).toContain("Ver contato de Débora Souza");
+    expect(admin).not.toContain("(11) 98830-8029");
     expect(admin).toContain("2 comentários");
     expect(admin).not.toContain("Registrar tratativa");
     expect(seller).not.toContain("Responsável");
