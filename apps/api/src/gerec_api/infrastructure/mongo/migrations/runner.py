@@ -18,9 +18,13 @@ _operacao_comercial = import_module(
 _remove_operational_sla = import_module(
     "gerec_api.infrastructure.mongo.migrations.20260904_remove_operational_sla"
 )
+_initialize_new_lead_notification_cursor = import_module(
+    "gerec_api.infrastructure.mongo.migrations.20260914_initialize_new_lead_notification_cursor"
+)
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     (_operacao_comercial.VERSION, _operacao_comercial.apply),
     (_remove_operational_sla.VERSION, _remove_operational_sla.apply),
+    (_initialize_new_lead_notification_cursor.VERSION, _initialize_new_lead_notification_cursor.apply),
 )
 
 

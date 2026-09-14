@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import UTC, datetime, timedelta
+from importlib import import_module
 from types import SimpleNamespace
 from typing import Any
 
@@ -10,6 +12,10 @@ import pytest
 
 from gerec_api.infrastructure.mongo.migrations import runner
 from gerec_api.infrastructure.mongo.migrations.runner import ReplicaSetRequiredError, run_migrations
+
+initialize_new_lead_notification_cursor = import_module(
+    "gerec_api.infrastructure.mongo.migrations.20260914_initialize_new_lead_notification_cursor"
+).apply
 
 
 class FakeCollection:
@@ -22,6 +28,19 @@ class FakeCollection:
     def insert_one(self, document: dict[str, Any], **_: Any) -> SimpleNamespace:
         self.documents.append(deepcopy(document))
         return SimpleNamespace(inserted_id=document.get("_id"))
+
+    def update_many(self, query: dict[str, Any], update: dict[str, Any], **_: Any) -> SimpleNamespace:
+        updated = 0
+        for document in self.documents:
+            if all(
+                document.get(key) == value
+                if not isinstance(value, dict)
+                else value.get("$exists") is (key in document)
+                for key, value in query.items()
+            ):
+                document.update(update["$set"])
+                updated += 1
+        return SimpleNamespace(matched_count=updated, modified_count=updated)
 
 
 class FakeSession:
@@ -125,3 +144,21 @@ def test_runner_rolls_back_migration_writes_when_the_callback_fails(monkeypatch)
 
     assert database["projection"].documents == []
     assert database["schema_migrations"].documents == []
+
+
+def test_cursor_migration_initializes_only_missing_sellers_once() -> None:
+    """Breaks if a replay overwrites an acknowledged cursor or initializes non-sellers."""
+    database = FakeDatabase({"ok": 1, "setName": "rs0"})
+    missing_cursor_seller = {"_id": "seller-missing", "role": "seller"}
+    existing = datetime(2026, 9, 1, tzinfo=UTC)
+    existing_cursor_seller = {"_id": "seller-existing", "role": "seller", "newLeadsSeenAt": existing}
+    admin = {"_id": "admin", "role": "admin"}
+    database["users"].documents.extend([missing_cursor_seller, existing_cursor_seller, admin])
+    now = datetime(2026, 9, 14, tzinfo=UTC)
+
+    initialize_new_lead_notification_cursor(database, session=None, now=lambda: now)
+    initialize_new_lead_notification_cursor(database, session=None, now=lambda: now + timedelta(days=1))
+
+    assert missing_cursor_seller["newLeadsSeenAt"] == now
+    assert existing_cursor_seller["newLeadsSeenAt"] == existing
+    assert "newLeadsSeenAt" not in admin

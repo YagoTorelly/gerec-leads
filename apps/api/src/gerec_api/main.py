@@ -9,6 +9,7 @@ from gerec_api.auth.permissions import DashboardService
 from gerec_api.config import Settings
 from gerec_api.domain.business_time import BusinessClock, MongoHolidayRepository
 from gerec_api.domain.leads import LeadService
+from gerec_api.domain.lead_notifications import LeadNotificationService
 from gerec_api.domain.operations import OperationsService
 from gerec_api.domain.queue import QueueService
 from gerec_api.domain.user_administration import UserAdministrationService
@@ -17,6 +18,7 @@ from gerec_api.infrastructure.mongo import bootstrap
 from gerec_api.infrastructure.mongo.clock import MongoClock
 from gerec_api.infrastructure.mongo.collections import MongoCollections
 from gerec_api.infrastructure.mongo.lead_repository import LeadRepository
+from gerec_api.infrastructure.mongo.lead_notification_repository import MongoLeadNotificationRepository
 from gerec_api.infrastructure.mongo.operations_repository import MongoOperationsRepository
 from gerec_api.infrastructure.mongo.queue_repository import QueueRepository
 from gerec_api.infrastructure.mongo.user_repository import UserRepository
@@ -26,6 +28,7 @@ from gerec_api.routes.operations import router as operations_router
 from gerec_api.routes.queue import router as queue_router
 from gerec_api.routes.dashboard import router as dashboard_router
 from gerec_api.routes.admin import router as admin_router
+from gerec_api.routes.lead_notifications import router as lead_notifications_router
 
 
 API_CONTRACT_VERSION = "1"
@@ -50,10 +53,14 @@ def create_app(
     app.state.auth_service = auth_service if auth_service is not None else AuthService(database)
     app.state.dashboard_service = DashboardService(database)
     app.state.lead_service = LeadService(LeadRepository(database))
+    database_clock = MongoClock(database)
+    app.state.lead_notification_service = LeadNotificationService(
+        MongoLeadNotificationRepository(database),
+        now=database_clock.now,
+    )
     business_clock = BusinessClock(
         MongoHolidayRepository(database[MongoCollections.HOLIDAYS])
     )
-    database_clock = MongoClock(database)
     app.state.queue_service = QueueService(
         QueueRepository(database)
     )
@@ -85,4 +92,5 @@ def create_app(
     app.include_router(operations_router)
     app.include_router(dashboard_router)
     app.include_router(admin_router)
+    app.include_router(lead_notifications_router)
     return app

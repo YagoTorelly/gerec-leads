@@ -15,7 +15,10 @@ SCHEMA_VALIDATORS: Final[dict[str, dict[str, Any]]] = {
         "$jsonSchema": {
             "bsonType": "object",
             "required": ["emailNormalized"],
-            "properties": {"emailNormalized": {"bsonType": "string", "minLength": 1}},
+            "properties": {
+                "emailNormalized": {"bsonType": "string", "minLength": 1},
+                "newLeadsSeenAt": {"bsonType": ["date", "null"]},
+            },
         }
     },
     MongoCollections.SOURCE_RECORDS: {

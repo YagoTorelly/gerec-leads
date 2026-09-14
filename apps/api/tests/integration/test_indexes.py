@@ -105,6 +105,7 @@ def test_index_contract_covers_each_persisted_identity_and_active_lifecycle() ->
     assert definitions["notification_incidents_outbox_event_unique"].keys == (("outboxEventId", 1),)
     assert definitions["lead_treatments_lead_created_at"].keys == (("leadId", 1), ("createdAt", 1))
     assert definitions["lead_treatments_lead_created_at"].unique is False
+    assert definitions["leads_assignee_assigned_at"].keys == (("assigneeId", 1), ("assignedAt", 1))
     assert definitions["lead_treatments_lead_idempotency_key_unique"].keys == (("leadId", 1), ("idempotencyKey", 1))
     assert definitions["seller_queue_seller_unique"].keys == (("sellerId", 1),)
     assert definitions["seller_queue_position_present_unique"].partial_filter == {
@@ -118,6 +119,7 @@ def test_index_contract_covers_each_persisted_identity_and_active_lifecycle() ->
         not in {
             "lead_treatments_lead_created_at",
             "leads_assignee_created_at",
+            "leads_assignee_assigned_at",
             "lead_treatments_seller_created_at",
         }
     )
