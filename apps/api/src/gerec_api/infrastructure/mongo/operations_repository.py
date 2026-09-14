@@ -315,7 +315,6 @@ class MongoOperationsRepository:
         self._require_current_seller(lead, actor_id, actor_role)
         lead_before = deepcopy(lead)
         treatment_id = ObjectId()
-        effective_disqualification = bool(lead.get("isDisqualified")) or command.is_disqualified
         comment_count = int(lead.get("commentCount", 0)) + 1
 
         self._lead_treatments.insert_one(
@@ -334,7 +333,7 @@ class MongoOperationsRepository:
 
         update: dict[str, Any] = {
             "commercialStatus": command.commercial_status,
-            "isDisqualified": effective_disqualification,
+            "isDisqualified": command.is_disqualified,
             "commentCount": comment_count,
             "lastCommentAt": now,
             "updatedAt": now,
@@ -364,7 +363,7 @@ class MongoOperationsRepository:
             str(treatment_id),
             "recorded",
             command.commercial_status,
-            effective_disqualification,
+            command.is_disqualified,
             comment_count,
             lead_after["updatedAt"],
         )

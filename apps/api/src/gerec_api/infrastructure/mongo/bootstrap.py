@@ -51,7 +51,7 @@ SCHEMA_VALIDATORS: Final[dict[str, dict[str, Any]]] = {
                 "companyId": {"bsonType": "objectId"},
                 "campaignId": {"bsonType": "objectId"},
                 "archivedAt": {"bsonType": ["date", "null"]},
-                "commercialStatus": {"enum": ["undefined", "negotiation", "won"]},
+                "commercialStatus": {"enum": ["undefined", "potential", "negotiation", "won"]},
                 "isDisqualified": {"bsonType": "bool"},
                 "commentCount": {"bsonType": "int", "minimum": 0},
                 "lastCommentAt": {"bsonType": ["date", "null"]},

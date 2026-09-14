@@ -15,8 +15,8 @@ OUTCOMES = frozenset(
     {"qualified_follow_up", "qualified_closed_no_conversion", "disqualified", "won"}
 )
 DISQUALIFICATION_REASONS = frozenset({"no_answer_after_5_attempts", "no_cnpj", "outside_sp"})
-COMMERCIAL_STATUSES = frozenset({"undefined", "negotiation", "won"})
-CommercialStatus = Literal["undefined", "negotiation", "won"]
+COMMERCIAL_STATUSES = frozenset({"undefined", "potential", "negotiation", "won"})
+CommercialStatus = Literal["undefined", "potential", "negotiation", "won"]
 
 
 @dataclass(frozen=True)

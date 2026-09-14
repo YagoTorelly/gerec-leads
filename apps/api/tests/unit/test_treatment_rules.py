@@ -92,6 +92,21 @@ def test_treatment_requires_a_closed_commercial_status() -> None:
     assert persistence.treatments == []
 
 
+def test_treatment_accepts_potential_status() -> None:
+    """Breaks if the approved potential primary situation is rejected."""
+    result = _service(RecordingPersistence()).register_treatment(
+        TreatmentCommand(
+            "lead-1",
+            "Cliente demonstrou interesse",
+            "potential",
+            False,
+            "potential",
+        )
+    )
+
+    assert result.commercial_status == "potential"
+
+
 def test_treatment_rejects_disqualification_without_a_useful_comment() -> None:
     """Breaks if the additional disqualification marker can be set without context."""
     persistence = RecordingPersistence()

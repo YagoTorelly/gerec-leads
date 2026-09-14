@@ -45,7 +45,7 @@ class OutcomeRequest(BaseModel):
 
 class TreatmentRequest(BaseModel):
     comment: str = Field(min_length=6, max_length=2_000)
-    commercial_status: Literal["undefined", "negotiation", "won"] = Field(
+    commercial_status: Literal["undefined", "potential", "negotiation", "won"] = Field(
         alias="commercialStatus"
     )
     is_disqualified: bool = Field(alias="isDisqualified")

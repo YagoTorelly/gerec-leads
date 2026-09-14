@@ -628,8 +628,8 @@ def test_treatment_materializes_projection_records_event_and_is_idempotent() -> 
     ]
 
 
-def test_won_plus_disqualified_closes_sla_and_later_treatment_does_not_reopen_it() -> None:
-    """Breaks if the marker overwrites won or permits a later SLA reactivation."""
+def test_later_treatment_removes_current_marker_and_preserves_history() -> None:
+    """Breaks if a later false marker remains sticky or mutates prior treatment history."""
     database = FakeDatabase()
     lead_id, _, seller_id, cycle_id = _seed_assigned_lead(database)
 
@@ -643,9 +643,13 @@ def test_won_plus_disqualified_closes_sla_and_later_treatment_does_not_reopen_it
     lead = database["leads"].find_one({"_id": lead_id})
     assert result.commercial_status == "won"
     assert result.is_disqualified is True
-    assert later.is_disqualified is True
+    assert later.is_disqualified is False
     assert lead["commercialStatus"] == "won"
-    assert lead["isDisqualified"] is True
+    assert lead["isDisqualified"] is False
+    assert [treatment["isDisqualified"] for treatment in database["lead_treatments"].documents] == [
+        True,
+        False,
+    ]
     assert len(database["feedback_cycles"].documents) == 1
 
 
