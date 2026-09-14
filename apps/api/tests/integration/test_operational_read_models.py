@@ -353,6 +353,20 @@ def test_admin_treatments_are_paginated_descending_and_seller_cannot_read_anothe
         service.lead_treatments_for_user("lead-b", _seller_a())
 
 
+def test_read_models_preserve_potential_commercial_status() -> None:
+    """Breaks if an approved potential status is downgraded while being read."""
+    database = _database()
+    database["leads"].documents[0]["commercialStatus"] = "potential"
+    database["lead_treatments"].documents[1]["commercialStatus"] = "potential"
+    service = DashboardService(database)
+
+    lead = service.for_user(_seller_a())["leads"]["items"][0]
+    treatment = service.lead_treatments_for_user("lead-a", _seller_a())["items"][0]
+
+    assert lead["commercialStatus"] == "potential"
+    assert treatment["commercialStatus"] == "potential"
+
+
 def test_previous_seller_cannot_read_treatments_after_lead_transfer() -> None:
     database = _database()
     database["leads"].documents[0]["assigneeId"] = "seller-b"

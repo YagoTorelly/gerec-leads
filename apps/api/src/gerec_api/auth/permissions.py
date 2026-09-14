@@ -514,7 +514,7 @@ def _phone_without_country_code(value: Any) -> str:
 
 def _commercial_status(document: Mapping[str, Any]) -> str:
     direct = document.get("commercialStatus")
-    if direct in {"undefined", "negotiation", "won"}:
+    if direct in {"undefined", "potential", "negotiation", "won"}:
         return str(direct)
     if document.get("conversionStatus") == "won":
         return "won"
