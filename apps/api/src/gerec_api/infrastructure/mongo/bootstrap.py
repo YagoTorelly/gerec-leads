@@ -18,6 +18,7 @@ SCHEMA_VALIDATORS: Final[dict[str, dict[str, Any]]] = {
             "properties": {
                 "emailNormalized": {"bsonType": "string", "minLength": 1},
                 "newLeadsSeenAt": {"bsonType": ["date", "null"]},
+                "newLeadsSeenAssignmentSequence": {"bsonType": ["int", "null"], "minimum": 0},
             },
         }
     },
@@ -58,6 +59,7 @@ SCHEMA_VALIDATORS: Final[dict[str, dict[str, Any]]] = {
                 "isDisqualified": {"bsonType": "bool"},
                 "commentCount": {"bsonType": "int", "minimum": 0},
                 "lastCommentAt": {"bsonType": ["date", "null"]},
+                "assignmentSequence": {"bsonType": "int", "minimum": 1},
             },
         }
     },

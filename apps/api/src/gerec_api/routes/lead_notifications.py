@@ -17,6 +17,7 @@ router = APIRouter(tags=["lead-notifications"])
 class AcknowledgeNewLeadNotificationsRequest(BaseModel):
     watermark: datetime
     acknowledgement_token: str = Field(alias="acknowledgementToken", min_length=1, max_length=200)
+    watermark_sequence: int = Field(alias="watermarkSequence", ge=0)
 
 
 def get_lead_notification_service(request: Request) -> LeadNotificationService:
@@ -52,6 +53,7 @@ def acknowledge_new_lead_notifications(
             payload.watermark,
             payload.acknowledgement_token,
             _session_token(request),
+            payload.watermark_sequence,
         )
     except ValueError as error:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error

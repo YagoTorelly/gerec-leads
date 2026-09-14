@@ -7,6 +7,7 @@ from time import sleep
 from typing import Any, Callable, TypeVar
 
 from bson import ObjectId
+from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 from gerec_api.domain.queue import (
@@ -584,6 +585,7 @@ class QueueRepository:
             "commandId": command_id,
         }
         assignment_id = self._assignments.insert_one(assignment, session=session).inserted_id
+        assignment_sequence = self._next_assignment_sequence(session)
         lead_update = {
             "assignmentStatus": "assigned",
             "assigneeId": seller_id,
@@ -591,6 +593,7 @@ class QueueRepository:
             "assignmentType": assignment_type,
             "parkReason": None,
             "assignedAt": now,
+            "assignmentSequence": assignment_sequence,
             "updatedAt": now,
         }
         updated = self._leads.update_one(
@@ -642,6 +645,17 @@ class QueueRepository:
             status="assigned",
             owner_id=str(owner_id) if owner_id is not None else None,
         )
+
+    def _next_assignment_sequence(self, session: Any) -> int:
+        state = self._queue_state.find_one_and_update(
+            {"_id": QUEUE_STATE_ID},
+            {"$inc": {"assignmentSequence": 1}},
+            return_document=ReturnDocument.AFTER,
+            session=session,
+        )
+        if state is None or not isinstance(state.get("assignmentSequence"), int):
+            raise QueueStateError("global queue state is not initialized")
+        return int(state["assignmentSequence"])
 
     def _seller_states(self, now: datetime, session: Any) -> list[SellerState]:
         queue_documents = sorted(

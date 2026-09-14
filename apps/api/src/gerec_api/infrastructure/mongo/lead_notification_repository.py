@@ -22,18 +22,38 @@ class MongoLeadNotificationRepository:
     def __init__(self, database: Any) -> None:
         self._users = database[MongoCollections.USERS]
         self._leads = database[MongoCollections.LEADS]
+        self._queue_state = database[MongoCollections.QUEUE_STATE]
 
-    def for_seller(self, seller_id: str, watermark: datetime) -> tuple[NewLeadNotification, ...]:
+    def watermark_sequence(self) -> int:
+        state = self._queue_state.find_one({"_id": "global"})
+        value = 0 if state is None else state.get("assignmentSequence", 0)
+        return int(value) if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+    def for_seller(
+        self,
+        seller_id: str,
+        watermark: datetime,
+        watermark_sequence: int,
+    ) -> tuple[NewLeadNotification, ...]:
         seller = self._seller(seller_id)
         seen_at = seller.get("newLeadsSeenAt")
         if not isinstance(seen_at, datetime):
             raise LeadNotificationStateError("seller notification cursor is not initialized")
-        cursor = self._leads.find(
-            {
+        if watermark_sequence:
+            seen_sequence = seller.get("newLeadsSeenAssignmentSequence", 0)
+            seen_sequence = int(seen_sequence) if isinstance(seen_sequence, int) and not isinstance(seen_sequence, bool) else 0
+            query = {
+                "assigneeId": {"$in": _identity_values(seller_id)},
+                "assignmentSequence": {"$gt": seen_sequence, "$lte": watermark_sequence},
+            }
+            sort = [("assignmentSequence", ASCENDING), ("_id", ASCENDING)]
+        else:
+            query = {
                 "assigneeId": {"$in": _identity_values(seller_id)},
                 "assignedAt": {"$gt": seen_at, "$lte": watermark},
             }
-        ).sort([("assignedAt", ASCENDING), ("_id", ASCENDING)])
+            sort = [("assignedAt", ASCENDING), ("_id", ASCENDING)]
+        cursor = self._leads.find(query).sort(sort)
         return tuple(
             NewLeadNotification(
                 lead_id=str(lead["_id"]),
@@ -43,10 +63,10 @@ class MongoLeadNotificationRepository:
             for lead in cursor
         )
 
-    def acknowledge(self, seller_id: str, watermark: datetime) -> datetime:
+    def acknowledge(self, seller_id: str, watermark: datetime, watermark_sequence: int = 0) -> datetime:
         seller = self._users.find_one_and_update(
             {"_id": {"$in": _identity_values(seller_id)}, "role": "seller"},
-            {"$max": {"newLeadsSeenAt": watermark}},
+            {"$max": {"newLeadsSeenAt": watermark, "newLeadsSeenAssignmentSequence": watermark_sequence}},
             return_document=ReturnDocument.AFTER,
         )
         if seller is None or not isinstance(seller.get("newLeadsSeenAt"), datetime):

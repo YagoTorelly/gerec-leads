@@ -4,11 +4,15 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor
+import os
 from typing import Any
 
 from bson import ObjectId
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pymongo import MongoClient
+from pymongo.errors import PyMongoError, ServerSelectionTimeoutError
 
 from gerec_api.auth.dependencies import get_current_user
 from gerec_api.auth.sessions import CurrentUser
@@ -202,7 +206,7 @@ def test_notification_routes_deny_admin_and_other_seller() -> None:
     assert client.get("/api/lead-notifications/new").status_code == 403
     assert client.post(
         "/api/lead-notifications/new/acknowledge",
-        json={"watermark": NOW.isoformat(), "acknowledgementToken": "not-for-admin"},
+        json={"watermark": NOW.isoformat(), "acknowledgementToken": "not-for-admin", "watermarkSequence": 0},
     ).status_code == 403
 
     app.dependency_overrides[get_current_user] = lambda: _seller(other_seller_id)
@@ -230,19 +234,143 @@ def test_acknowledgement_requires_a_watermark_receipt_from_the_same_session() ->
     issued = client.get("/api/lead-notifications/new").json()
     forged = client.post(
         "/api/lead-notifications/new/acknowledge",
-        json={"watermark": issued["watermark"], "acknowledgementToken": "forged"},
+        json={"watermark": issued["watermark"], "acknowledgementToken": "forged", "watermarkSequence": issued["watermarkSequence"]},
     )
 
     assert forged.status_code == 422
     client.cookies.set("gerec_session", "seller-session-b")
     wrong_session = client.post(
         "/api/lead-notifications/new/acknowledge",
-        json={"watermark": issued["watermark"], "acknowledgementToken": issued["acknowledgementToken"]},
+        json={"watermark": issued["watermark"], "acknowledgementToken": issued["acknowledgementToken"], "watermarkSequence": issued["watermarkSequence"]},
     )
     assert wrong_session.status_code == 422
     client.cookies.set("gerec_session", "seller-session-a")
     accepted = client.post(
         "/api/lead-notifications/new/acknowledge",
-        json={"watermark": issued["watermark"], "acknowledgementToken": issued["acknowledgementToken"]},
+        json={"watermark": issued["watermark"], "acknowledgementToken": issued["acknowledgementToken"], "watermarkSequence": issued["watermarkSequence"]},
     )
     assert accepted.status_code == 200
+
+
+def test_same_tick_assignment_after_snapshot_survives_the_prior_acknowledgement() -> None:
+    """Breaks if an assignment committed after a snapshot shares its timestamp and is still acknowledged."""
+    seller_id = ObjectId()
+    first_lead = ObjectId()
+    later_lead = ObjectId()
+    database = Database(
+        users=Collection(
+            [
+                {
+                    "_id": seller_id,
+                    "role": "seller",
+                    "newLeadsSeenAt": NOW - timedelta(minutes=5),
+                    "newLeadsSeenAssignmentSequence": 0,
+                }
+            ]
+        ),
+        queue_state=Collection([{"_id": "global", "assignmentSequence": 1}]),
+        leads=Collection(
+            [
+                {
+                    "_id": first_lead,
+                    "assigneeId": seller_id,
+                    "assignedAt": NOW,
+                    "assignmentSequence": 1,
+                    "contactName": "Primeiro",
+                }
+            ]
+        ),
+    )
+    service = _service(database)
+
+    snapshot = service.for_seller(_seller(seller_id), "seller-session")
+    database["leads"].documents.append(
+        {
+            "_id": later_lead,
+            "assigneeId": seller_id,
+            "assignedAt": NOW,
+            "assignmentSequence": 2,
+            "contactName": "Posterior no mesmo tick",
+        }
+    )
+    database["queue_state"].documents[0]["assignmentSequence"] = 2
+
+    service.acknowledge(
+        _seller(seller_id),
+        snapshot.watermark,
+        snapshot.acknowledgement_token,
+        "seller-session",
+        snapshot.watermark_sequence,
+    )
+
+    assert snapshot.watermark_sequence == 1
+    assert [item.lead_id for item in service.for_seller(_seller(seller_id), "seller-session").items] == [str(later_lead)]
+
+
+def test_replica_set_acknowledgements_keep_max_and_same_tick_assignment_pending() -> None:
+    """Uses MongoDB when available to prove atomic $max and the persistent assignment sequence fence."""
+    client = MongoClient(
+        os.getenv("MONGODB_URI", "mongodb://localhost:27017/?replicaSet=rs0"),
+        serverSelectionTimeoutMS=1_500,
+    )
+    try:
+        hello = client.admin.command("hello")
+    except (PyMongoError, ServerSelectionTimeoutError) as error:
+        import pytest
+
+        pytest.skip(f"MongoDB replica set indisponível externamente: {error}")
+    if not hello.get("setName"):
+        import pytest
+
+        pytest.skip("MongoDB replica set indisponível externamente")
+
+    database = client[f"gerec_notifications_test_{ObjectId()}"]
+    seller_id = ObjectId()
+    try:
+        database["users"].insert_one(
+            {
+                "_id": seller_id,
+                "role": "seller",
+                "newLeadsSeenAt": NOW - timedelta(minutes=5),
+                "newLeadsSeenAssignmentSequence": 0,
+            }
+        )
+        database["queue_state"].insert_one({"_id": "global", "assignmentSequence": 1})
+        database["leads"].insert_one(
+            {"_id": ObjectId(), "assigneeId": seller_id, "assignedAt": NOW, "assignmentSequence": 1}
+        )
+        service = _service(database)
+        first = service.for_seller(_seller(seller_id), "seller-session")
+        later_lead_id = ObjectId()
+        database["leads"].insert_one(
+            {"_id": later_lead_id, "assigneeId": seller_id, "assignedAt": NOW, "assignmentSequence": 2}
+        )
+        database["queue_state"].update_one({"_id": "global"}, {"$set": {"assignmentSequence": 2}})
+        service.acknowledge(
+            _seller(seller_id),
+            first.watermark,
+            first.acknowledgement_token,
+            "seller-session",
+            first.watermark_sequence,
+        )
+        second = service.for_seller(_seller(seller_id), "seller-session")
+        assert [item.lead_id for item in second.items] == [str(later_lead_id)]
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [
+                executor.submit(
+                    service.acknowledge,
+                    _seller(seller_id),
+                    current.watermark,
+                    current.acknowledgement_token,
+                    "seller-session",
+                    current.watermark_sequence,
+                )
+                for current in (second, first)
+            ]
+            [future.result() for future in futures]
+
+        assert database["users"].find_one({"_id": seller_id})["newLeadsSeenAssignmentSequence"] == 2
+    finally:
+        client.drop_database(database.name)
+        client.close()

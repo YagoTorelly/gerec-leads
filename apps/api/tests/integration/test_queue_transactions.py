@@ -83,6 +83,15 @@ class FakeCollection:
         self.documents.append(stored)
         return SimpleNamespace(matched_count=0, modified_count=0, upserted_id=stored["_id"])
 
+    def find_one_and_update(self, query: dict[str, Any], update: dict[str, Any], **_: Any):
+        for document in self.documents:
+            if _matches(document, query):
+                document.update(deepcopy(update.get("$set", {})))
+                for key, delta in update.get("$inc", {}).items():
+                    document[key] = document.get(key, 0) + delta
+                return deepcopy(document)
+        return None
+
 
 class FakeDatabase:
     def __init__(self) -> None:

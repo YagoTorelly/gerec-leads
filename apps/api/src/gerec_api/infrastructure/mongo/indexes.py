@@ -119,6 +119,11 @@ INDEXES: Final[tuple[MongoIndex, ...]] = (
         "leads_assignee_assigned_at",
     ),
     MongoIndex(
+        MongoCollections.LEADS,
+        (("assigneeId", ASCENDING), ("assignmentSequence", ASCENDING)),
+        "leads_assignee_assignment_sequence",
+    ),
+    MongoIndex(
         MongoCollections.SALES,
         (("leadId", ASCENDING),),
         "sales_active_lead_unique",

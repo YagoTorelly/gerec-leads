@@ -34,19 +34,23 @@ class NewLeadNotificationSnapshot:
     items: tuple[NewLeadNotification, ...]
     watermark: datetime
     acknowledgement_token: str
+    watermark_sequence: int = 0
 
     def to_document(self) -> dict[str, Any]:
         return {
             "items": [item.to_document() for item in self.items],
             "watermark": self.watermark.isoformat(),
             "acknowledgementToken": self.acknowledgement_token,
+            "watermarkSequence": self.watermark_sequence,
         }
 
 
 class LeadNotificationPersistence(Protocol):
-    def for_seller(self, seller_id: str, watermark: datetime) -> tuple[NewLeadNotification, ...]: ...
+    def watermark_sequence(self) -> int: ...
 
-    def acknowledge(self, seller_id: str, watermark: datetime) -> datetime: ...
+    def for_seller(self, seller_id: str, watermark: datetime, watermark_sequence: int) -> tuple[NewLeadNotification, ...]: ...
+
+    def acknowledge(self, seller_id: str, watermark: datetime, watermark_sequence: int) -> datetime: ...
 
 
 class LeadNotificationService:
@@ -66,10 +70,12 @@ class LeadNotificationService:
     def for_seller(self, user: CurrentUser, session_token: str) -> NewLeadNotificationSnapshot:
         self._require_seller(user)
         watermark = self._timestamp(self._now(), label="clock")
+        watermark_sequence = self._persistence.watermark_sequence()
         return NewLeadNotificationSnapshot(
-            items=self._persistence.for_seller(user.id, watermark),
+            items=self._persistence.for_seller(user.id, watermark, watermark_sequence),
             watermark=watermark,
-            acknowledgement_token=self._receipt(user, session_token, watermark),
+            acknowledgement_token=self._receipt(user, session_token, watermark, watermark_sequence),
+            watermark_sequence=watermark_sequence,
         )
 
     def acknowledge(
@@ -78,20 +84,23 @@ class LeadNotificationService:
         watermark: datetime,
         acknowledgement_token: str,
         session_token: str,
+        watermark_sequence: int = 0,
     ) -> datetime:
         self._require_seller(user)
         received = self._timestamp(watermark, label="notification watermark")
+        if not isinstance(watermark_sequence, int) or isinstance(watermark_sequence, bool) or watermark_sequence < 0:
+            raise ValueError("notification watermark sequence is invalid")
         if received > self._timestamp(self._now(), label="clock"):
             raise ValueError("notification watermark cannot be in the future")
         if not isinstance(acknowledgement_token, str) or not compare_digest(
             acknowledgement_token,
-            self._receipt(user, session_token, received),
+            self._receipt(user, session_token, received, watermark_sequence),
         ):
             raise ValueError("notification watermark was not issued for this session")
-        return self._persistence.acknowledge(user.id, received)
+        return self._persistence.acknowledge(user.id, received, watermark_sequence)
 
-    def _receipt(self, user: CurrentUser, session_token: str, watermark: datetime) -> str:
-        message = "\n".join((user.id, session_token, watermark.isoformat())).encode("utf-8")
+    def _receipt(self, user: CurrentUser, session_token: str, watermark: datetime, watermark_sequence: int = 0) -> str:
+        message = "\n".join((user.id, session_token, watermark.isoformat(), str(watermark_sequence))).encode("utf-8")
         return hmac_new(self._signing_key, message, sha256).hexdigest()
 
     @staticmethod

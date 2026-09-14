@@ -88,6 +88,8 @@ class UserRepository:
         }
         if command.role == "seller":
             document["newLeadsSeenAt"] = now
+            state = self._queue_state.find_one({"_id": QUEUE_STATE_ID}, session=session)
+            document["newLeadsSeenAssignmentSequence"] = int((state or {}).get("assignmentSequence", 0))
         self._users.insert_one(document, session=session)
         paused: bool | None = None
         if command.role == "seller":
@@ -202,6 +204,7 @@ class UserRepository:
                     "_id": QUEUE_STATE_ID,
                     "nextSellerId": user_id,
                     "version": 0,
+                    "assignmentSequence": 0,
                     "createdAt": now,
                     "updatedAt": now,
                 },
