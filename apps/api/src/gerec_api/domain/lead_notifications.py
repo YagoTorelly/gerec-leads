@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from hashlib import sha256
+from hmac import compare_digest, new as hmac_new
 from typing import Any, Callable, Protocol
 
 from gerec_api.auth.sessions import CurrentUser
@@ -31,11 +33,13 @@ class NewLeadNotificationSnapshot:
 
     items: tuple[NewLeadNotification, ...]
     watermark: datetime
+    acknowledgement_token: str
 
     def to_document(self) -> dict[str, Any]:
         return {
             "items": [item.to_document() for item in self.items],
             "watermark": self.watermark.isoformat(),
+            "acknowledgementToken": self.acknowledgement_token,
         }
 
 
@@ -52,25 +56,43 @@ class LeadNotificationService:
         self,
         persistence: LeadNotificationPersistence,
         *,
+        signing_key: str,
         now: Callable[[], datetime] | None = None,
     ) -> None:
         self._persistence = persistence
+        self._signing_key = signing_key.encode("utf-8")
         self._now = now or (lambda: datetime.now(UTC))
 
-    def for_seller(self, user: CurrentUser) -> NewLeadNotificationSnapshot:
+    def for_seller(self, user: CurrentUser, session_token: str) -> NewLeadNotificationSnapshot:
         self._require_seller(user)
         watermark = self._timestamp(self._now(), label="clock")
         return NewLeadNotificationSnapshot(
             items=self._persistence.for_seller(user.id, watermark),
             watermark=watermark,
+            acknowledgement_token=self._receipt(user, session_token, watermark),
         )
 
-    def acknowledge(self, user: CurrentUser, watermark: datetime) -> datetime:
+    def acknowledge(
+        self,
+        user: CurrentUser,
+        watermark: datetime,
+        acknowledgement_token: str,
+        session_token: str,
+    ) -> datetime:
         self._require_seller(user)
         received = self._timestamp(watermark, label="notification watermark")
         if received > self._timestamp(self._now(), label="clock"):
             raise ValueError("notification watermark cannot be in the future")
+        if not isinstance(acknowledgement_token, str) or not compare_digest(
+            acknowledgement_token,
+            self._receipt(user, session_token, received),
+        ):
+            raise ValueError("notification watermark was not issued for this session")
         return self._persistence.acknowledge(user.id, received)
+
+    def _receipt(self, user: CurrentUser, session_token: str, watermark: datetime) -> str:
+        message = "\n".join((user.id, session_token, watermark.isoformat())).encode("utf-8")
+        return hmac_new(self._signing_key, message, sha256).hexdigest()
 
     @staticmethod
     def _require_seller(user: CurrentUser) -> None:

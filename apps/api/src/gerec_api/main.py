@@ -56,6 +56,7 @@ def create_app(
     database_clock = MongoClock(database)
     app.state.lead_notification_service = LeadNotificationService(
         MongoLeadNotificationRepository(database),
+        signing_key=settings.app_secret.get_secret_value(),
         now=database_clock.now,
     )
     business_clock = BusinessClock(

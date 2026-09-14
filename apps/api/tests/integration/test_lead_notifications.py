@@ -78,7 +78,11 @@ def _seller(identifier: ObjectId | None = None) -> CurrentUser:
 
 
 def _service(database: Database) -> LeadNotificationService:
-    return LeadNotificationService(MongoLeadNotificationRepository(database), now=lambda: NOW)
+    return LeadNotificationService(
+        MongoLeadNotificationRepository(database),
+        signing_key="test-notification-secret",
+        now=lambda: NOW,
+    )
 
 
 def test_seller_sees_only_current_leads_after_cursor_and_acknowledges() -> None:
@@ -99,12 +103,12 @@ def test_seller_sees_only_current_leads_after_cursor_and_acknowledges() -> None:
     )
     service = _service(database)
 
-    snapshot = service.for_seller(_seller(seller_id))
+    snapshot = service.for_seller(_seller(seller_id), "seller-session")
 
     assert [item.lead_id for item in snapshot.items] == [str(new_lead)]
     assert snapshot.items[0].contact_name == "Novo"
-    assert service.acknowledge(_seller(seller_id), snapshot.watermark) == snapshot.watermark
-    assert service.for_seller(_seller(seller_id)).items == ()
+    assert service.acknowledge(_seller(seller_id), snapshot.watermark, snapshot.acknowledgement_token, "seller-session") == snapshot.watermark
+    assert service.for_seller(_seller(seller_id), "seller-session").items == ()
 
 
 def test_transfer_is_visible_to_new_owner_and_later_assignment_survives_ack() -> None:
@@ -124,17 +128,19 @@ def test_transfer_is_visible_to_new_owner_and_later_assignment_survives_ack() ->
     )
     service = _service(database)
 
-    snapshot = service.for_seller(_seller(new_owner_id))
+    snapshot = service.for_seller(_seller(new_owner_id), "new-owner-session")
     database["leads"].documents.append(
         {"_id": later_lead, "assigneeId": new_owner_id, "assignedAt": snapshot.watermark + timedelta(seconds=1), "contactName": "Posterior"}
     )
 
-    service.acknowledge(_seller(new_owner_id), snapshot.watermark)
+    service.acknowledge(_seller(new_owner_id), snapshot.watermark, snapshot.acknowledgement_token, "new-owner-session")
 
     later_service = LeadNotificationService(
-        MongoLeadNotificationRepository(database), now=lambda: NOW + timedelta(seconds=2)
+        MongoLeadNotificationRepository(database),
+        signing_key="test-notification-secret",
+        now=lambda: NOW + timedelta(seconds=2),
     )
-    assert [item.lead_id for item in later_service.for_seller(_seller(new_owner_id)).items] == [str(later_lead)]
+    assert [item.lead_id for item in later_service.for_seller(_seller(new_owner_id), "new-owner-session").items] == [str(later_lead)]
 
 
 def test_acknowledgement_uses_monotonic_max_and_rejects_future_watermarks() -> None:
@@ -145,11 +151,29 @@ def test_acknowledgement_uses_monotonic_max_and_rejects_future_watermarks() -> N
     )
     service = _service(database)
 
-    assert service.acknowledge(_seller(seller_id), NOW - timedelta(minutes=1)) == NOW - timedelta(minutes=1)
-    assert service.acknowledge(_seller(seller_id), NOW - timedelta(minutes=3)) == NOW - timedelta(minutes=1)
+    recent_service = LeadNotificationService(
+        MongoLeadNotificationRepository(database),
+        signing_key="test-notification-secret",
+        now=lambda: NOW - timedelta(minutes=1),
+    )
+    recent = recent_service.for_seller(_seller(seller_id), "seller-session")
+    assert service.acknowledge(_seller(seller_id), recent.watermark, recent.acknowledgement_token, "seller-session") == NOW - timedelta(minutes=1)
+    stale_service = LeadNotificationService(
+        MongoLeadNotificationRepository(database),
+        signing_key="test-notification-secret",
+        now=lambda: NOW - timedelta(minutes=3),
+    )
+    stale = stale_service.for_seller(_seller(seller_id), "seller-session")
+    assert service.acknowledge(_seller(seller_id), stale.watermark, stale.acknowledgement_token, "seller-session") == NOW - timedelta(minutes=1)
 
+    future_service = LeadNotificationService(
+        MongoLeadNotificationRepository(database),
+        signing_key="test-notification-secret",
+        now=lambda: NOW + timedelta(seconds=1),
+    )
+    future = future_service.for_seller(_seller(seller_id), "seller-session")
     try:
-        service.acknowledge(_seller(seller_id), NOW + timedelta(seconds=1))
+        service.acknowledge(_seller(seller_id), future.watermark, future.acknowledgement_token, "seller-session")
     except ValueError as error:
         assert str(error) == "notification watermark cannot be in the future"
     else:
@@ -176,8 +200,49 @@ def test_notification_routes_deny_admin_and_other_seller() -> None:
 
     app.dependency_overrides[get_current_user] = lambda: CurrentUser(str(ObjectId()), "admin@example.test", "admin")
     assert client.get("/api/lead-notifications/new").status_code == 403
-    assert client.post("/api/lead-notifications/new/acknowledge", json={"watermark": NOW.isoformat()}).status_code == 403
+    assert client.post(
+        "/api/lead-notifications/new/acknowledge",
+        json={"watermark": NOW.isoformat(), "acknowledgementToken": "not-for-admin"},
+    ).status_code == 403
 
     app.dependency_overrides[get_current_user] = lambda: _seller(other_seller_id)
-    assert client.get("/api/lead-notifications/new").status_code == 200
-    assert client.get("/api/lead-notifications/new").json() == {"items": [], "watermark": NOW.isoformat()}
+    response = client.get("/api/lead-notifications/new")
+    assert response.status_code == 200
+    assert response.json()["items"] == []
+    assert response.json()["watermark"] == NOW.isoformat()
+    assert isinstance(response.json()["acknowledgementToken"], str)
+
+
+def test_acknowledgement_requires_a_watermark_receipt_from_the_same_session() -> None:
+    """Breaks if a seller can forge an ACK or reuse a window receipt from another session."""
+    seller_id = ObjectId()
+    database = Database(
+        users=Collection([{"_id": seller_id, "role": "seller", "newLeadsSeenAt": NOW - timedelta(minutes=5)}]),
+        leads=Collection([{"_id": ObjectId(), "assigneeId": seller_id, "assignedAt": NOW, "contactName": "Privado"}]),
+    )
+    app = FastAPI()
+    app.state.lead_notification_service = _service(database)
+    app.include_router(router)
+    app.dependency_overrides[get_current_user] = lambda: _seller(seller_id)
+    client = TestClient(app)
+    client.cookies.set("gerec_session", "seller-session-a")
+
+    issued = client.get("/api/lead-notifications/new").json()
+    forged = client.post(
+        "/api/lead-notifications/new/acknowledge",
+        json={"watermark": issued["watermark"], "acknowledgementToken": "forged"},
+    )
+
+    assert forged.status_code == 422
+    client.cookies.set("gerec_session", "seller-session-b")
+    wrong_session = client.post(
+        "/api/lead-notifications/new/acknowledge",
+        json={"watermark": issued["watermark"], "acknowledgementToken": issued["acknowledgementToken"]},
+    )
+    assert wrong_session.status_code == 422
+    client.cookies.set("gerec_session", "seller-session-a")
+    accepted = client.post(
+        "/api/lead-notifications/new/acknowledge",
+        json={"watermark": issued["watermark"], "acknowledgementToken": issued["acknowledgementToken"]},
+    )
+    assert accepted.status_code == 200

@@ -213,6 +213,21 @@ def test_admin_creates_a_seller_at_the_end_without_exposing_password_material() 
     assert [item["position"] for item in queue] == [1, 2, 3]
 
 
+def test_new_seller_initializes_notification_cursor_at_its_transactional_creation_time() -> None:
+    """Breaks if a seller created after the cursor migration can be notified about historical leads."""
+    database = FakeDatabase()
+    _seed_admin(database)
+
+    response = _client(database).post(
+        "/api/admin/users",
+        json={"fullName": "Nova Vendedora", "email": "nova@example.test", "role": "seller", "password": "x"},
+    )
+
+    created = database["users"].find_one({"_id": ObjectId(response.json()["id"])})
+    assert created is not None
+    assert created["newLeadsSeenAt"] == created["createdAt"]
+
+
 def test_admin_creation_rejects_duplicate_email_and_blank_password() -> None:
     """Breaks if account uniqueness or the approved non-empty password rule is bypassed."""
     database = FakeDatabase()

@@ -86,6 +86,8 @@ class UserRepository:
             "createdAt": now,
             "updatedAt": now,
         }
+        if command.role == "seller":
+            document["newLeadsSeenAt"] = now
         self._users.insert_one(document, session=session)
         paused: bool | None = None
         if command.role == "seller":
