@@ -6,6 +6,7 @@ from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 import os
+from threading import Barrier, Event, Lock
 from typing import Any
 
 from bson import ObjectId
@@ -81,12 +82,75 @@ def _seller(identifier: ObjectId | None = None) -> CurrentUser:
     return CurrentUser(str(identifier or ObjectId()), "seller@example.test", "seller")
 
 
-def _service(database: Database) -> LeadNotificationService:
+class _AcknowledgementBarrier:
+    def __init__(self, participants: int = 2) -> None:
+        self._barrier = Barrier(participants)
+        self._lock = Lock()
+        self._arrivals = 0
+
+    def wait(self) -> None:
+        with self._lock:
+            self._arrivals += 1
+        self._barrier.wait(timeout=5)
+
+    @property
+    def arrivals(self) -> int:
+        with self._lock:
+            return self._arrivals
+
+
+class _BarrierCollection:
+    """Makes both workers reach MongoDB's atomic acknowledgement boundary together."""
+
+    def __init__(self, collection: Any, acknowledgement_barrier: _AcknowledgementBarrier) -> None:
+        self._collection = collection
+        self._acknowledgement_barrier = acknowledgement_barrier
+
+    def find_one_and_update(self, *args: Any, **kwargs: Any) -> Any:
+        self._acknowledgement_barrier.wait()
+        return self._collection.find_one_and_update(*args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._collection, name)
+
+
+class _BarrierAcknowledgementRepository(MongoLeadNotificationRepository):
+    def __init__(self, database: Any, acknowledgement_barrier: _AcknowledgementBarrier) -> None:
+        super().__init__(database)
+        self._users = _BarrierCollection(self._users, acknowledgement_barrier)
+
+
+def _service(
+    database: Any,
+    *,
+    repository: MongoLeadNotificationRepository | None = None,
+) -> LeadNotificationService:
     return LeadNotificationService(
-        MongoLeadNotificationRepository(database),
+        repository or MongoLeadNotificationRepository(database),
         signing_key="test-notification-secret",
         now=lambda: NOW,
     )
+
+
+def test_acknowledgement_barrier_waits_for_both_workers() -> None:
+    """Breaks if the test gate releases an ACK before its concurrent peer reaches the database boundary."""
+    barrier = _AcknowledgementBarrier()
+    first_started = Event()
+    first_released = Event()
+
+    def first_worker() -> None:
+        first_started.set()
+        barrier.wait()
+        first_released.set()
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        first = executor.submit(first_worker)
+        assert first_started.wait(timeout=1)
+        assert not first_released.wait(timeout=0.1)
+        barrier.wait()
+        first.result(timeout=1)
+
+    assert first_released.is_set()
 
 
 def test_seller_sees_only_current_leads_after_cursor_and_acknowledges() -> None:
@@ -307,8 +371,8 @@ def test_same_tick_assignment_after_snapshot_survives_the_prior_acknowledgement(
     assert [item.lead_id for item in service.for_seller(_seller(seller_id), "seller-session").items] == [str(later_lead)]
 
 
-def test_replica_set_acknowledgements_keep_max_and_same_tick_assignment_pending() -> None:
-    """Uses MongoDB when available to prove atomic $max and the persistent assignment sequence fence."""
+def test_replica_set_overlapping_acknowledgements_keep_the_highest_snapshot_sequence() -> None:
+    """Uses MongoDB when available to force overlapping ACKs at the atomic $max boundary."""
     client = MongoClient(
         os.getenv("MONGODB_URI", "mongodb://localhost:27017/?replicaSet=rs0"),
         serverSelectionTimeoutMS=1_500,
@@ -356,10 +420,15 @@ def test_replica_set_acknowledgements_keep_max_and_same_tick_assignment_pending(
         second = service.for_seller(_seller(seller_id), "seller-session")
         assert [item.lead_id for item in second.items] == [str(later_lead_id)]
 
+        acknowledgement_barrier = _AcknowledgementBarrier()
+        concurrent_service = _service(
+            database,
+            repository=_BarrierAcknowledgementRepository(database, acknowledgement_barrier),
+        )
         with ThreadPoolExecutor(max_workers=2) as executor:
             futures = [
                 executor.submit(
-                    service.acknowledge,
+                    concurrent_service.acknowledge,
                     _seller(seller_id),
                     current.watermark,
                     current.acknowledgement_token,
@@ -370,7 +439,10 @@ def test_replica_set_acknowledgements_keep_max_and_same_tick_assignment_pending(
             ]
             [future.result() for future in futures]
 
-        assert database["users"].find_one({"_id": seller_id})["newLeadsSeenAssignmentSequence"] == 2
+        persisted = database["users"].find_one({"_id": seller_id})
+        assert acknowledgement_barrier.arrivals == 2
+        assert persisted["newLeadsSeenAt"] == second.watermark
+        assert persisted["newLeadsSeenAssignmentSequence"] == second.watermark_sequence == 2
     finally:
         client.drop_database(database.name)
         client.close()
