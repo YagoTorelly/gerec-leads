@@ -1,6 +1,6 @@
 ﻿# Contexto Mestre - Gerenciador de Leads WTG
 
-> Gerado em 2026-09-14 18:39:27 UTC por `scripts/generate-master-context.ps1`.
+> Gerado em 2026-09-15 14:37:26 UTC por `scripts/generate-master-context.ps1`.
 
 ## Como usar este documento
 
@@ -8394,6 +8394,53 @@ Não foram feitos push, merge, deploy ou ações externas. Os arquivos preexiste
 
 Segredos, credenciais e acesso direto ao MongoDB não foram expostos ao navegador nem adicionados à evidência.
 
+## Evidência: `docs/evidencias/2026-09-14-notificacoes-internas-tratativas-relatorios.md`
+
+# Evidências — notificações internas, tratativas e relatórios
+
+Data da validação: 15/09/2026.
+
+## Aceitação E2E
+
+| Cenário | Resultado | Evidência |
+| --- | --- | --- |
+| Vendedora Sandra recebe a janela de novos leads, registra `Potencial` e remove o marcador atual | Aprovado | `tests/e2e/operacao-notificacoes-relatorios.spec.ts` |
+| Administrador filtra a lista pelo responsável Sandra e acessa os dois agrupamentos de relatórios | Aprovado | `tests/e2e/operacao-notificacoes-relatorios.spec.ts` |
+| Vendedora é redirecionada de `/relatorios` para `/dashboard` sem requisição a `/api/admin/reports/lead-distribution` | Aprovado | Asserção direta de URL, navegação e requisições no spec de aceitação |
+| Referências visuais integradas | Aprovado | 15 cenários E2E, incluindo 2 snapshots visuais, aprovados |
+
+O briefing indicava `apps/web/e2e`, mas o `playwright.config.ts` executa exclusivamente `tests/e2e`. O spec foi criado em `tests/e2e/operacao-notificacoes-relatorios.spec.ts` para permanecer coberto pela gate oficial, sem alterar a configuração do runner.
+
+## Capturas visuais — 1440×900
+
+| Estado validado | Arquivo |
+| --- | --- |
+| Janela interna de novos leads para Sandra | [seller-new-leads-1440x900.png](seller-new-leads-1440x900.png) |
+| Dashboard administrativo filtrado por Sandra | [admin-lead-filter-1440x900.png](admin-lead-filter-1440x900.png) |
+| Relatórios administrativos por situação e vendedor | [admin-reports-1440x900.png](admin-reports-1440x900.png) |
+
+As capturas foram produzidas com `agent-browser`, sessão isolada `task7-a5e9fbb32f66`, viewport 1440×900 e estados confirmados pela árvore de acessibilidade. As referências Playwright foram atualizadas para a composição aprovada após as Tasks 1–6.
+
+## Gates finais
+
+| Comando | Resultado real |
+| --- | --- |
+| `python -m pytest apps/api/tests -q` | 187 aprovados, 9 ignorados, em 20,73 s |
+| `npm run test` | 25 arquivos, 105 testes aprovados, em 11,42 s |
+| `npm run lint` | 0 erros; 1 aviso preexistente |
+| `npm run typecheck` | Aprovado |
+| `npm run build` | Aprovado; build otimizado concluído |
+| `npm run test:e2e` | 15 testes aprovados, em 26,1 s |
+| `git diff --check` | Aprovado após regeneração do contexto |
+
+## Aviso preexistente
+
+`apps/web/src/components/login-form.tsx:13:38` mantém o aviso `@next/next/no-img-element` para `<img>`. Não foi introduzido nem alterado nesta tarefa; o lint terminou sem erros.
+
+## Escopo da correção de fixture
+
+A fixture local E2E passou a representar a janela pendente somente para Sandra, adicionou os contratos de notificação/acknowledgement, filtro administrativo e agregação de relatórios. Também acompanha `potential` e o marcador de desqualificação da última tratativa. Nenhum arquivo de produção ou backend foi modificado.
+
 ## Evidência: `docs/evidencias/etapa-1.md`
 
 # Evidência histórica da Etapa 1
@@ -9040,7 +9087,7 @@ def verify_unknown_password(password: str) -> None:
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Mapping
 
 from bson import ObjectId
@@ -9094,6 +9141,21 @@ class PermissionService:
             return {"sellerId": {"$in": ids}}
         raise PermissionDenied(f"seller cannot read {resource}")
 
+    @classmethod
+    def dashboard_lead_scope(
+        cls, user: CurrentUser | None, *, assignee_id: str | None = None
+    ) -> dict[str, Any]:
+        """Build the dashboard lead scope without accepting a seller's override."""
+        current = cls.require_current_user(user)
+        if current.role != "admin":
+            return cls.scope_query(current, "leads")
+        if assignee_id is None:
+            return {}
+        requested_id = assignee_id.strip()
+        if not requested_id:
+            raise ValueError("assigneeId must not be empty")
+        return {"assigneeId": {"$in": _identity_values(requested_id)}}
+
 
 class DashboardService:
     """Read-model boundary with intentionally different contracts for each role.
@@ -9119,12 +9181,26 @@ class DashboardService:
         *,
         page: int = 1,
         limit: int | None = None,
+        assignee_id: str | None = None,
+        sort: str | None = None,
     ) -> dict[str, Any]:
         current = PermissionService.require_current_user(user)
         return (
-            self.for_admin(current, page=page, limit=limit)
+            self.for_admin(
+                current,
+                page=page,
+                limit=limit,
+                assignee_id=assignee_id,
+                sort=sort,
+            )
             if current.role == "admin"
-            else self.for_seller(current, page=page, limit=limit)
+            else self.for_seller(
+                current,
+                page=page,
+                limit=limit,
+                assignee_id=assignee_id,
+                sort=sort,
+            )
         )
 
     def for_admin(
@@ -9133,13 +9209,20 @@ class DashboardService:
         *,
         page: int = 1,
         limit: int | None = None,
+        assignee_id: str | None = None,
+        sort: str | None = None,
     ) -> dict[str, Any]:
         PermissionService.require_admin(user)
         current = PermissionService.require_current_user(user)
         page, page_size = self._pagination(page, limit)
         return {
             "user": _public_user(current),
-            "leads": self._lead_page({}, page, page_size),
+            "leads": self._lead_page(
+                PermissionService.dashboard_lead_scope(current, assignee_id=assignee_id),
+                page,
+                page_size,
+                sort=sort,
+            ),
             "history": self._treatment_page({}, page, page_size, include_lead_name=True),
             "queue": self._admin_queue(),
         }
@@ -9150,6 +9233,8 @@ class DashboardService:
         *,
         page: int = 1,
         limit: int | None = None,
+        assignee_id: str | None = None,
+        sort: str | None = None,
     ) -> dict[str, Any]:
         current = PermissionService.require_current_user(user)
         if current.role != "seller":
@@ -9157,7 +9242,12 @@ class DashboardService:
         page, page_size = self._pagination(page, limit)
         return {
             "user": _public_user(current),
-            "leads": self._lead_page(PermissionService.scope_query(current, "leads"), page, page_size),
+            "leads": self._lead_page(
+                PermissionService.dashboard_lead_scope(current, assignee_id=assignee_id),
+                page,
+                page_size,
+                sort=sort,
+            ),
             "history": self._treatment_page(
                 self._seller_history_query(current),
                 page,
@@ -9211,11 +9301,75 @@ class DashboardService:
     def _pagination(self, page: int, limit: int | None) -> tuple[int, int]:
         return _page_number(page), _page_limit(self._page_size if limit is None else limit)
 
-    def _lead_page(self, query: Mapping[str, Any], page: int, page_size: int) -> dict[str, Any]:
+    def lead_distribution(
+        self,
+        user: CurrentUser | None,
+        *,
+        from_at: datetime,
+        to_at: datetime,
+    ) -> dict[str, Any]:
+        """Aggregate current lead ownership by situation in an assignment interval."""
+        PermissionService.require_admin(user)
+        from_utc = _as_utc(from_at, name="fromAt")
+        to_utc = _as_utc(to_at, name="toAt")
+        if from_utc >= to_utc:
+            raise ValueError("fromAt must be earlier than toAt")
+        leads = list(
+            self._database[MongoCollections.LEADS].find(
+                {"assignedAt": {"$gte": from_utc, "$lt": to_utc}}
+            )
+        )
+        by_situation: dict[str, int] = {}
+        by_seller: dict[str, dict[str, Any]] = {}
+        seller_ids: list[Any] = []
+        for lead in leads:
+            situation = _commercial_status(lead)
+            by_situation[situation] = by_situation.get(situation, 0) + 1
+            assignee_id = lead.get("assigneeId")
+            if assignee_id is None:
+                continue
+            seller_id = str(assignee_id)
+            by_seller[seller_id] = {
+                "sellerId": seller_id,
+                "sellerName": NOT_INFORMED,
+                "count": by_seller.get(seller_id, {}).get("count", 0) + 1,
+            }
+            seller_ids.extend(_identity_values(assignee_id))
+
+        users = self._database[MongoCollections.USERS].find(
+            {"_id": {"$in": list(dict.fromkeys(seller_ids))}}
+        ) if seller_ids else []
+        names = {
+            str(candidate): _name_or_fallback(document)
+            for document in users
+            for candidate in _identity_values(document.get("_id"))
+        }
+        for seller in by_seller.values():
+            seller["sellerName"] = names.get(seller["sellerId"], NOT_INFORMED)
+
+        return {
+            "period": {"from": from_utc.isoformat(), "to": to_utc.isoformat()},
+            "bySituation": [
+                {"commercialStatus": situation, "count": count}
+                for situation, count in sorted(by_situation.items())
+            ],
+            "bySeller": sorted(
+                by_seller.values(), key=lambda item: (item["sellerName"], item["sellerId"])
+            ),
+        }
+
+    def _lead_page(
+        self,
+        query: Mapping[str, Any],
+        page: int,
+        page_size: int,
+        *,
+        sort: str | None = None,
+    ) -> dict[str, Any]:
         collection = self._database[MongoCollections.LEADS]
         cursor = collection.find(dict(query))
         if hasattr(cursor, "sort"):
-            cursor = cursor.sort("createdAt", -1)
+            cursor = cursor.sort(_lead_sort(sort))
         if hasattr(cursor, "skip"):
             cursor = cursor.skip((page - 1) * page_size)
         if hasattr(cursor, "limit"):
@@ -9552,13 +9706,27 @@ def _phone_without_country_code(value: Any) -> str:
 
 def _commercial_status(document: Mapping[str, Any]) -> str:
     direct = document.get("commercialStatus")
-    if direct in {"undefined", "negotiation", "won"}:
+    if direct in {"undefined", "potential", "negotiation", "won"}:
         return str(direct)
     if document.get("conversionStatus") == "won":
         return "won"
     if document.get("qualificationStatus") in {"qualified", "in_negotiation", "negotiation"}:
         return "negotiation"
     return "undefined"
+
+
+def _lead_sort(sort: str | None) -> list[tuple[str, int]]:
+    if sort is None:
+        return [("createdAt", -1)]
+    if sort != "situation":
+        raise ValueError("sort must be situation")
+    return [("commercialStatus", 1), ("createdAt", -1), ("_id", 1)]
+
+
+def _as_utc(value: datetime, *, name: str) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{name} must include a timezone")
+    return value.astimezone(UTC)
 
 
 def _page_number(value: int) -> int:
@@ -10793,6 +10961,126 @@ def _check_digit(value: str, weights: Iterable[int]) -> int:
     return 0 if remainder < 2 else 11 - remainder
 ````
 
+## Snapshot de código: `apps/api/src/gerec_api/domain/lead_notifications.py`
+
+````python
+"""Seller-scoped, persistent notification windows for newly assigned leads."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from hashlib import sha256
+from hmac import compare_digest, new as hmac_new
+from typing import Any, Callable, Protocol
+
+from gerec_api.auth.sessions import CurrentUser
+
+
+@dataclass(frozen=True)
+class NewLeadNotification:
+    """Minimal lead data that can be shown in the seller's notification window."""
+
+    lead_id: str
+    contact_name: str
+    assigned_at: datetime
+
+    def to_document(self) -> dict[str, str]:
+        return {
+            "leadId": self.lead_id,
+            "contactName": self.contact_name,
+            "assignedAt": self.assigned_at.isoformat(),
+        }
+
+
+@dataclass(frozen=True)
+class NewLeadNotificationSnapshot:
+    """A stable notification window and its server-issued closing watermark."""
+
+    items: tuple[NewLeadNotification, ...]
+    watermark: datetime
+    acknowledgement_token: str
+    watermark_sequence: int = 0
+
+    def to_document(self) -> dict[str, Any]:
+        return {
+            "items": [item.to_document() for item in self.items],
+            "watermark": self.watermark.isoformat(),
+            "acknowledgementToken": self.acknowledgement_token,
+            "watermarkSequence": self.watermark_sequence,
+        }
+
+
+class LeadNotificationPersistence(Protocol):
+    def watermark_sequence(self) -> int: ...
+
+    def for_seller(self, seller_id: str, watermark: datetime, watermark_sequence: int) -> tuple[NewLeadNotification, ...]: ...
+
+    def acknowledge(self, seller_id: str, watermark: datetime, watermark_sequence: int) -> datetime: ...
+
+
+class LeadNotificationService:
+    """Owns authorization and time validation; persistence owns the atomic cursor update."""
+
+    def __init__(
+        self,
+        persistence: LeadNotificationPersistence,
+        *,
+        signing_key: str,
+        now: Callable[[], datetime] | None = None,
+    ) -> None:
+        self._persistence = persistence
+        self._signing_key = signing_key.encode("utf-8")
+        self._now = now or (lambda: datetime.now(UTC))
+
+    def for_seller(self, user: CurrentUser, session_token: str) -> NewLeadNotificationSnapshot:
+        self._require_seller(user)
+        watermark = self._timestamp(self._now(), label="clock")
+        watermark_sequence = self._persistence.watermark_sequence()
+        return NewLeadNotificationSnapshot(
+            items=self._persistence.for_seller(user.id, watermark, watermark_sequence),
+            watermark=watermark,
+            acknowledgement_token=self._receipt(user, session_token, watermark, watermark_sequence),
+            watermark_sequence=watermark_sequence,
+        )
+
+    def acknowledge(
+        self,
+        user: CurrentUser,
+        watermark: datetime,
+        acknowledgement_token: str,
+        session_token: str,
+        watermark_sequence: int = 0,
+    ) -> datetime:
+        self._require_seller(user)
+        received = self._timestamp(watermark, label="notification watermark")
+        if not isinstance(watermark_sequence, int) or isinstance(watermark_sequence, bool) or watermark_sequence < 0:
+            raise ValueError("notification watermark sequence is invalid")
+        if received > self._timestamp(self._now(), label="clock"):
+            raise ValueError("notification watermark cannot be in the future")
+        if not isinstance(acknowledgement_token, str) or not compare_digest(
+            acknowledgement_token,
+            self._receipt(user, session_token, received, watermark_sequence),
+        ):
+            raise ValueError("notification watermark was not issued for this session")
+        return self._persistence.acknowledge(user.id, received, watermark_sequence)
+
+    def _receipt(self, user: CurrentUser, session_token: str, watermark: datetime, watermark_sequence: int = 0) -> str:
+        message = "\n".join((user.id, session_token, watermark.isoformat(), str(watermark_sequence))).encode("utf-8")
+        return hmac_new(self._signing_key, message, sha256).hexdigest()
+
+    @staticmethod
+    def _require_seller(user: CurrentUser) -> None:
+        if not isinstance(user, CurrentUser) or user.role != "seller" or not user.id:
+            raise PermissionError("seller role is required")
+
+    @staticmethod
+    def _timestamp(value: datetime, *, label: str) -> datetime:
+        if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError(f"{label} must be timezone-aware")
+        return value.astimezone(UTC)
+````
+
 ## Snapshot de código: `apps/api/src/gerec_api/domain/leads.py`
 
 ````python
@@ -11178,8 +11466,8 @@ OUTCOMES = frozenset(
     {"qualified_follow_up", "qualified_closed_no_conversion", "disqualified", "won"}
 )
 DISQUALIFICATION_REASONS = frozenset({"no_answer_after_5_attempts", "no_cnpj", "outside_sp"})
-COMMERCIAL_STATUSES = frozenset({"undefined", "negotiation", "won"})
-CommercialStatus = Literal["undefined", "negotiation", "won"]
+COMMERCIAL_STATUSES = frozenset({"undefined", "potential", "negotiation", "won"})
+CommercialStatus = Literal["undefined", "potential", "negotiation", "won"]
 
 
 @dataclass(frozen=True)
@@ -12055,7 +12343,11 @@ SCHEMA_VALIDATORS: Final[dict[str, dict[str, Any]]] = {
         "$jsonSchema": {
             "bsonType": "object",
             "required": ["emailNormalized"],
-            "properties": {"emailNormalized": {"bsonType": "string", "minLength": 1}},
+            "properties": {
+                "emailNormalized": {"bsonType": "string", "minLength": 1},
+                "newLeadsSeenAt": {"bsonType": ["date", "null"]},
+                "newLeadsSeenAssignmentSequence": {"bsonType": ["int", "null"], "minimum": 0},
+            },
         }
     },
     MongoCollections.SOURCE_RECORDS: {
@@ -12091,10 +12383,11 @@ SCHEMA_VALIDATORS: Final[dict[str, dict[str, Any]]] = {
                 "companyId": {"bsonType": "objectId"},
                 "campaignId": {"bsonType": "objectId"},
                 "archivedAt": {"bsonType": ["date", "null"]},
-                "commercialStatus": {"enum": ["undefined", "negotiation", "won"]},
+                "commercialStatus": {"enum": ["undefined", "potential", "negotiation", "won"]},
                 "isDisqualified": {"bsonType": "bool"},
                 "commentCount": {"bsonType": "int", "minimum": 0},
                 "lastCommentAt": {"bsonType": ["date", "null"]},
+                "assignmentSequence": {"bsonType": "int", "minimum": 1},
             },
         }
     },
@@ -12457,6 +12750,16 @@ INDEXES: Final[tuple[MongoIndex, ...]] = (
         "leads_assignee_created_at",
     ),
     MongoIndex(
+        MongoCollections.LEADS,
+        (("assigneeId", ASCENDING), ("assignedAt", ASCENDING)),
+        "leads_assignee_assigned_at",
+    ),
+    MongoIndex(
+        MongoCollections.LEADS,
+        (("assigneeId", ASCENDING), ("assignmentSequence", ASCENDING)),
+        "leads_assignee_assignment_sequence",
+    ),
+    MongoIndex(
         MongoCollections.SALES,
         (("leadId", ASCENDING),),
         "sales_active_lead_unique",
@@ -12536,6 +12839,103 @@ INDEXES: Final[tuple[MongoIndex, ...]] = (
         unique=True,
     ),
 )
+````
+
+## Snapshot de código: `apps/api/src/gerec_api/infrastructure/mongo/lead_notification_repository.py`
+
+````python
+"""MongoDB persistence for seller notification windows and cursors."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from typing import Any
+
+from bson import ObjectId
+from pymongo import ASCENDING, ReturnDocument
+
+from gerec_api.domain.lead_notifications import NewLeadNotification
+from gerec_api.infrastructure.mongo.collections import MongoCollections
+
+
+class LeadNotificationStateError(RuntimeError):
+    """Raised when a persisted seller lacks a valid notification cursor."""
+
+
+class MongoLeadNotificationRepository:
+    """Read derived notification state without changing assignments, queue, or outbox."""
+
+    def __init__(self, database: Any) -> None:
+        self._users = database[MongoCollections.USERS]
+        self._leads = database[MongoCollections.LEADS]
+        self._queue_state = database[MongoCollections.QUEUE_STATE]
+
+    def watermark_sequence(self) -> int:
+        state = self._queue_state.find_one({"_id": "global"})
+        value = 0 if state is None else state.get("assignmentSequence", 0)
+        return int(value) if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+    def for_seller(
+        self,
+        seller_id: str,
+        watermark: datetime,
+        watermark_sequence: int,
+    ) -> tuple[NewLeadNotification, ...]:
+        seller = self._seller(seller_id)
+        seen_at = seller.get("newLeadsSeenAt")
+        if not isinstance(seen_at, datetime):
+            raise LeadNotificationStateError("seller notification cursor is not initialized")
+        if watermark_sequence:
+            seen_sequence = seller.get("newLeadsSeenAssignmentSequence", 0)
+            seen_sequence = int(seen_sequence) if isinstance(seen_sequence, int) and not isinstance(seen_sequence, bool) else 0
+            query = {
+                "assigneeId": {"$in": _identity_values(seller_id)},
+                "assignmentSequence": {"$gt": seen_sequence, "$lte": watermark_sequence},
+            }
+            sort = [("assignmentSequence", ASCENDING), ("_id", ASCENDING)]
+        else:
+            query = {
+                "assigneeId": {"$in": _identity_values(seller_id)},
+                "assignedAt": {"$gt": seen_at, "$lte": watermark},
+            }
+            sort = [("assignedAt", ASCENDING), ("_id", ASCENDING)]
+        cursor = self._leads.find(query).sort(sort)
+        return tuple(
+            NewLeadNotification(
+                lead_id=str(lead["_id"]),
+                contact_name=_contact_name(lead),
+                assigned_at=lead["assignedAt"].astimezone(UTC),
+            )
+            for lead in cursor
+        )
+
+    def acknowledge(self, seller_id: str, watermark: datetime, watermark_sequence: int = 0) -> datetime:
+        seller = self._users.find_one_and_update(
+            {"_id": {"$in": _identity_values(seller_id)}, "role": "seller"},
+            {"$max": {"newLeadsSeenAt": watermark, "newLeadsSeenAssignmentSequence": watermark_sequence}},
+            return_document=ReturnDocument.AFTER,
+        )
+        if seller is None or not isinstance(seller.get("newLeadsSeenAt"), datetime):
+            raise LeadNotificationStateError("seller notification cursor cannot be acknowledged")
+        return seller["newLeadsSeenAt"].astimezone(UTC)
+
+    def _seller(self, seller_id: str) -> dict[str, Any]:
+        seller = self._users.find_one({"_id": {"$in": _identity_values(seller_id)}, "role": "seller"})
+        if seller is None:
+            raise LeadNotificationStateError("seller notification cursor is unavailable")
+        return seller
+
+
+def _identity_values(value: str) -> list[Any]:
+    values: list[Any] = [value]
+    if ObjectId.is_valid(value):
+        values.append(ObjectId(value))
+    return values
+
+
+def _contact_name(lead: dict[str, Any]) -> str:
+    value = lead.get("contactName")
+    return str(value).strip() if value is not None and str(value).strip() else "Não informado"
 ````
 
 ## Snapshot de código: `apps/api/src/gerec_api/infrastructure/mongo/lead_repository.py`
@@ -13300,6 +13700,40 @@ def apply(database: Any, *, session: Any | None = None) -> None:
     )
 ````
 
+## Snapshot de código: `apps/api/src/gerec_api/infrastructure/mongo/migrations/20260914_initialize_new_lead_notification_cursor.py`
+
+````python
+"""Initialize seller notification cursors without rewriting existing acknowledgements."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from typing import Any, Callable
+
+from gerec_api.infrastructure.mongo.collections import MongoCollections
+
+
+VERSION = "20260914_initialize_new_lead_notification_cursor"
+
+
+def apply(
+    database: Any,
+    *,
+    session: Any | None = None,
+    now: Callable[[], datetime] | None = None,
+) -> None:
+    """Set the first-window baseline only for sellers whose cursor is absent."""
+    timestamp = (now or (lambda: datetime.now(UTC)))()
+    if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+        raise ValueError("migration clock must return a timezone-aware datetime")
+    options = {} if session is None else {"session": session}
+    database[MongoCollections.USERS].update_many(
+        {"role": "seller", "newLeadsSeenAt": {"$exists": False}},
+        {"$set": {"newLeadsSeenAt": timestamp.astimezone(UTC)}},
+        **options,
+    )
+````
+
 ## Snapshot de código: `apps/api/src/gerec_api/infrastructure/mongo/migrations/runner.py`
 
 ````python
@@ -13323,9 +13757,13 @@ _operacao_comercial = import_module(
 _remove_operational_sla = import_module(
     "gerec_api.infrastructure.mongo.migrations.20260904_remove_operational_sla"
 )
+_initialize_new_lead_notification_cursor = import_module(
+    "gerec_api.infrastructure.mongo.migrations.20260914_initialize_new_lead_notification_cursor"
+)
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     (_operacao_comercial.VERSION, _operacao_comercial.apply),
     (_remove_operational_sla.VERSION, _remove_operational_sla.apply),
+    (_initialize_new_lead_notification_cursor.VERSION, _initialize_new_lead_notification_cursor.apply),
 )
 
 
@@ -13696,7 +14134,6 @@ class MongoOperationsRepository:
         self._require_current_seller(lead, actor_id, actor_role)
         lead_before = deepcopy(lead)
         treatment_id = ObjectId()
-        effective_disqualification = bool(lead.get("isDisqualified")) or command.is_disqualified
         comment_count = int(lead.get("commentCount", 0)) + 1
 
         self._lead_treatments.insert_one(
@@ -13715,7 +14152,7 @@ class MongoOperationsRepository:
 
         update: dict[str, Any] = {
             "commercialStatus": command.commercial_status,
-            "isDisqualified": effective_disqualification,
+            "isDisqualified": command.is_disqualified,
             "commentCount": comment_count,
             "lastCommentAt": now,
             "updatedAt": now,
@@ -13745,7 +14182,7 @@ class MongoOperationsRepository:
             str(treatment_id),
             "recorded",
             command.commercial_status,
-            effective_disqualification,
+            command.is_disqualified,
             comment_count,
             lead_after["updatedAt"],
         )
@@ -14059,6 +14496,7 @@ from time import sleep
 from typing import Any, Callable, TypeVar
 
 from bson import ObjectId
+from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 from gerec_api.domain.queue import (
@@ -14636,6 +15074,7 @@ class QueueRepository:
             "commandId": command_id,
         }
         assignment_id = self._assignments.insert_one(assignment, session=session).inserted_id
+        assignment_sequence = self._next_assignment_sequence(session)
         lead_update = {
             "assignmentStatus": "assigned",
             "assigneeId": seller_id,
@@ -14643,6 +15082,7 @@ class QueueRepository:
             "assignmentType": assignment_type,
             "parkReason": None,
             "assignedAt": now,
+            "assignmentSequence": assignment_sequence,
             "updatedAt": now,
         }
         updated = self._leads.update_one(
@@ -14694,6 +15134,17 @@ class QueueRepository:
             status="assigned",
             owner_id=str(owner_id) if owner_id is not None else None,
         )
+
+    def _next_assignment_sequence(self, session: Any) -> int:
+        state = self._queue_state.find_one_and_update(
+            {"_id": QUEUE_STATE_ID},
+            {"$inc": {"assignmentSequence": 1}},
+            return_document=ReturnDocument.AFTER,
+            session=session,
+        )
+        if state is None or not isinstance(state.get("assignmentSequence"), int):
+            raise QueueStateError("global queue state is not initialized")
+        return int(state["assignmentSequence"])
 
     def _seller_states(self, now: datetime, session: Any) -> list[SellerState]:
         queue_documents = sorted(
@@ -15003,6 +15454,10 @@ class UserRepository:
             "createdAt": now,
             "updatedAt": now,
         }
+        if command.role == "seller":
+            document["newLeadsSeenAt"] = now
+            state = self._queue_state.find_one({"_id": QUEUE_STATE_ID}, session=session)
+            document["newLeadsSeenAssignmentSequence"] = int((state or {}).get("assignmentSequence", 0))
         self._users.insert_one(document, session=session)
         paused: bool | None = None
         if command.role == "seller":
@@ -15117,6 +15572,7 @@ class UserRepository:
                     "_id": QUEUE_STATE_ID,
                     "nextSellerId": user_id,
                     "version": 0,
+                    "assignmentSequence": 0,
                     "createdAt": now,
                     "updatedAt": now,
                 },
@@ -15227,6 +15683,7 @@ from gerec_api.auth.permissions import DashboardService
 from gerec_api.config import Settings
 from gerec_api.domain.business_time import BusinessClock, MongoHolidayRepository
 from gerec_api.domain.leads import LeadService
+from gerec_api.domain.lead_notifications import LeadNotificationService
 from gerec_api.domain.operations import OperationsService
 from gerec_api.domain.queue import QueueService
 from gerec_api.domain.user_administration import UserAdministrationService
@@ -15235,6 +15692,7 @@ from gerec_api.infrastructure.mongo import bootstrap
 from gerec_api.infrastructure.mongo.clock import MongoClock
 from gerec_api.infrastructure.mongo.collections import MongoCollections
 from gerec_api.infrastructure.mongo.lead_repository import LeadRepository
+from gerec_api.infrastructure.mongo.lead_notification_repository import MongoLeadNotificationRepository
 from gerec_api.infrastructure.mongo.operations_repository import MongoOperationsRepository
 from gerec_api.infrastructure.mongo.queue_repository import QueueRepository
 from gerec_api.infrastructure.mongo.user_repository import UserRepository
@@ -15244,6 +15702,8 @@ from gerec_api.routes.operations import router as operations_router
 from gerec_api.routes.queue import router as queue_router
 from gerec_api.routes.dashboard import router as dashboard_router
 from gerec_api.routes.admin import router as admin_router
+from gerec_api.routes.lead_notifications import router as lead_notifications_router
+from gerec_api.routes.reports import router as reports_router
 
 
 API_CONTRACT_VERSION = "1"
@@ -15268,10 +15728,15 @@ def create_app(
     app.state.auth_service = auth_service if auth_service is not None else AuthService(database)
     app.state.dashboard_service = DashboardService(database)
     app.state.lead_service = LeadService(LeadRepository(database))
+    database_clock = MongoClock(database)
+    app.state.lead_notification_service = LeadNotificationService(
+        MongoLeadNotificationRepository(database),
+        signing_key=settings.app_secret.get_secret_value(),
+        now=database_clock.now,
+    )
     business_clock = BusinessClock(
         MongoHolidayRepository(database[MongoCollections.HOLIDAYS])
     )
-    database_clock = MongoClock(database)
     app.state.queue_service = QueueService(
         QueueRepository(database)
     )
@@ -15303,6 +15768,8 @@ def create_app(
     app.include_router(operations_router)
     app.include_router(dashboard_router)
     app.include_router(admin_router)
+    app.include_router(lead_notifications_router)
+    app.include_router(reports_router)
     return app
 ````
 
@@ -15589,13 +16056,109 @@ def dashboard(
     service: DashboardService = Depends(get_dashboard_service),
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=200),
+    assignee_id: str | None = Query(None, alias="assigneeId"),
+    sort: str | None = Query(None),
 ) -> dict[str, Any]:
     try:
-        return service.for_user(current_user, page=page, limit=limit)
+        return service.for_user(
+            current_user,
+            page=page,
+            limit=limit,
+            assignee_id=assignee_id,
+            sort=sort,
+        )
     except PermissionDenied as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden") from error
     except ValueError as error:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
+````
+
+## Snapshot de código: `apps/api/src/gerec_api/routes/lead_notifications.py`
+
+````python
+"""Seller-only HTTP boundaries for internal new-lead notification windows."""
+
+from datetime import datetime
+
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from pydantic import BaseModel, Field
+
+from gerec_api.auth.dependencies import SESSION_COOKIE_NAME, get_current_user
+from gerec_api.auth.sessions import CurrentUser
+from gerec_api.domain.lead_notifications import LeadNotificationService
+from gerec_api.infrastructure.mongo.lead_notification_repository import LeadNotificationStateError
+
+
+router = APIRouter(tags=["lead-notifications"])
+
+
+class AcknowledgeNewLeadNotificationsRequest(BaseModel):
+    watermark: datetime
+    acknowledgement_token: str = Field(alias="acknowledgementToken", min_length=1, max_length=200)
+    watermark_sequence: int = Field(alias="watermarkSequence", ge=0)
+
+
+def get_lead_notification_service(request: Request) -> LeadNotificationService:
+    service = getattr(request.app.state, "lead_notification_service", None)
+    if not isinstance(service, LeadNotificationService):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Lead notification service unavailable",
+        )
+    return service
+
+
+@router.get("/api/lead-notifications/new")
+def new_lead_notifications(
+    request: Request,
+    service: LeadNotificationService = Depends(get_lead_notification_service),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> dict[str, object]:
+    return _snapshot(service, current_user, _session_token(request))
+
+
+@router.post("/api/lead-notifications/new/acknowledge")
+def acknowledge_new_lead_notifications(
+    request: Request,
+    payload: AcknowledgeNewLeadNotificationsRequest,
+    service: LeadNotificationService = Depends(get_lead_notification_service),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> dict[str, str]:
+    _require_seller(current_user)
+    try:
+        watermark = service.acknowledge(
+            current_user,
+            payload.watermark,
+            payload.acknowledgement_token,
+            _session_token(request),
+            payload.watermark_sequence,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
+    except LeadNotificationStateError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+    return {"watermark": watermark.isoformat()}
+
+
+def _snapshot(
+    service: LeadNotificationService,
+    current_user: CurrentUser,
+    session_token: str,
+) -> dict[str, object]:
+    _require_seller(current_user)
+    try:
+        return service.for_seller(current_user, session_token).to_document()
+    except LeadNotificationStateError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+
+
+def _require_seller(user: CurrentUser) -> None:
+    if user.role != "seller":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+
+
+def _session_token(request: Request) -> str:
+    return request.cookies.get(SESSION_COOKIE_NAME, "")
 ````
 
 ## Snapshot de código: `apps/api/src/gerec_api/routes/leads.py`
@@ -15746,7 +16309,7 @@ class OutcomeRequest(BaseModel):
 
 class TreatmentRequest(BaseModel):
     comment: str = Field(min_length=6, max_length=2_000)
-    commercial_status: Literal["undefined", "negotiation", "won"] = Field(
+    commercial_status: Literal["undefined", "potential", "negotiation", "won"] = Field(
         alias="commercialStatus"
     )
     is_disqualified: bool = Field(alias="isDisqualified")
@@ -16084,6 +16647,55 @@ def _run(operation):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
 ````
 
+## Snapshot de código: `apps/api/src/gerec_api/routes/reports.py`
+
+````python
+"""Administrative report endpoints backed by the protected dashboard service."""
+
+from datetime import datetime
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+
+from gerec_api.auth.dependencies import get_current_user
+from gerec_api.auth.permissions import DashboardService, PermissionDenied
+from gerec_api.auth.sessions import CurrentUser
+
+
+router = APIRouter(prefix="/api/admin/reports", tags=["reports"])
+
+
+def get_dashboard_service(request: Request) -> DashboardService:
+    service = getattr(request.app.state, "dashboard_service", None)
+    if not isinstance(service, DashboardService):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Dashboard service unavailable",
+        )
+    return service
+
+
+def _admin(current_user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+    if current_user.role != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    return current_user
+
+
+@router.get("/lead-distribution")
+def lead_distribution(
+    current_user: CurrentUser = Depends(_admin),
+    service: DashboardService = Depends(get_dashboard_service),
+    from_at: datetime = Query(alias="fromAt"),
+    to_at: datetime = Query(alias="toAt"),
+) -> dict[str, Any]:
+    try:
+        return service.lead_distribution(current_user, from_at=from_at, to_at=to_at)
+    except PermissionDenied as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden") from error
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
+````
+
 ## Snapshot de código: `apps/web/src/app/dashboard/page.tsx`
 
 ````tsx
@@ -16092,25 +16704,36 @@ import type { ManagedUser } from "../../lib/api/types";
 
 import { AdminDashboard } from "../../components/admin-dashboard";
 import { AppShell } from "../../components/app-shell";
+import { LeadListControls } from "../../components/lead-list-controls";
 import { SellerDashboard } from "../../components/seller-dashboard";
+import { NewLeadsNotificationModal } from "../../components/new-leads-notification-modal";
 import { getManagedUsers } from "../../lib/api/client";
 import { getSessionContext } from "../../lib/auth/session";
-import { getDashboardData, isAdminDashboard, pageNumber } from "../../lib/dashboard/queries";
+import {
+  dashboardListFilters,
+  getDashboardData,
+  isAdminDashboard,
+  pageNumber,
+  type DashboardSearchParams,
+} from "../../lib/dashboard/queries";
+import { getNewLeadNotifications } from "../../lib/notifications/queries";
 
 export const dynamic = "force-dynamic";
 
 export default async function DashboardPage({
   searchParams,
 }: {
-  searchParams: Promise<{ page?: string }>;
+  searchParams: Promise<DashboardSearchParams>;
 }) {
   const session = await getSessionContext();
   if (session.status !== "authenticated") redirect("/login");
 
-  const page = pageNumber((await searchParams).page ?? "1");
+  const params = await searchParams;
+  const page = pageNumber(typeof params.page === "string" ? params.page : "1");
+  const filters = dashboardListFilters(params);
   let dashboard: Awaited<ReturnType<typeof getDashboardData>> | null = null;
   try {
-    dashboard = await getDashboardData(session.sessionToken, page);
+    dashboard = await getDashboardData(session.sessionToken, page, filters);
   } catch {
     // A tela não expõe detalhes internos da falha da API.
   }
@@ -16128,21 +16751,38 @@ export default async function DashboardPage({
   }
 
   let transferTargets: ManagedUser[] = [];
-  if (isAdminDashboard(dashboard)) {
+  const isAdmin = isAdminDashboard(dashboard);
+  let newLeadsSnapshot: Awaited<ReturnType<typeof getNewLeadNotifications>> | null = null;
+  if (isAdmin) {
     try {
       transferTargets = (await getManagedUsers(session.sessionToken, 1, 200)).items;
     } catch {
       // The dashboard remains readable if the optional transfer target list is unavailable.
+    }
+  } else {
+    try {
+      newLeadsSnapshot = await getNewLeadNotifications(session.sessionToken);
+    } catch {
+      // Falha opcional de notificação não pode impedir o uso do dashboard do vendedor.
     }
   }
 
   return (
     <AppShell profile={session.profile} activePath="/dashboard" heading="Visão geral">
       {isAdminDashboard(dashboard) ? (
-        <AdminDashboard dashboard={dashboard} transferTargets={transferTargets} />
+        <>
+          <LeadListControls role="admin" sellers={transferTargets} current={filters} />
+          <AdminDashboard dashboard={dashboard} transferTargets={transferTargets} />
+        </>
       ) : (
-        <SellerDashboard dashboard={dashboard} />
+        <>
+          <LeadListControls role="seller" sellers={[]} current={filters} />
+          <SellerDashboard dashboard={dashboard} />
+        </>
       )}
+      {!isAdminDashboard(dashboard) && newLeadsSnapshot && newLeadsSnapshot.items.length > 0 ? (
+        <NewLeadsNotificationModal snapshot={newLeadsSnapshot} />
+      ) : null}
     </AppShell>
   );
 }
@@ -16155,12 +16795,19 @@ import { redirect } from "next/navigation";
 import type { ManagedUser } from "../../lib/api/types";
 
 import { AppShell } from "../../components/app-shell";
+import { LeadListControls } from "../../components/lead-list-controls";
 import { LeadTable } from "../../components/lead-table";
 import { Pagination } from "../../components/pagination";
 import { QueueTable } from "../../components/queue-table";
 import { SellerQueueTable } from "../../components/seller-queue-table";
 import { getSessionContext } from "../../lib/auth/session";
-import { getDashboardData, isAdminDashboard, pageNumber } from "../../lib/dashboard/queries";
+import {
+  dashboardListFilters,
+  getDashboardData,
+  isAdminDashboard,
+  pageNumber,
+  type DashboardSearchParams,
+} from "../../lib/dashboard/queries";
 import { getManagedUsers } from "../../lib/api/client";
 
 export const dynamic = "force-dynamic";
@@ -16168,13 +16815,14 @@ export const dynamic = "force-dynamic";
 export default async function QueuePage({
   searchParams,
 }: {
-  searchParams: Promise<{ page?: string }>;
+  searchParams: Promise<DashboardSearchParams>;
 }) {
   const params = await searchParams;
   const session = await getSessionContext();
   if (session.status !== "authenticated") redirect("/login");
-  const page = pageNumber(params.page ?? "1");
-  const data = await getDashboardData(session.sessionToken, page);
+  const page = pageNumber(typeof params.page === "string" ? params.page : "1");
+  const filters = dashboardListFilters(params);
+  const data = await getDashboardData(session.sessionToken, page, filters);
   if (!isAdminDashboard(data)) {
     return (
       <AppShell
@@ -16183,6 +16831,7 @@ export default async function QueuePage({
         eyebrow="Minha distribuição"
         heading="Minha fila"
       >
+        <LeadListControls role="seller" sellers={[]} current={filters} />
         <SellerQueueTable queue={data.queue} leads={data.leads.items} />
         <Pagination href="/fila" page={data.leads} searchParams={params} />
       </AppShell>
@@ -16204,6 +16853,7 @@ export default async function QueuePage({
       heading="Fila de leads"
     >
       <QueueTable queue={data.queue} />
+      <LeadListControls role="admin" sellers={transferTargets} current={filters} />
       <LeadTable leads={data.leads.items} role="admin" transferTargets={transferTargets} />
       <Pagination href="/fila" page={data.leads} searchParams={params} />
     </AppShell>
@@ -16588,6 +17238,10 @@ button:disabled {
   background: var(--status-won-bg);
   color: var(--status-won-text);
 }
+.commercial-status.potential {
+  background: #fff0b8;
+  color: #604500;
+}
 .disqualification-marker,
 .commercial-status.disqualified,
 .pill.disqualified {
@@ -16680,6 +17334,32 @@ button:disabled {
   font-size: 20px;
   letter-spacing: -0.03em;
 }
+.lead-list-controls {
+  display: flex;
+  align-items: end;
+  gap: 12px;
+  margin: 18px 0;
+}
+.lead-list-controls label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
+}
+.lead-list-controls select {
+  min-width: 190px;
+  padding: 9px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--text-strong);
+}
+.lead-list-controls select:focus-visible {
+  border-color: var(--wtg-blue);
+  outline: 2px solid #bad0ff;
+  outline-offset: 1px;
+}
 .table-card table {
   width: 100%;
   min-width: 1100px;
@@ -16712,6 +17392,14 @@ button:disabled {
 .table-card tbody tr:hover {
   background: var(--wtg-blue-soft);
   color: var(--text-strong);
+}
+.table-card tbody tr.lead-row--awaiting-treatment {
+  background: #fff6cf;
+  color: #3f3100;
+}
+.table-card tbody tr.lead-row--awaiting-treatment:hover {
+  background: #ffea9f;
+  color: #3f3100;
 }
 .table-card td strong {
   color: var(--text-strong);
@@ -16959,6 +17647,78 @@ button:disabled {
   max-width: 620px;
   margin: 8px 0 0;
 }
+.reports-dashboard {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 22px;
+}
+.report-filters {
+  display: flex;
+  grid-column: 1 / -1;
+  align-items: end;
+  gap: 12px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.report-filters label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
+}
+.report-filters input,
+.report-filters select {
+  min-width: 150px;
+  padding: 9px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--text-strong);
+}
+.report-card {
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.report-card h2 {
+  margin: 0 0 18px;
+  color: var(--text-strong);
+  font-size: 20px;
+}
+.report-bars {
+  display: grid;
+  gap: 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.report-bar {
+  display: grid;
+  gap: 6px;
+}
+.report-bar__label {
+  color: var(--text-strong);
+  font-weight: 750;
+}
+.report-bar__track {
+  display: block;
+  height: 12px;
+  overflow: hidden;
+  border-radius: 99px;
+  background: #e7edf1;
+}
+.report-bar__fill {
+  display: block;
+  min-width: 2px;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--wtg-blue);
+}
 .muted {
   color: var(--muted);
   font-size: 12px;
@@ -17085,6 +17845,37 @@ button:disabled {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 18px;
+}
+.new-leads-notification-modal {
+  width: min(620px, calc(100vw - 64px));
+}
+.new-leads-notification-modal > .muted {
+  margin: 10px 0 0;
+}
+.new-leads-notification-modal__list {
+  display: grid;
+  gap: 9px;
+  margin: 20px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.new-leads-notification-modal__list li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-muted);
+}
+.new-leads-notification-modal__list strong {
+  color: var(--text-strong);
+}
+.new-leads-notification-modal__list span {
+  color: var(--muted);
+  font-size: 12px;
+  text-align: right;
 }
 .contact-modal__details {
   display: grid;
@@ -17482,6 +18273,75 @@ export default function Home() {
 }
 ````
 
+## Snapshot de código: `apps/web/src/app/relatorios/page.test.tsx`
+
+````tsx
+import { describe, expect, it, vi } from "vitest";
+
+const { getLeadDistributionReport, getSessionContext, redirect } = vi.hoisted(() => ({
+  getLeadDistributionReport: vi.fn(),
+  getSessionContext: vi.fn(),
+  redirect: vi.fn(),
+}));
+
+vi.mock("next/navigation", () => ({ redirect }));
+vi.mock("../../lib/auth/session", () => ({ getSessionContext }));
+vi.mock("../../lib/reports/queries", () => ({
+  getLeadDistributionReport,
+  reportPeriod: vi.fn(),
+}));
+
+import ReportsPage from "./page";
+
+describe("ReportsPage", () => {
+  it("redireciona vendedor para o dashboard antes de consultar o relat\u00f3rio", async () => {
+    getSessionContext.mockResolvedValue({
+      status: "authenticated",
+      sessionToken: "seller-session",
+      profile: {
+        id: "seller-1",
+        userId: "seller-1",
+        fullName: "Jessica",
+        email: "jessica@wtgseguros.com.br",
+        role: "seller",
+      },
+    });
+    redirect.mockImplementation((path: string) => {
+      throw new Error(`REDIRECT:${path}`);
+    });
+
+    await expect(ReportsPage({ searchParams: Promise.resolve({}) })).rejects.toThrow("REDIRECT:/dashboard");
+    expect(redirect).toHaveBeenCalledWith("/dashboard");
+    expect(getLeadDistributionReport).not.toHaveBeenCalled();
+  });
+});
+````
+
+## Snapshot de código: `apps/web/src/app/relatorios/page.tsx`
+
+````tsx
+import { redirect } from "next/navigation";
+
+import { AppShell } from "../../components/app-shell";
+import { ReportsDashboard } from "../../components/reports-dashboard";
+import { getSessionContext } from "../../lib/auth/session";
+import { getLeadDistributionReport, reportPeriod, type ReportSearchParams } from "../../lib/reports/queries";
+
+export const dynamic = "force-dynamic";
+
+export default async function ReportsPage({ searchParams }: { searchParams: Promise<ReportSearchParams> }) {
+  const session = await getSessionContext();
+  if (session.status !== "authenticated" || session.profile.role !== "admin") redirect("/dashboard");
+  const period = reportPeriod(await searchParams);
+  const report = await getLeadDistributionReport(session.sessionToken, period);
+  return (
+    <AppShell profile={session.profile} activePath="/relatorios" eyebrow="Leitura gerencial" heading="Relatórios">
+      <ReportsDashboard report={report} period={period.key} />
+    </AppShell>
+  );
+}
+````
+
 ## Snapshot de código: `apps/web/src/app/route-access.test.ts`
 
 ````typescript
@@ -17494,7 +18354,12 @@ const { getDashboardData, getSessionContext, redirect } = vi.hoisted(() => ({
   redirect: vi.fn(),
 }));
 
-vi.mock("next/navigation", () => ({ redirect }));
+vi.mock("next/navigation", () => ({
+  redirect,
+  usePathname: () => "/fila",
+  useRouter: () => ({ push: vi.fn() }),
+  useSearchParams: () => new URLSearchParams(),
+}));
 vi.mock("../lib/auth/session", () => ({ getSessionContext }));
 vi.mock("../lib/dashboard/queries", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/dashboard/queries")>()),
@@ -17750,6 +18615,50 @@ export function AdminDashboard({
 }
 ````
 
+## Snapshot de código: `apps/web/src/components/app-shell.test.tsx`
+
+````tsx
+// @vitest-environment jsdom
+
+import { cleanup, render } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("next/image", () => ({
+  default: () => <span />,
+}));
+vi.mock("../lib/auth/actions", () => ({ signOutAction: vi.fn() }));
+
+import { AppShell } from "./app-shell";
+
+const admin = {
+  id: "admin-1",
+  userId: "admin-1",
+  fullName: "Yago",
+  email: "yago@wtgseguros.com.br",
+  role: "admin" as const,
+};
+
+const seller = { ...admin, id: "seller-1", userId: "seller-1", fullName: "Jessica", role: "seller" as const };
+
+function renderShell(profile: typeof admin | typeof seller) {
+  return render(
+    <AppShell profile={profile}>
+      <p>Conte\u00fado</p>
+    </AppShell>,
+  );
+}
+
+afterEach(cleanup);
+
+describe("navega\u00e7\u00e3o do AppShell", () => {
+  it("mostra Relat\u00f3rios somente para administrador", () => {
+    expect(renderShell(admin).getByRole("link", { name: "Relat\u00f3rios" })).toBeTruthy();
+    cleanup();
+    expect(renderShell(seller).queryByRole("link", { name: "Relat\u00f3rios" })).toBeNull();
+  });
+});
+````
+
 ## Snapshot de código: `apps/web/src/components/app-shell.tsx`
 
 ````tsx
@@ -17767,7 +18676,7 @@ export function AppShell({
   children,
 }: {
   profile: SessionProfile;
-  activePath?: "/dashboard" | "/fila" | "/historico" | "/usuarios";
+  activePath?: "/dashboard" | "/fila" | "/historico" | "/usuarios" | "/relatorios";
   eyebrow?: string;
   heading?: string;
   children: React.ReactNode;
@@ -17798,6 +18707,13 @@ export function AppShell({
           </Link>
           {isAdmin ? (
             <>
+              <Link
+                prefetch={false}
+                className={activePath === "/relatorios" ? "nav-active" : ""}
+                href="/relatorios"
+              >
+                Relatórios
+              </Link>
               <Link
                 prefetch={false}
                 className={activePath === "/fila" ? "nav-active" : ""}
@@ -18191,6 +19107,155 @@ export function LeadContactModal({ lead }: { lead: OperationalLead }) {
 }
 ````
 
+## Snapshot de código: `apps/web/src/components/lead-list-controls.tsx`
+
+````tsx
+"use client";
+
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+
+import type { ManagedUser, UserRole } from "../lib/api/types";
+import type { DashboardListFilters } from "../lib/dashboard/queries";
+
+type LeadListControlsProps = {
+  role: UserRole;
+  sellers: ManagedUser[];
+  current: DashboardListFilters;
+};
+
+/** URL-backed list controls keep pagination and unrelated query parameters intact. */
+export function LeadListControls({ role, sellers, current }: LeadListControlsProps) {
+  const pathname = usePathname();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const sellerOptions = sellers.filter((seller) => seller.role === "seller");
+
+  function updateFilter(key: "assigneeId" | "sort", value: string) {
+    const next = new URLSearchParams(searchParams.toString());
+    if (value) next.set(key, value);
+    else next.delete(key);
+    const query = next.toString();
+    router.push(query ? `${pathname}?${query}` : pathname);
+  }
+
+  return (
+    <section className="lead-list-controls" aria-label="Controles da lista de leads">
+      {role === "admin" ? (
+        <label>
+          {"Respons\u00e1vel"}
+          <select
+            aria-label={"Respons\u00e1vel"}
+            value={current.assigneeId ?? ""}
+            onChange={(event) => updateFilter("assigneeId", event.target.value)}
+          >
+            <option value="">{"Todos os respons\u00e1veis"}</option>
+            {sellerOptions.map((seller) => (
+              <option key={seller.id} value={seller.id}>
+                {seller.fullName}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
+      <label>
+        Ordenar por
+        <select
+          aria-label="Ordenar por"
+          value={current.sort ?? ""}
+          onChange={(event) => updateFilter("sort", event.target.value)}
+        >
+          <option value="">{"Ordem padr\u00e3o"}</option>
+          <option value="situation">{"Situa\u00e7\u00e3o"}</option>
+        </select>
+      </label>
+    </section>
+  );
+}
+````
+
+## Snapshot de código: `apps/web/src/components/lead-table.test.tsx`
+
+````tsx
+// @vitest-environment jsdom
+
+import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const navigation = vi.hoisted(() => ({
+  pathname: "/fila",
+  push: vi.fn(),
+  searchParams: new URLSearchParams("page=2"),
+}));
+
+vi.mock("next/navigation", () => ({
+  usePathname: () => navigation.pathname,
+  useRouter: () => ({ push: navigation.push }),
+  useSearchParams: () => navigation.searchParams,
+}));
+
+import { LeadListControls } from "./lead-list-controls";
+import { LeadTable } from "./lead-table";
+
+const lead = {
+  id: "lead-1",
+  contactName: "D\u00e9bora Souza",
+  sellerName: "Jessica",
+  companyName: "Empresa da D\u00e9bora",
+  campaignName: "Campanha WTG",
+  phoneDisplay: "(11) 98830-8029",
+  email: "debora@example.com",
+  commercialStatus: "undefined" as const,
+  isDisqualified: false,
+  commentCount: 0,
+  assignedAt: "2026-08-28T12:00:00.000Z",
+  lastUpdatedAt: "2026-08-28T12:00:00.000Z",
+};
+
+const seller = {
+  id: "seller-1",
+  fullName: "Jessica",
+  email: "jessica@wtgseguros.com.br",
+  role: "seller" as const,
+  active: true,
+  paused: false,
+};
+
+afterEach(() => {
+  cleanup();
+  vi.clearAllMocks();
+});
+
+describe("lista operacional de leads", () => {
+  it("destaca somente leads sem tratativa", () => {
+    render(
+      <LeadTable
+        role="seller"
+        leads={[lead, { ...lead, id: "treated", contactName: "Tratado", commentCount: 1 }]}
+      />,
+    );
+
+    expect(screen.getByText(lead.contactName).closest("tr")?.classList.contains(
+      "lead-row--awaiting-treatment",
+    )).toBe(true);
+    expect(screen.getByText("Tratado").closest("tr")?.classList.contains(
+      "lead-row--awaiting-treatment",
+    )).toBe(false);
+  });
+
+  it("renderiza o filtro de respons\u00e1vel apenas para administrador", () => {
+    render(
+      <LeadListControls
+        role="admin"
+        sellers={[seller]}
+        current={{ assigneeId: null, sort: "situation" }}
+      />,
+    );
+
+    expect(screen.getByLabelText("Respons\u00e1vel")).toBeTruthy();
+  });
+});
+````
+
 ## Snapshot de código: `apps/web/src/components/lead-table.tsx`
 
 ````tsx
@@ -18296,7 +19361,10 @@ export function LeadTable({ leads, role, transferTargets = [] }: LeadTableProps)
             {leads.map((lead) => {
               const currentLead = leadOverrides[lead.id] ?? lead;
               return (
-                <tr key={lead.id}>
+                <tr
+                  key={lead.id}
+                  className={currentLead.commentCount === 0 ? "lead-row--awaiting-treatment" : undefined}
+                >
                   <td>
                     <strong>{currentLead.contactName}</strong>
                   </td>
@@ -18535,6 +19603,18 @@ describe("acessibilidade e interação do modal de tratativa", () => {
       (screen.getByRole("button", { name: "Salvar tratativa" }) as HTMLButtonElement).disabled,
     ).toBe(true);
     expect(actions.submit).not.toHaveBeenCalled();
+  });
+
+  it("shows Potencial in the treatment selector", () => {
+    render(
+      <LeadTreatmentModal
+        lead={{ ...lead, commercialStatus: "potential" }}
+        mode="write"
+        defaultOpen
+      />,
+    );
+
+    expect(screen.getByRole("option", { name: "Potencial" })).toBeTruthy();
   });
 
   it("gera a chave de idempotência depois da hidratação, sem aleatoriedade no HTML inicial", async () => {
@@ -19022,6 +20102,7 @@ function TreatmentForm({
         >
           <option value="undefined">Indefinido</option>
           <option value="negotiation">Negociação</option>
+          <option value="potential">Potencial</option>
           <option value="won">Ganho</option>
         </select>
       </label>
@@ -19248,6 +20329,209 @@ export function LoginForm() {
         <small>Ambiente local · America/Sao_Paulo</small>
       </form>
     </main>
+  );
+}
+````
+
+## Snapshot de código: `apps/web/src/components/new-leads-notification-modal.dom.test.tsx`
+
+````tsx
+// @vitest-environment jsdom
+
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const { acknowledge } = vi.hoisted(() => ({ acknowledge: vi.fn() }));
+
+vi.mock("../lib/notifications/actions", () => ({
+  acknowledgeNewLeadsAction: acknowledge,
+}));
+
+import { NewLeadsNotificationModal } from "./new-leads-notification-modal";
+
+const snapshot = {
+  items: [
+    {
+      leadId: "lead-1",
+      contactName: "Ana Souza",
+      assignedAt: "2026-09-15T12:00:00.000Z",
+    },
+  ],
+  watermark: "2026-09-15T12:01:00.000Z",
+  acknowledgementToken: "token-assinado",
+  watermarkSequence: 8,
+};
+
+afterEach(() => {
+  cleanup();
+  vi.clearAllMocks();
+});
+
+describe("janela de novos leads", () => {
+  it("confirma o watermark somente ao fechar", async () => {
+    acknowledge.mockResolvedValue({ ok: true, message: "Novos leads confirmados." });
+    const user = userEvent.setup();
+    render(<NewLeadsNotificationModal snapshot={snapshot} />);
+
+    expect(acknowledge).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Fechar" }));
+
+    await waitFor(() => expect(acknowledge).toHaveBeenCalledWith(snapshot));
+    expect(screen.queryByRole("dialog", { name: "Novos leads" })).toBeNull();
+  });
+
+  it("mantém a janela aberta após falha de confirmação", async () => {
+    acknowledge.mockResolvedValue({
+      ok: false,
+      message: "Não foi possível confirmar os novos leads.",
+    });
+    const user = userEvent.setup();
+    render(<NewLeadsNotificationModal snapshot={snapshot} />);
+
+    await user.keyboard("{Escape}");
+
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "Não foi possível confirmar os novos leads.",
+    );
+    expect(screen.getByRole("dialog", { name: "Novos leads" })).toBeTruthy();
+  });
+
+  it("permite nova tentativa quando a confirmação remota é rejeitada", async () => {
+    acknowledge.mockRejectedValue(new Error("falha de transporte"));
+    const user = userEvent.setup();
+    render(<NewLeadsNotificationModal snapshot={snapshot} />);
+
+    await user.click(screen.getByRole("button", { name: "Fechar" }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "Não foi possível confirmar os novos leads.",
+    );
+    expect(screen.getByRole("dialog", { name: "Novos leads" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Fechar" }).hasAttribute("disabled")).toBe(false);
+  });
+
+  it("devolve o foco anterior depois de fechar", async () => {
+    acknowledge.mockResolvedValue({ ok: true, message: "Novos leads confirmados." });
+    const user = userEvent.setup();
+    const trigger = document.createElement("button");
+    trigger.textContent = "Origem";
+    document.body.append(trigger);
+    trigger.focus();
+
+    render(<NewLeadsNotificationModal snapshot={snapshot} />);
+    await user.click(screen.getByRole("button", { name: "Fechar" }));
+
+    await waitFor(() => expect(document.activeElement).toBe(trigger));
+    trigger.remove();
+  });
+});
+````
+
+## Snapshot de código: `apps/web/src/components/new-leads-notification-modal.tsx`
+
+````tsx
+"use client";
+
+import { useCallback, useEffect, useRef, useState } from "react";
+
+import type { NewLeadNotificationSnapshot } from "../lib/api/types";
+import { formatDateTime } from "../lib/dashboard/format";
+import { acknowledgeNewLeadsAction } from "../lib/notifications/actions";
+
+export function NewLeadsNotificationModal({
+  snapshot,
+}: {
+  snapshot: NewLeadNotificationSnapshot;
+}) {
+  const [open, setOpen] = useState(true);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+  const wasOpenRef = useRef(true);
+  const titleId = "new-leads-notification-title";
+
+  useEffect(() => {
+    if (open) {
+      previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      closeRef.current?.focus();
+    } else if (wasOpenRef.current) {
+      previousFocusRef.current?.focus();
+    }
+    wasOpenRef.current = open;
+  }, [open]);
+
+  const close = useCallback(async () => {
+    if (pending) return;
+    setPending(true);
+    setError(null);
+    try {
+      const result = await acknowledgeNewLeadsAction(snapshot);
+      if (result.ok) {
+        setOpen(false);
+        return;
+      }
+      setError(result.message);
+    } catch {
+      setError("Não foi possível confirmar os novos leads.");
+    } finally {
+      setPending(false);
+    }
+  }, [pending, snapshot]);
+
+  if (!open) return null;
+
+  return (
+    <div
+      className="modal-backdrop"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) void close();
+      }}
+    >
+      <section
+        className="modal-card new-leads-notification-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            event.preventDefault();
+            void close();
+          }
+          if (event.key === "Tab") event.preventDefault();
+        }}
+      >
+        <p className="eyebrow">Novas atribuições</p>
+        <h3 id={titleId}>Novos leads</h3>
+        <p className="muted">Confira os leads recebidos desde sua última confirmação.</p>
+        <ol className="new-leads-notification-modal__list" aria-label="Leads recebidos">
+          {snapshot.items.map((lead) => (
+            <li key={lead.leadId}>
+              <strong>{lead.contactName}</strong>
+              <span>Recebido em {formatDateTime(lead.assignedAt)}</span>
+            </li>
+          ))}
+        </ol>
+        {error ? (
+          <p className="form-error" role="alert">
+            {error}
+          </p>
+        ) : null}
+        <div className="modal-actions">
+          <button
+            ref={closeRef}
+            type="button"
+            className="table-action"
+            disabled={pending}
+            onClick={() => void close()}
+          >
+            {pending ? "Confirmando…" : "Fechar"}
+          </button>
+        </div>
+      </section>
+    </div>
   );
 }
 ````
@@ -19486,6 +20770,105 @@ export function QueueTable({ queue }: { queue: AdminQueue }) {
           </tbody>
         </table>
       )}
+    </section>
+  );
+}
+````
+
+## Snapshot de código: `apps/web/src/components/reports-dashboard.test.tsx`
+
+````tsx
+// @vitest-environment jsdom
+
+import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it } from "vitest";
+
+import { ReportsDashboard } from "./reports-dashboard";
+
+const report = {
+  period: { from: "2026-09-01T00:00:00.000Z", to: "2026-09-15T00:00:00.000Z" },
+  bySituation: [
+    { commercialStatus: "potential" as const, count: 3 },
+    { commercialStatus: "won" as const, count: 1 },
+  ],
+  bySeller: [{ sellerId: "seller-1", sellerName: "Jessica", count: 4 }],
+};
+
+afterEach(cleanup);
+
+describe("ReportsDashboard", () => {
+  it("renderiza distribui\u00e7\u00f5es por situa\u00e7\u00e3o e vendedor com equivalentes textuais", () => {
+    render(<ReportsDashboard report={report} period="all" />);
+
+    expect(screen.getByRole("heading", { name: "Por situa\u00e7\u00e3o" })).toBeTruthy();
+    expect(screen.getByText("Potencial: 3")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Por vendedor" })).toBeTruthy();
+    expect(screen.getByText("Jessica: 4")).toBeTruthy();
+  });
+
+  it("mostra estado vazio para ambas as distribui\u00e7\u00f5es", () => {
+    render(<ReportsDashboard report={{ ...report, bySituation: [], bySeller: [] }} period="all" />);
+
+    expect(screen.getAllByText("Nenhum dado para o per\u00edodo selecionado.")).toHaveLength(2);
+  });
+});
+````
+
+## Snapshot de código: `apps/web/src/components/reports-dashboard.tsx`
+
+````tsx
+import type { LeadDistributionReport } from "../lib/api/types";
+import { formatCommercialStatus } from "../lib/dashboard/format";
+import type { ReportPeriodKey } from "../lib/reports/queries";
+
+function DistributionBars({
+  items,
+  label,
+}: {
+  items: Array<{ name: string; count: number }>;
+  label: string;
+}) {
+  if (items.length === 0) return <p className="empty-state">Nenhum dado para o período selecionado.</p>;
+  const maximum = Math.max(...items.map((item) => item.count), 1);
+  return (
+    <ul className="report-bars" aria-label={label}>
+      {items.map((item) => (
+        <li key={item.name} className="report-bar">
+          <span className="report-bar__label">{item.name}: {item.count}</span>
+          <span className="report-bar__track" aria-hidden="true">
+            <span className="report-bar__fill" style={{ width: `${(item.count / maximum) * 100}%` }} />
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+export function ReportsDashboard({ report, period }: { report: LeadDistributionReport; period: ReportPeriodKey }) {
+  return (
+    <section className="reports-dashboard">
+      <form className="report-filters" action="/relatorios" method="get">
+        <label>
+          Período
+          <select name="period" defaultValue={period}>
+            <option value="all">Todo o histórico</option>
+            <option value="month">Mês atual</option>
+            <option value="last30">Últimos 30 dias</option>
+            <option value="custom">Personalizado</option>
+          </select>
+        </label>
+        <label>De<input name="from" type="date" /></label>
+        <label>Até<input name="to" type="date" /></label>
+        <button className="table-action" type="submit">Atualizar relatório</button>
+      </form>
+      <section className="report-card" aria-labelledby="report-by-situation">
+        <h2 id="report-by-situation">Por situação</h2>
+        <DistributionBars label="Distribuição por situação" items={report.bySituation.map((item) => ({ name: formatCommercialStatus(item.commercialStatus), count: item.count }))} />
+      </section>
+      <section className="report-card" aria-labelledby="report-by-seller">
+        <h2 id="report-by-seller">Por vendedor</h2>
+        <DistributionBars label="Distribuição por vendedor" items={report.bySeller.map((item) => ({ name: item.sellerName, count: item.count }))} />
+      </section>
     </section>
   );
 }
@@ -20723,6 +22106,7 @@ describe("cliente HTTP operacional", () => {
 import type {
   CreateManagedUserInput,
   ManagedUser,
+  NewLeadNotificationSnapshot,
   Page,
   Treatment,
   TreatmentInput,
@@ -20946,6 +22330,21 @@ export async function transferLeadOwnership(
     body: JSON.stringify({ seller_id: sellerId, reason, command_id: commandId, confirmed: true }),
   });
 }
+
+export async function acknowledgeNewLeadNotifications(
+  snapshot: NewLeadNotificationSnapshot,
+  sessionToken: string,
+): Promise<{ watermark: string }> {
+  return apiFetch<{ watermark: string }>("/api/lead-notifications/new/acknowledge", {
+    method: "POST",
+    headers: sessionHeaders(sessionToken),
+    body: JSON.stringify({
+      watermark: snapshot.watermark,
+      acknowledgementToken: snapshot.acknowledgementToken,
+      watermarkSequence: snapshot.watermarkSequence,
+    }),
+  });
+}
 ````
 
 ## Snapshot de código: `apps/web/src/lib/api/types.ts`
@@ -20953,7 +22352,7 @@ export async function transferLeadOwnership(
 ````typescript
 export type UserRole = "admin" | "seller";
 
-export type CommercialStatus = "undefined" | "negotiation" | "won";
+export type CommercialStatus = "undefined" | "negotiation" | "potential" | "won";
 
 export type SellerAvailability = "active" | "paused";
 
@@ -21063,6 +22462,25 @@ export type TreatmentSubmission = {
   isDisqualified: boolean;
   commentCount: number;
   lastUpdatedAt: string;
+};
+
+export type NewLeadNotification = {
+  leadId: string;
+  contactName: string;
+  assignedAt: string;
+};
+
+export type NewLeadNotificationSnapshot = {
+  items: NewLeadNotification[];
+  watermark: string;
+  acknowledgementToken: string;
+  watermarkSequence: number;
+};
+
+export type LeadDistributionReport = {
+  period: { from: string; to: string };
+  bySituation: Array<{ commercialStatus: CommercialStatus; count: number }>;
+  bySeller: Array<{ sellerId: string; sellerName: string; count: number }>;
 };
 ````
 
@@ -21335,6 +22753,7 @@ export function formatCommercialStatus(value: CommercialStatus): string {
   return {
     undefined: "Indefinido",
     negotiation: "Negociação",
+    potential: "Potencial",
     won: "Ganho",
   }[value];
 }
@@ -21372,9 +22791,9 @@ describe("getDashboardData", () => {
 
   it("solicita a página pedida e encaminha cookie de sessão", async () => {
     apiFetch.mockResolvedValue({});
-    await getDashboardData("opaque", 3);
+    await getDashboardData("opaque", 3, { assigneeId: "seller-1", sort: "situation" });
     expect(apiFetch).toHaveBeenCalledWith(
-      "/api/dashboard?page=3&limit=50",
+      "/api/dashboard?page=3&limit=50&assigneeId=seller-1&sort=situation",
       expect.objectContaining({ headers: { Cookie: "gerec_session=opaque" } }),
     );
   });
@@ -21416,6 +22835,28 @@ import { apiFetch } from "../api/client";
 import type { AdminDashboard, ApiDashboard } from "../api/types";
 import { SESSION_COOKIE } from "../auth/session";
 
+export type DashboardSort = "situation";
+
+export type DashboardListFilters = {
+  assigneeId: string | null;
+  sort: DashboardSort | null;
+};
+
+export type DashboardSearchParams = Record<string, string | string[] | undefined>;
+
+function singleValue(value: string | string[] | undefined): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+/** Only recognized query values are forwarded to the API read model. */
+export function dashboardListFilters(searchParams: DashboardSearchParams): DashboardListFilters {
+  const sort = singleValue(searchParams.sort);
+  return {
+    assigneeId: singleValue(searchParams.assigneeId),
+    sort: sort === "situation" ? sort : null,
+  };
+}
+
 export function pageNumber(value: string | undefined): number {
   const page = Number(value);
   if (!Number.isFinite(page) || !Number.isInteger(page) || page < 1) {
@@ -21424,8 +22865,15 @@ export function pageNumber(value: string | undefined): number {
   return page;
 }
 
-export async function getDashboardData(sessionToken: string, page = 1): Promise<ApiDashboard> {
-  return apiFetch<ApiDashboard>(`/api/dashboard?page=${page}&limit=50`, {
+export async function getDashboardData(
+  sessionToken: string,
+  page = 1,
+  filters: Partial<DashboardListFilters> = {},
+): Promise<ApiDashboard> {
+  const searchParams = new URLSearchParams({ page: String(page), limit: "50" });
+  if (filters.assigneeId) searchParams.set("assigneeId", filters.assigneeId);
+  if (filters.sort === "situation") searchParams.set("sort", filters.sort);
+  return apiFetch<ApiDashboard>(`/api/dashboard?${searchParams.toString()}`, {
     cache: "no-store",
     headers: { Cookie: `${SESSION_COOKIE}=${sessionToken}` },
   });
@@ -21434,6 +22882,145 @@ export async function getDashboardData(sessionToken: string, page = 1): Promise<
 /** A API define o papel; a web apenas escolhe a composição de apresentação. */
 export function isAdminDashboard(dashboard: ApiDashboard): dashboard is AdminDashboard {
   return dashboard.user.role === "admin";
+}
+````
+
+## Snapshot de código: `apps/web/src/lib/notifications/actions.test.ts`
+
+````typescript
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const { acknowledgeRequest, getSessionContext, revalidatePath } = vi.hoisted(() => ({
+  acknowledgeRequest: vi.fn(),
+  getSessionContext: vi.fn(),
+  revalidatePath: vi.fn(),
+}));
+
+vi.mock("next/cache", () => ({ revalidatePath }));
+vi.mock("../api/client", () => {
+  class ApiRequestError extends Error {
+    constructor(
+      message: string,
+      readonly status: number,
+    ) {
+      super(message);
+    }
+  }
+  return { acknowledgeNewLeadNotifications: acknowledgeRequest, ApiRequestError };
+});
+vi.mock("../auth/session", () => ({ getSessionContext }));
+
+import { acknowledgeNewLeadsAction } from "./actions";
+
+const snapshot = {
+  items: [],
+  watermark: "2026-09-15T12:01:00.000Z",
+  acknowledgementToken: "token-assinado",
+  watermarkSequence: 8,
+};
+
+describe("ação de confirmação de novos leads", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("encaminha o recibo emitido pela API somente para a sessão do vendedor", async () => {
+    getSessionContext.mockResolvedValue({
+      status: "authenticated",
+      sessionToken: "sessao-segura",
+      profile: { id: "seller-1", userId: "seller-1", fullName: "Sandra", email: "sandra@example.test", role: "seller" },
+    });
+    acknowledgeRequest.mockResolvedValue({ watermark: snapshot.watermark });
+
+    await expect(acknowledgeNewLeadsAction(snapshot)).resolves.toEqual({
+      ok: true,
+      message: "Novos leads confirmados.",
+    });
+    expect(acknowledgeRequest).toHaveBeenCalledWith(snapshot, "sessao-segura");
+    expect(revalidatePath).toHaveBeenCalledWith("/dashboard");
+  });
+
+  it("não envia confirmação quando a sessão não é de vendedor", async () => {
+    getSessionContext.mockResolvedValue({
+      status: "authenticated",
+      sessionToken: "sessao-admin",
+      profile: { id: "admin-1", userId: "admin-1", fullName: "Yago", email: "yago@example.test", role: "admin" },
+    });
+
+    await expect(acknowledgeNewLeadsAction(snapshot)).resolves.toEqual({
+      ok: false,
+      message: "Sessão expirada ou sem permissão.",
+    });
+    expect(acknowledgeRequest).not.toHaveBeenCalled();
+  });
+
+  it("converte indisponibilidade da sessão em erro seguro da janela", async () => {
+    getSessionContext.mockRejectedValue(new Error("falha interna"));
+
+    await expect(acknowledgeNewLeadsAction(snapshot)).resolves.toEqual({
+      ok: false,
+      message: "Não foi possível confirmar os novos leads.",
+    });
+    expect(acknowledgeRequest).not.toHaveBeenCalled();
+  });
+});
+````
+
+## Snapshot de código: `apps/web/src/lib/notifications/actions.ts`
+
+````typescript
+"use server";
+
+import { revalidatePath } from "next/cache";
+
+import {
+  acknowledgeNewLeadNotifications,
+  ApiRequestError,
+} from "../api/client";
+import type { NewLeadNotificationSnapshot } from "../api/types";
+import { getSessionContext } from "../auth/session";
+
+export type NewLeadAcknowledgementResult =
+  | { ok: true; message: string }
+  | { ok: false; message: string };
+
+function actionError(error: unknown): string {
+  if (error instanceof ApiRequestError) return error.message;
+  return "Não foi possível confirmar os novos leads.";
+}
+
+export async function acknowledgeNewLeadsAction(
+  snapshot: NewLeadNotificationSnapshot,
+): Promise<NewLeadAcknowledgementResult> {
+  try {
+    const session = await getSessionContext();
+    if (session.status !== "authenticated" || session.profile.role !== "seller") {
+      return { ok: false, message: "Sessão expirada ou sem permissão." };
+    }
+    await acknowledgeNewLeadNotifications(snapshot, session.sessionToken);
+    revalidatePath("/dashboard");
+    return { ok: true, message: "Novos leads confirmados." };
+  } catch (error) {
+    return { ok: false, message: actionError(error) };
+  }
+}
+````
+
+## Snapshot de código: `apps/web/src/lib/notifications/queries.ts`
+
+````typescript
+import { apiFetch } from "../api/client";
+import type { NewLeadNotificationSnapshot } from "../api/types";
+import { SESSION_COOKIE } from "../auth/session";
+
+/** Consulta uma janela estável; a confirmação acontece somente em uma ação separada. */
+export async function getNewLeadNotifications(
+  sessionToken: string,
+): Promise<NewLeadNotificationSnapshot> {
+  return apiFetch<NewLeadNotificationSnapshot>("/api/lead-notifications/new", {
+    cache: "no-store",
+    headers: { Cookie: `${SESSION_COOKIE}=${sessionToken}` },
+  });
 }
 ````
 
@@ -21679,6 +23266,34 @@ describe("ação de tratativa", () => {
     expect(revalidatePath).toHaveBeenCalledWith("/dashboard");
     expect(result).toMatchObject({ status: "success", submission: { commentCount: 3 } });
   });
+
+  it("encaminha Potencial para a API", async () => {
+    vi.mocked(submitLeadTreatment).mockResolvedValue({
+      leadId: "lead-1",
+      treatmentId: "treatment-2",
+      status: "created",
+      commercialStatus: "potential",
+      isDisqualified: false,
+      commentCount: 3,
+      lastUpdatedAt: "2026-09-15T12:00:00.000Z",
+    });
+
+    await submitLeadTreatmentAction(
+      initialTreatmentActionState,
+      formData({
+        leadId: "lead-1",
+        comment: "Oportunidade com potencial confirmado.",
+        commercialStatus: "potential",
+        idempotencyKey: "key-potential",
+      }),
+    );
+
+    expect(submitLeadTreatment).toHaveBeenCalledWith(
+      "lead-1",
+      expect.objectContaining({ commercialStatus: "potential" }),
+      "sessao-segura",
+    );
+  });
 });
 ````
 
@@ -21702,7 +23317,9 @@ type TreatmentHistoryResult =
   | { status: "error"; message: string; items: Treatment[] };
 
 function commercialStatus(value: FormDataEntryValue | null): CommercialStatus | null {
-  return value === "undefined" || value === "negotiation" || value === "won" ? value : null;
+  return value === "undefined" || value === "negotiation" || value === "potential" || value === "won"
+    ? value
+    : null;
 }
 
 function actionError(error: unknown): string {
@@ -21783,6 +23400,130 @@ export const initialTreatmentActionState: TreatmentActionState = {
   message: null,
   submission: null,
 };
+````
+
+## Snapshot de código: `apps/web/src/lib/reports/queries.test.ts`
+
+````typescript
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const { apiFetch } = vi.hoisted(() => ({ apiFetch: vi.fn() }));
+vi.mock("../api/client", () => ({ apiFetch }));
+
+import { getLeadDistributionReport, reportPeriod } from "./queries";
+
+describe("consultas de relat\u00f3rios", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("usa todo o hist\u00f3rico desde o marco UTC aprovado", () => {
+    expect(reportPeriod({}, new Date("2026-09-15T15:30:00.000Z"))).toEqual({
+      key: "all",
+      fromAt: "1970-01-01T00:00:00.000Z",
+      toAt: "2026-09-15T15:30:00.000Z",
+    });
+  });
+
+  it("calcula o m\u00eas atual a partir do primeiro dia UTC", () => {
+    expect(reportPeriod({ period: "month" }, new Date("2026-09-15T15:30:00.000Z"))).toEqual({
+      key: "month",
+      fromAt: "2026-09-01T00:00:00.000Z",
+      toAt: "2026-09-15T15:30:00.000Z",
+    });
+  });
+
+  it("calcula os \u00faltimos 30 dias a partir do rel\u00f3gio informado", () => {
+    expect(reportPeriod({ period: "last30" }, new Date("2026-09-15T15:30:00.000Z"))).toEqual({
+      key: "last30",
+      fromAt: "2026-08-16T15:30:00.000Z",
+      toAt: "2026-09-15T15:30:00.000Z",
+    });
+  });
+
+  it("preserva um intervalo personalizado v\u00e1lido", () => {
+    expect(
+      reportPeriod(
+        { period: "custom", from: "2026-09-01", to: "2026-09-15" },
+        new Date("2026-09-15T15:30:00.000Z"),
+      ),
+    ).toEqual({
+      key: "custom",
+      fromAt: "2026-09-01T00:00:00.000Z",
+      toAt: "2026-09-15T00:00:00.000Z",
+    });
+  });
+
+  it("encaminha o intervalo e a sess\u00e3o ao endpoint administrativo", async () => {
+    apiFetch.mockResolvedValue({});
+    await getLeadDistributionReport("sessao", {
+      key: "all",
+      fromAt: "1970-01-01T00:00:00.000Z",
+      toAt: "2026-09-15T15:30:00.000Z",
+    });
+
+    expect(apiFetch).toHaveBeenCalledWith(
+      "/api/admin/reports/lead-distribution?fromAt=1970-01-01T00%3A00%3A00.000Z&toAt=2026-09-15T15%3A30%3A00.000Z",
+      expect.objectContaining({ headers: { Cookie: "gerec_session=sessao" } }),
+    );
+  });
+});
+````
+
+## Snapshot de código: `apps/web/src/lib/reports/queries.ts`
+
+````typescript
+import { apiFetch } from "../api/client";
+import type { LeadDistributionReport } from "../api/types";
+import { SESSION_COOKIE } from "../auth/session";
+
+export type ReportPeriodKey = "all" | "month" | "last30" | "custom";
+export type ReportPeriod = { key: ReportPeriodKey; fromAt: string; toAt: string };
+export type ReportSearchParams = Record<string, string | string[] | undefined>;
+
+const ALL_HISTORY_FROM = "1970-01-01T00:00:00.000Z";
+
+function valueOf(value: string | string[] | undefined): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function utcDate(value: string | null): Date | null {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function allHistory(now: Date): ReportPeriod {
+  return { key: "all", fromAt: ALL_HISTORY_FROM, toAt: now.toISOString() };
+}
+
+/** Converts report controls into the explicit UTC interval required by the API. */
+export function reportPeriod(searchParams: ReportSearchParams, now = new Date()): ReportPeriod {
+  const key = valueOf(searchParams.period);
+  if (key === "last30") {
+    return { key, fromAt: new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString(), toAt: now.toISOString() };
+  }
+  if (key === "month") {
+    return { key, fromAt: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString(), toAt: now.toISOString() };
+  }
+  if (key === "custom") {
+    const from = utcDate(valueOf(searchParams.from));
+    const to = utcDate(valueOf(searchParams.to));
+    if (from && to && from < to) {
+      return { key, fromAt: from.toISOString(), toAt: to.toISOString() };
+    }
+  }
+  return allHistory(now);
+}
+
+export async function getLeadDistributionReport(
+  sessionToken: string,
+  period: ReportPeriod,
+): Promise<LeadDistributionReport> {
+  const searchParams = new URLSearchParams({ fromAt: period.fromAt, toAt: period.toAt });
+  return apiFetch<LeadDistributionReport>(
+    `/api/admin/reports/lead-distribution?${searchParams.toString()}`,
+    { cache: "no-store", headers: { Cookie: `${SESSION_COOKIE}=${sessionToken}` } },
+  );
+}
 ````
 
 ## Snapshot de código: `apps/web/src/lib/users/actions.ts`

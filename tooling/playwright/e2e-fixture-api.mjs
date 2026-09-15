@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 const FIXTURE_PASSWORD = "teste-local-wtg";
 const FIXTURE_NOW = "2026-08-28T15:00:00.000Z";
 const QUEUE_CURSOR_SELLER_ID = "seller-jessica";
+const SELLERS_WITH_PENDING_NEW_LEADS = new Set(["seller-sandra"]);
 
 function fixtureState() {
   const users = [
@@ -83,6 +84,13 @@ function fixtureState() {
     nelmaLead.commentCount = 1;
     nelmaLead.lastUpdatedAt = FIXTURE_NOW;
   }
+  const sandraLead = leads.find((lead) => lead.id === "lead-sandra-1");
+  if (sandraLead) {
+    sandraLead.isDisqualified = true;
+    sandraLead.commercialStatus = "won";
+    sandraLead.commentCount = 1;
+    sandraLead.lastUpdatedAt = FIXTURE_NOW;
+  }
   return {
     users,
     leads,
@@ -103,6 +111,7 @@ function fixtureState() {
         ]
       : [],
     sessions: new Map(),
+    notificationAcknowledgements: new Map(),
     nextUser: 1,
     nextTreatment: 1,
   };
@@ -216,10 +225,14 @@ function dashboard(state, user, url) {
       },
     };
   }
+  const assigneeId = url.searchParams.get("assigneeId");
+  const visibleLeads = assigneeId
+    ? allLeads.filter((lead) => lead.sellerId === assigneeId)
+    : allLeads;
   const entries = queue(state);
   return {
     user: { id: user.id, email: user.email, role: "admin" },
-    leads: page(allLeads, url),
+    leads: page(visibleLeads, url),
     history: page(allTreatments, url),
     queue: {
       items: entries,
@@ -227,6 +240,29 @@ function dashboard(state, user, url) {
       cursorSellerName: "Jessica",
       nextSellerName: "Jessica",
     },
+  };
+}
+
+function distributionReport(state, url) {
+  const from = url.searchParams.get("fromAt");
+  const to = url.searchParams.get("toAt");
+  const bySituation = new Map();
+  const bySeller = new Map();
+  for (const lead of state.leads) {
+    bySituation.set(lead.commercialStatus, (bySituation.get(lead.commercialStatus) ?? 0) + 1);
+    const seller = state.users.find((user) => user.id === lead.sellerId);
+    const current = bySeller.get(lead.sellerId) ?? {
+      sellerId: lead.sellerId,
+      sellerName: seller?.fullName ?? "NÃ£o informado",
+      count: 0,
+    };
+    current.count += 1;
+    bySeller.set(lead.sellerId, current);
+  }
+  return {
+    period: { from, to },
+    bySituation: [...bySituation].map(([commercialStatus, count]) => ({ commercialStatus, count })),
+    bySeller: [...bySeller.values()],
   };
 }
 
@@ -272,8 +308,52 @@ export function createE2eFixtureServer() {
       return json(response, 200, dashboard(state, user, url));
     }
 
+    if (url.pathname.startsWith("/api/lead-notifications/")) {
+      if (user.role !== "seller") return json(response, 403, { detail: "Forbidden" });
+      if (method === "GET" && url.pathname === "/api/lead-notifications/new") {
+        const acknowledged =
+          !SELLERS_WITH_PENDING_NEW_LEADS.has(user.id) ||
+          state.notificationAcknowledgements.get(user.id) === true;
+        const items = acknowledged
+          ? []
+          : state.leads
+              .filter((lead) => lead.sellerId === user.id)
+              .map((lead) => ({
+                leadId: lead.id,
+                contactName: lead.contactName,
+                assignedAt: lead.assignedAt,
+              }));
+        return json(response, 200, {
+          items,
+          watermark: FIXTURE_NOW,
+          acknowledgementToken: `fixture-notification-${user.id}`,
+          watermarkSequence: 1,
+        });
+      }
+      if (method === "POST" && url.pathname === "/api/lead-notifications/new/acknowledge") {
+        const input = await body(request);
+        if (
+          input?.watermark !== FIXTURE_NOW ||
+          input?.acknowledgementToken !== `fixture-notification-${user.id}` ||
+          input?.watermarkSequence !== 1
+        ) {
+          return json(response, 422, { detail: "Invalid acknowledgement" });
+        }
+        state.notificationAcknowledgements.set(user.id, true);
+        return json(response, 200, { watermark: FIXTURE_NOW });
+      }
+    }
+
     if (url.pathname.startsWith("/api/admin/")) {
       if (user.role !== "admin") return json(response, 403, { detail: "Forbidden" });
+      if (method === "GET" && url.pathname === "/api/admin/reports/lead-distribution") {
+        const from = url.searchParams.get("fromAt");
+        const to = url.searchParams.get("toAt");
+        if (!from || !to || Number.isNaN(Date.parse(from)) || Number.isNaN(Date.parse(to))) {
+          return json(response, 422, { detail: "Invalid report period" });
+        }
+        return json(response, 200, distributionReport(state, url));
+      }
       if (method === "GET" && url.pathname === "/api/admin/users") {
         return json(response, 200, page(state.users.map(publicUser), url));
       }
@@ -335,12 +415,12 @@ export function createE2eFixtureServer() {
         if (
           !input?.comment?.trim() ||
           input.comment.trim().length < 6 ||
-          !["undefined", "negotiation", "won"].includes(input.commercialStatus)
+          !["undefined", "potential", "negotiation", "won"].includes(input.commercialStatus)
         ) {
           return json(response, 422, { detail: "Invalid treatment" });
         }
         lead.commercialStatus = input.commercialStatus;
-        lead.isDisqualified = input.isDisqualified === true || lead.isDisqualified;
+        lead.isDisqualified = input.isDisqualified === true;
         lead.commentCount += 1;
         const createdAt = `2026-08-28T15:0${state.nextTreatment}:00.000Z`;
         lead.lastUpdatedAt = createdAt;

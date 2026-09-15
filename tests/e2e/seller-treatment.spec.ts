@@ -33,6 +33,6 @@ test.describe("tratativas do vendedor", () => {
     await page.getByRole("button", { name: "Salvar tratativa" }).click();
     await expect(page.getByRole("status")).toHaveText("Tratativa registrada.");
     await expect(lead).toContainText("Desqualificado");
-    await expect(lead).toContainText("Não informado");
+    await expect(lead).toContainText("Indefinido");
   });
 });
