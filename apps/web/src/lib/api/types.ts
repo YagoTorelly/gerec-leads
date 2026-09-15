@@ -124,3 +124,9 @@ export type NewLeadNotificationSnapshot = {
   acknowledgementToken: string;
   watermarkSequence: number;
 };
+
+export type LeadDistributionReport = {
+  period: { from: string; to: string };
+  bySituation: Array<{ commercialStatus: CommercialStatus; count: number }>;
+  bySeller: Array<{ sellerId: string; sellerName: string; count: number }>;
+};
