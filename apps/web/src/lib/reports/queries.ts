@@ -53,6 +53,12 @@ function saoPauloDate(value: string | null): Date | null {
   const [year, month, day] = value.split("-").map(Number);
   const localMidnight = Date.UTC(year, month - 1, day);
   if (Number.isNaN(localMidnight)) return null;
+  const calendarDate = new Date(localMidnight);
+  if (
+    calendarDate.getUTCFullYear() !== year
+    || calendarDate.getUTCMonth() !== month - 1
+    || calendarDate.getUTCDate() !== day
+  ) return null;
   let instant = localMidnight - saoPauloOffsetMilliseconds(new Date(localMidnight));
   instant = localMidnight - saoPauloOffsetMilliseconds(new Date(instant));
   return new Date(instant);

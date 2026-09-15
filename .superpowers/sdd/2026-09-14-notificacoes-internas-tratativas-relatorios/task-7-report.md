@@ -2,6 +2,13 @@
 
 ## Entrega
 
+### Correção WB-05 residual — calendário personalizado
+
+- `saoPauloDate` passou a validar os componentes reconstruídos de `Date.UTC` contra o texto recebido. Dias inexistentes, meses fora de 01–12 e demais overflows deixam o período `custom` explícito e inválido, sem normalização ou consulta indevida.
+- RED: `2026-02-30` era serializada como `2026-03-02T03:00:00.000Z`; o teste também registrou a rejeição de `2026-13-01`. GREEN: ambos preservam os valores informados no erro de período personalizado, enquanto o intervalo válido e a conversão America/Sao_Paulo → UTC permanecem cobertos.
+- Verificações: testes web de relatórios (6 arquivos, 13 testes), `npm run typecheck` e `npm run lint` passaram; este último tem somente o aviso preexistente de `<img>` em `login-form.tsx`. O spec E2E de notificações/relatórios passou com 3 testes.
+- A suíte E2E integral teve 14 de 15 cenários funcionais aprovados; o snapshot visual preexistente do dashboard vendedor capturou a tela transitória “Carregando dados da operação…” em vez da referência já preenchida (19% de diferença). Nenhum snapshot, fixture ou código fora da WB-05 foi alterado nesta correção.
+
 ### Verificação complementar antes do commit
 
 - A regressão de falha de consulta também verifica que os dois limites personalizados continuam no formulário de nova tentativa. `npm run test` passou com 110 testes em 28 arquivos; os read models e relatórios da API passaram com 19 testes.
