@@ -908,6 +908,37 @@ button:disabled {
   gap: 8px;
   margin-top: 18px;
 }
+.new-leads-notification-modal {
+  width: min(620px, calc(100vw - 64px));
+}
+.new-leads-notification-modal > .muted {
+  margin: 10px 0 0;
+}
+.new-leads-notification-modal__list {
+  display: grid;
+  gap: 9px;
+  margin: 20px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.new-leads-notification-modal__list li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-muted);
+}
+.new-leads-notification-modal__list strong {
+  color: var(--text-strong);
+}
+.new-leads-notification-modal__list span {
+  color: var(--muted);
+  font-size: 12px;
+  text-align: right;
+}
 .contact-modal__details {
   display: grid;
   gap: 12px;

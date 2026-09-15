@@ -1,6 +1,7 @@
 import type {
   CreateManagedUserInput,
   ManagedUser,
+  NewLeadNotificationSnapshot,
   Page,
   Treatment,
   TreatmentInput,
@@ -222,5 +223,20 @@ export async function transferLeadOwnership(
     method: "POST",
     headers: sessionHeaders(sessionToken),
     body: JSON.stringify({ seller_id: sellerId, reason, command_id: commandId, confirmed: true }),
+  });
+}
+
+export async function acknowledgeNewLeadNotifications(
+  snapshot: NewLeadNotificationSnapshot,
+  sessionToken: string,
+): Promise<{ watermark: string }> {
+  return apiFetch<{ watermark: string }>("/api/lead-notifications/new/acknowledge", {
+    method: "POST",
+    headers: sessionHeaders(sessionToken),
+    body: JSON.stringify({
+      watermark: snapshot.watermark,
+      acknowledgementToken: snapshot.acknowledgementToken,
+      watermarkSequence: snapshot.watermarkSequence,
+    }),
   });
 }

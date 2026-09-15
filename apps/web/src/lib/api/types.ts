@@ -111,3 +111,16 @@ export type TreatmentSubmission = {
   commentCount: number;
   lastUpdatedAt: string;
 };
+
+export type NewLeadNotification = {
+  leadId: string;
+  contactName: string;
+  assignedAt: string;
+};
+
+export type NewLeadNotificationSnapshot = {
+  items: NewLeadNotification[];
+  watermark: string;
+  acknowledgementToken: string;
+  watermarkSequence: number;
+};

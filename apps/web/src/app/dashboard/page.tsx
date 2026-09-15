@@ -5,6 +5,7 @@ import { AdminDashboard } from "../../components/admin-dashboard";
 import { AppShell } from "../../components/app-shell";
 import { LeadListControls } from "../../components/lead-list-controls";
 import { SellerDashboard } from "../../components/seller-dashboard";
+import { NewLeadsNotificationModal } from "../../components/new-leads-notification-modal";
 import { getManagedUsers } from "../../lib/api/client";
 import { getSessionContext } from "../../lib/auth/session";
 import {
@@ -14,6 +15,7 @@ import {
   pageNumber,
   type DashboardSearchParams,
 } from "../../lib/dashboard/queries";
+import { getNewLeadNotifications } from "../../lib/notifications/queries";
 
 export const dynamic = "force-dynamic";
 
@@ -48,11 +50,19 @@ export default async function DashboardPage({
   }
 
   let transferTargets: ManagedUser[] = [];
-  if (isAdminDashboard(dashboard)) {
+  const isAdmin = isAdminDashboard(dashboard);
+  let newLeadsSnapshot: Awaited<ReturnType<typeof getNewLeadNotifications>> | null = null;
+  if (isAdmin) {
     try {
       transferTargets = (await getManagedUsers(session.sessionToken, 1, 200)).items;
     } catch {
       // The dashboard remains readable if the optional transfer target list is unavailable.
+    }
+  } else {
+    try {
+      newLeadsSnapshot = await getNewLeadNotifications(session.sessionToken);
+    } catch {
+      // Falha opcional de notificação não pode impedir o uso do dashboard do vendedor.
     }
   }
 
@@ -69,6 +79,9 @@ export default async function DashboardPage({
           <SellerDashboard dashboard={dashboard} />
         </>
       )}
+      {!isAdminDashboard(dashboard) && newLeadsSnapshot && newLeadsSnapshot.items.length > 0 ? (
+        <NewLeadsNotificationModal snapshot={newLeadsSnapshot} />
+      ) : null}
     </AppShell>
   );
 }
