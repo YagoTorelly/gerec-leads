@@ -7,7 +7,12 @@ const { getDashboardData, getSessionContext, redirect } = vi.hoisted(() => ({
   redirect: vi.fn(),
 }));
 
-vi.mock("next/navigation", () => ({ redirect }));
+vi.mock("next/navigation", () => ({
+  redirect,
+  usePathname: () => "/fila",
+  useRouter: () => ({ push: vi.fn() }),
+  useSearchParams: () => new URLSearchParams(),
+}));
 vi.mock("../lib/auth/session", () => ({ getSessionContext }));
 vi.mock("../lib/dashboard/queries", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/dashboard/queries")>()),
