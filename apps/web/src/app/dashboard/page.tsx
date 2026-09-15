@@ -3,25 +3,34 @@ import type { ManagedUser } from "../../lib/api/types";
 
 import { AdminDashboard } from "../../components/admin-dashboard";
 import { AppShell } from "../../components/app-shell";
+import { LeadListControls } from "../../components/lead-list-controls";
 import { SellerDashboard } from "../../components/seller-dashboard";
 import { getManagedUsers } from "../../lib/api/client";
 import { getSessionContext } from "../../lib/auth/session";
-import { getDashboardData, isAdminDashboard, pageNumber } from "../../lib/dashboard/queries";
+import {
+  dashboardListFilters,
+  getDashboardData,
+  isAdminDashboard,
+  pageNumber,
+  type DashboardSearchParams,
+} from "../../lib/dashboard/queries";
 
 export const dynamic = "force-dynamic";
 
 export default async function DashboardPage({
   searchParams,
 }: {
-  searchParams: Promise<{ page?: string }>;
+  searchParams: Promise<DashboardSearchParams>;
 }) {
   const session = await getSessionContext();
   if (session.status !== "authenticated") redirect("/login");
 
-  const page = pageNumber((await searchParams).page ?? "1");
+  const params = await searchParams;
+  const page = pageNumber(typeof params.page === "string" ? params.page : "1");
+  const filters = dashboardListFilters(params);
   let dashboard: Awaited<ReturnType<typeof getDashboardData>> | null = null;
   try {
-    dashboard = await getDashboardData(session.sessionToken, page);
+    dashboard = await getDashboardData(session.sessionToken, page, filters);
   } catch {
     // A tela não expõe detalhes internos da falha da API.
   }
@@ -50,9 +59,15 @@ export default async function DashboardPage({
   return (
     <AppShell profile={session.profile} activePath="/dashboard" heading="Visão geral">
       {isAdminDashboard(dashboard) ? (
-        <AdminDashboard dashboard={dashboard} transferTargets={transferTargets} />
+        <>
+          <LeadListControls role="admin" sellers={transferTargets} current={filters} />
+          <AdminDashboard dashboard={dashboard} transferTargets={transferTargets} />
+        </>
       ) : (
-        <SellerDashboard dashboard={dashboard} />
+        <>
+          <LeadListControls role="seller" sellers={[]} current={filters} />
+          <SellerDashboard dashboard={dashboard} />
+        </>
       )}
     </AppShell>
   );

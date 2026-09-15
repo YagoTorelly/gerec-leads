@@ -88,6 +88,18 @@ describe("acessibilidade e interação do modal de tratativa", () => {
     expect(actions.submit).not.toHaveBeenCalled();
   });
 
+  it("shows Potencial in the treatment selector", () => {
+    render(
+      <LeadTreatmentModal
+        lead={{ ...lead, commercialStatus: "potential" }}
+        mode="write"
+        defaultOpen
+      />,
+    );
+
+    expect(screen.getByRole("option", { name: "Potencial" })).toBeTruthy();
+  });
+
   it("gera a chave de idempotência depois da hidratação, sem aleatoriedade no HTML inicial", async () => {
     const user = userEvent.setup();
     render(<LeadTreatmentModal lead={lead} mode="write" />);

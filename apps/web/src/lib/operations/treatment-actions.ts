@@ -15,7 +15,9 @@ type TreatmentHistoryResult =
   | { status: "error"; message: string; items: Treatment[] };
 
 function commercialStatus(value: FormDataEntryValue | null): CommercialStatus | null {
-  return value === "undefined" || value === "negotiation" || value === "won" ? value : null;
+  return value === "undefined" || value === "negotiation" || value === "potential" || value === "won"
+    ? value
+    : null;
 }
 
 function actionError(error: unknown): string {

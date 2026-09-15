@@ -1,6 +1,6 @@
 export type UserRole = "admin" | "seller";
 
-export type CommercialStatus = "undefined" | "negotiation" | "won";
+export type CommercialStatus = "undefined" | "negotiation" | "potential" | "won";
 
 export type SellerAvailability = "active" | "paused";
 

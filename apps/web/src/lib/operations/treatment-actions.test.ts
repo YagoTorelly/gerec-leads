@@ -102,4 +102,32 @@ describe("ação de tratativa", () => {
     expect(revalidatePath).toHaveBeenCalledWith("/dashboard");
     expect(result).toMatchObject({ status: "success", submission: { commentCount: 3 } });
   });
+
+  it("encaminha Potencial para a API", async () => {
+    vi.mocked(submitLeadTreatment).mockResolvedValue({
+      leadId: "lead-1",
+      treatmentId: "treatment-2",
+      status: "created",
+      commercialStatus: "potential",
+      isDisqualified: false,
+      commentCount: 3,
+      lastUpdatedAt: "2026-09-15T12:00:00.000Z",
+    });
+
+    await submitLeadTreatmentAction(
+      initialTreatmentActionState,
+      formData({
+        leadId: "lead-1",
+        comment: "Oportunidade com potencial confirmado.",
+        commercialStatus: "potential",
+        idempotencyKey: "key-potential",
+      }),
+    );
+
+    expect(submitLeadTreatment).toHaveBeenCalledWith(
+      "lead-1",
+      expect.objectContaining({ commercialStatus: "potential" }),
+      "sessao-segura",
+    );
+  });
 });

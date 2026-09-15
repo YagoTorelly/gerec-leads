@@ -10,9 +10,9 @@ describe("getDashboardData", () => {
 
   it("solicita a página pedida e encaminha cookie de sessão", async () => {
     apiFetch.mockResolvedValue({});
-    await getDashboardData("opaque", 3);
+    await getDashboardData("opaque", 3, { assigneeId: "seller-1", sort: "situation" });
     expect(apiFetch).toHaveBeenCalledWith(
-      "/api/dashboard?page=3&limit=50",
+      "/api/dashboard?page=3&limit=50&assigneeId=seller-1&sort=situation",
       expect.objectContaining({ headers: { Cookie: "gerec_session=opaque" } }),
     );
   });

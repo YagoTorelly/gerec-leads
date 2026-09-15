@@ -100,7 +100,10 @@ export function LeadTable({ leads, role, transferTargets = [] }: LeadTableProps)
             {leads.map((lead) => {
               const currentLead = leadOverrides[lead.id] ?? lead;
               return (
-                <tr key={lead.id}>
+                <tr
+                  key={lead.id}
+                  className={currentLead.commentCount === 0 ? "lead-row--awaiting-treatment" : undefined}
+                >
                   <td>
                     <strong>{currentLead.contactName}</strong>
                   </td>

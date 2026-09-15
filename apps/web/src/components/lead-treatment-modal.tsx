@@ -109,6 +109,7 @@ function TreatmentForm({
         >
           <option value="undefined">Indefinido</option>
           <option value="negotiation">Negociação</option>
+          <option value="potential">Potencial</option>
           <option value="won">Ganho</option>
         </select>
       </label>

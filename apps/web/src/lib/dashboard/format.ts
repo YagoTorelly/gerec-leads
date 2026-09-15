@@ -27,6 +27,7 @@ export function formatCommercialStatus(value: CommercialStatus): string {
   return {
     undefined: "Indefinido",
     negotiation: "Negociação",
+    potential: "Potencial",
     won: "Ganho",
   }[value];
 }
