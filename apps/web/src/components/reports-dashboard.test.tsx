@@ -25,4 +25,10 @@ describe("ReportsDashboard", () => {
     expect(screen.getByRole("heading", { name: "Por vendedor" })).toBeTruthy();
     expect(screen.getByText("Jessica: 4")).toBeTruthy();
   });
+
+  it("mostra estado vazio para ambas as distribui\u00e7\u00f5es", () => {
+    render(<ReportsDashboard report={{ ...report, bySituation: [], bySeller: [] }} period="all" />);
+
+    expect(screen.getAllByText("Nenhum dado para o per\u00edodo selecionado.")).toHaveLength(2);
+  });
 });
