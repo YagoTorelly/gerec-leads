@@ -84,13 +84,6 @@ jobs:
           print(f"E2E_LIFECYCLE_LEAD_ID={lifecycle}")
           print(f"E2E_ATTEMPTS_LEAD_ID={attempts}")
           PY
-      - name: Iniciar site Next.js
-        run: |
-          npm run dev > web.log 2>&1 &
-          echo $! > .web.pid
-          for attempt in {1..30}; do curl --fail --silent http://127.0.0.1:3000/login > /dev/null && exit 0; sleep 1; done
-          cat web.log
-          exit 1
       - name: Validar Python
         run: python -m pytest apps/api/tests -q
       - name: Registrar format check legado
@@ -108,6 +101,5 @@ jobs:
       - name: Encerrar serviços
         if: always()
         run: |
-          test ! -f .web.pid || kill "$(cat .web.pid)" || true
           test ! -f .api.pid || kill "$(cat .api.pid)" || true
           docker compose -f infra/mongodb/docker-compose.yml down --volumes

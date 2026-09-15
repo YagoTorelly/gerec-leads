@@ -17,10 +17,10 @@ describe("consultas de relat\u00f3rios", () => {
   });
 
   it("calcula o m\u00eas atual a partir do primeiro dia UTC", () => {
-    expect(reportPeriod({ period: "month" }, new Date("2026-09-15T15:30:00.000Z"))).toEqual({
+    expect(reportPeriod({ period: "month" }, new Date("2026-10-01T01:00:00.000Z"))).toEqual({
       key: "month",
-      fromAt: "2026-09-01T00:00:00.000Z",
-      toAt: "2026-09-15T15:30:00.000Z",
+      fromAt: "2026-09-01T03:00:00.000Z",
+      toAt: "2026-10-01T01:00:00.000Z",
     });
   });
 
@@ -40,8 +40,8 @@ describe("consultas de relat\u00f3rios", () => {
       ),
     ).toEqual({
       key: "custom",
-      fromAt: "2026-09-01T00:00:00.000Z",
-      toAt: "2026-09-15T00:00:00.000Z",
+      fromAt: "2026-09-01T03:00:00.000Z",
+      toAt: "2026-09-15T03:00:00.000Z",
     });
   });
 

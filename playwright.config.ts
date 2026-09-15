@@ -4,9 +4,10 @@ import { withoutNoColor } from "./tooling/playwright/sanitize-environment.mjs";
 
 const webServerEnvironment = withoutNoColor(process.env);
 const useExternalFixture = process.env.E2E_EXTERNAL === "1";
+const fixtureWebPort = Number(process.env.E2E_WEB_PORT ?? "3000");
 const baseURL = useExternalFixture
   ? (process.env.E2E_BASE_URL ?? "http://127.0.0.1:3000")
-  : "http://127.0.0.1:3000";
+  : `http://127.0.0.1:${fixtureWebPort}`;
 
 export default defineConfig({
   testDir: "./tests/e2e",

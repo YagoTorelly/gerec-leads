@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
-const { getLeadDistributionReport, getSessionContext, redirect } = vi.hoisted(() => ({
+const { getLeadDistributionReport, getSessionContext, isReportPeriod, redirect } = vi.hoisted(() => ({
   getLeadDistributionReport: vi.fn(),
   getSessionContext: vi.fn(),
+  isReportPeriod: vi.fn(),
   redirect: vi.fn(),
 }));
 
@@ -10,6 +11,7 @@ vi.mock("next/navigation", () => ({ redirect }));
 vi.mock("../../lib/auth/session", () => ({ getSessionContext }));
 vi.mock("../../lib/reports/queries", () => ({
   getLeadDistributionReport,
+  isReportPeriod,
   reportPeriod: vi.fn(),
 }));
 

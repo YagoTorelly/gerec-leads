@@ -17,7 +17,17 @@ export function NewLeadsNotificationModal({
   const closeRef = useRef<HTMLButtonElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const wasOpenRef = useRef(true);
+  const snapshotIdentity = `${snapshot.watermarkSequence}:${snapshot.acknowledgementToken}`;
+  const previousSnapshotIdentityRef = useRef(snapshotIdentity);
   const titleId = "new-leads-notification-title";
+
+  useEffect(() => {
+    if (previousSnapshotIdentityRef.current === snapshotIdentity) return;
+    previousSnapshotIdentityRef.current = snapshotIdentity;
+    setOpen(true);
+    setPending(false);
+    setError(null);
+  }, [snapshotIdentity]);
 
   useEffect(() => {
     if (open) {

@@ -29,7 +29,7 @@ test("CI inicia stack Mongo, API e web antes dos contratos e E2E", () => {
     ),
   );
   assert.ok(commands.some((command) => command.includes("gerec_api.main:create_app")));
-  assert.ok(commands.some((command) => command.includes("npm run dev")));
+  assert.equal(commands.some((command) => command.includes("npm run dev")), false);
   assert.ok(commands.includes("python -m pytest apps/api/tests -q"));
   assert.equal(commands.includes("npm run check"), false);
   const scopedWeb = steps.find((step) => step.name === "Validar TypeScript e testes web escopados");

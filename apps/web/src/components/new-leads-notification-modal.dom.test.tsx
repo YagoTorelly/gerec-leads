@@ -43,6 +43,30 @@ describe("janela de novos leads", () => {
     expect(screen.queryByRole("dialog", { name: "Novos leads" })).toBeNull();
   });
 
+  it("abre a nova janela quando a revalidação entrega outro snapshot", async () => {
+    acknowledge.mockResolvedValue({ ok: true, message: "Novos leads confirmados." });
+    const user = userEvent.setup();
+    const { rerender } = render(<NewLeadsNotificationModal snapshot={snapshot} />);
+
+    await user.click(screen.getByRole("button", { name: "Fechar" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Novos leads" })).toBeNull());
+
+    rerender(
+      <NewLeadsNotificationModal
+        snapshot={{
+          ...snapshot,
+          items: [{ ...snapshot.items[0], leadId: "lead-2", contactName: "Beatriz Lima" }],
+          watermark: "2026-09-15T12:02:00.000Z",
+          acknowledgementToken: "outro-token-assinado",
+          watermarkSequence: 9,
+        }}
+      />,
+    );
+
+    expect(await screen.findByRole("dialog", { name: "Novos leads" })).toBeTruthy();
+    expect(screen.getByText("Beatriz Lima")).toBeTruthy();
+  });
+
   it("mantém a janela aberta após falha de confirmação", async () => {
     acknowledge.mockResolvedValue({
       ok: false,

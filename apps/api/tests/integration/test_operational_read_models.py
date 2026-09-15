@@ -378,7 +378,6 @@ def test_read_models_preserve_potential_commercial_status() -> None:
 def test_admin_filters_by_current_assignee_and_sorts_leads_by_situation() -> None:
     """Breaks if an admin filter leaks another owner or ignores the situation order."""
     database = _database()
-    database["leads"].documents[1]["assigneeId"] = "seller-a"
     database["leads"].documents.extend(
         [
             {
@@ -399,9 +398,16 @@ def test_admin_filters_by_current_assignee_and_sorts_leads_by_situation() -> Non
                     "_id": "lead-e",
                     "assigneeId": "seller-b",
                     "contactName": "Daniela",
-                    "commercialStatus": "negotiation",
-                    "createdAt": datetime(2026, 8, 30, 11, tzinfo=UTC),
-                },
+                "commercialStatus": "negotiation",
+                "createdAt": datetime(2026, 8, 30, 11, tzinfo=UTC),
+            },
+            {
+                "_id": "lead-f",
+                "assigneeId": "seller-b",
+                "contactName": "Elisa",
+                "commercialStatus": "won",
+                "createdAt": datetime(2026, 8, 30, 12, tzinfo=UTC),
+            },
         ]
     )
 
@@ -409,9 +415,17 @@ def test_admin_filters_by_current_assignee_and_sorts_leads_by_situation() -> Non
         _admin(), assignee_id="seller-b", sort="situation"
     )
 
-    assert [item["sellerName"] for item in response["leads"]["items"]] == ["Sandra", "Sandra", "Sandra"]
-    assert [item["id"] for item in response["leads"]["items"]] == ["lead-d", "lead-e", "lead-c"]
+    assert [item["sellerName"] for item in response["leads"]["items"]] == ["Sandra"] * 5
+    assert [item["id"] for item in response["leads"]["items"]] == [
+        "lead-f",
+        "lead-b",
+        "lead-d",
+        "lead-e",
+        "lead-c",
+    ]
     assert [item["commercialStatus"] for item in response["leads"]["items"]] == [
+        "won",
+        "undefined",
         "negotiation",
         "negotiation",
         "potential",

@@ -2,6 +2,11 @@
 
 ## Entrega
 
+### Verificação complementar antes do commit
+
+- A regressão de falha de consulta também verifica que os dois limites personalizados continuam no formulário de nova tentativa. `npm run test` passou com 110 testes em 28 arquivos; os read models e relatórios da API passaram com 19 testes.
+- `npm run lint`, `npm run typecheck` e `npm run test:ci-contract` passaram novamente. O lint conserva somente o aviso preexistente de `<img>` em `apps/web/src/components/login-form.tsx`.
+
 - Criado o teste de aceitação integrado para a vendedora Sandra: nova janela de leads, tratativa `Potencial` e remoção do marcador de desqualificação conforme a última tratativa.
 - Criado o cenário administrativo de filtro por responsável e acesso aos relatórios por situação e vendedor.
 - Preservada e ampliada a verificação de autorização: vendedor em `/relatorios` é redirecionado para `/dashboard`, não recebe a navegação administrativa e não inicia consulta de distribuição.
@@ -29,3 +34,17 @@
 ## Divergência de caminho resolvida
 
 O briefing citava `apps/web/e2e`, mas a configuração oficial do Playwright usa `tests/e2e`. O novo spec foi colocado em `tests/e2e/operacao-notificacoes-relatorios.spec.ts`, para que seja executado por `npm run test:e2e`, sem mudança de configuração.
+
+## Correção final da revisão global
+
+- `sort=situation` agora ordena antes da paginação pela sequência aprovada de rótulos: Ganho (`won`), Indefinido (`undefined`), Negociação (`negotiation`) e Potencial (`potential`), preservando `createdAt` descendente e `_id` ascendente como desempates.
+- Mês atual e intervalo personalizado passam a interpretar calendário em `America/Sao_Paulo` e só então serializam os limites UTC exigidos pela API. Todo o histórico continua usando o marco UTC aprovado. Intervalo personalizado inválido permanece explícito, com as datas informadas, em vez de retornar silenciosamente ao histórico inteiro.
+- A janela de novos leads reabre quando a revalidação fornece snapshot com nova sequência/token; a confirmação anterior não oculta atribuições posteriores.
+- A página de relatórios preserva o shell administrativo em falhas de consulta, mantém os limites personalizados, mostra o período baseado na atribuição atual e oferece nova tentativa pelo formulário.
+- O workflow não inicia mais um Next.js concorrente: o Playwright sobe sua fixture isolada, compatível com os dados e o reset HTTP dos testes locais. O contrato de CI verifica a ausência do servidor prévio.
+
+### Evidências da correção final
+
+- RED: regressões novas falharam para ordem lexicográfica, calendário UTC, custom inválido, snapshot revalidado, formulário vazio, falha sem shell e servidor concorrente no CI.
+- GREEN focal: 16 testes de read model Python, 14 testes web e contrato de CI aprovados.
+- Gates: `python -m pytest apps/api/tests -q` — 187 aprovados, 9 ignorados; `npm run test` — 109 testes em 28 arquivos; lint, typecheck e build aprovados; `E2E_WEB_PORT=3002 npm run test:e2e` — 15 aprovados.

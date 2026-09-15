@@ -283,13 +283,20 @@ class DashboardService:
     ) -> dict[str, Any]:
         collection = self._database[MongoCollections.LEADS]
         cursor = collection.find(dict(query))
-        if hasattr(cursor, "sort"):
-            cursor = cursor.sort(_lead_sort(sort))
-        if hasattr(cursor, "skip"):
-            cursor = cursor.skip((page - 1) * page_size)
-        if hasattr(cursor, "limit"):
-            cursor = cursor.limit(page_size)
-        leads = list(cursor)
+        if sort == "situation":
+            leads = list(cursor)
+            leads.sort(key=lambda lead: str(lead.get("_id") or ""))
+            leads.sort(key=_lead_created_at_sort_value, reverse=True)
+            leads.sort(key=lambda lead: _situation_sort_rank(_commercial_status(lead)))
+            leads = leads[(page - 1) * page_size : page * page_size]
+        else:
+            if hasattr(cursor, "sort"):
+                cursor = cursor.sort(_lead_sort(sort))
+            if hasattr(cursor, "skip"):
+                cursor = cursor.skip((page - 1) * page_size)
+            if hasattr(cursor, "limit"):
+                cursor = cursor.limit(page_size)
+            leads = list(cursor)
         references = self._lead_references(leads)
         items = [self._lead_projection(lead, references=references) for lead in leads]
         total = collection.count_documents(dict(query)) if hasattr(collection, "count_documents") else len(items)
@@ -635,7 +642,21 @@ def _lead_sort(sort: str | None) -> list[tuple[str, int]]:
         return [("createdAt", -1)]
     if sort != "situation":
         raise ValueError("sort must be situation")
-    return [("commercialStatus", 1), ("createdAt", -1), ("_id", 1)]
+    return [("createdAt", -1), ("_id", 1)]
+
+
+_SITUATION_SORT_ORDER = {"won": 0, "undefined": 1, "negotiation": 2, "potential": 3}
+
+
+def _situation_sort_rank(status: str) -> int:
+    return _SITUATION_SORT_ORDER[status]
+
+
+def _lead_created_at_sort_value(lead: Mapping[str, Any]) -> float:
+    value = lead.get("createdAt")
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=UTC).timestamp() if value.tzinfo is None else value.timestamp()
+    return float("-inf")
 
 
 def _as_utc(value: datetime, *, name: str) -> datetime:
