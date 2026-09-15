@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
-const { getSessionContext, redirect } = vi.hoisted(() => ({
+const { getLeadDistributionReport, getSessionContext, redirect } = vi.hoisted(() => ({
+  getLeadDistributionReport: vi.fn(),
   getSessionContext: vi.fn(),
   redirect: vi.fn(),
 }));
@@ -8,7 +9,7 @@ const { getSessionContext, redirect } = vi.hoisted(() => ({
 vi.mock("next/navigation", () => ({ redirect }));
 vi.mock("../../lib/auth/session", () => ({ getSessionContext }));
 vi.mock("../../lib/reports/queries", () => ({
-  getLeadDistributionReport: vi.fn(),
+  getLeadDistributionReport,
   reportPeriod: vi.fn(),
 }));
 
@@ -33,5 +34,6 @@ describe("ReportsPage", () => {
 
     await expect(ReportsPage({ searchParams: Promise.resolve({}) })).rejects.toThrow("REDIRECT:/dashboard");
     expect(redirect).toHaveBeenCalledWith("/dashboard");
+    expect(getLeadDistributionReport).not.toHaveBeenCalled();
   });
 });
