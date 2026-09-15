@@ -23,11 +23,13 @@ class Cursor:
     def __init__(self, values: list[dict[str, Any]]) -> None:
         self.values = values
 
-    def sort(self, field: str, direction: int) -> "Cursor":
-        self.values.sort(
-            key=lambda value: value.get(field) or datetime.min.replace(tzinfo=UTC),
-            reverse=direction < 0,
-        )
+    def sort(self, fields: str | list[tuple[str, int]], direction: int | None = None) -> "Cursor":
+        sort_fields = [(fields, direction)] if isinstance(fields, str) else fields
+        for field, field_direction in reversed(sort_fields):
+            self.values.sort(
+                key=lambda value: _sort_value(value.get(field)),
+                reverse=field_direction is not None and field_direction < 0,
+            )
         return self
 
     def skip(self, amount: int) -> "Cursor":
@@ -80,6 +82,12 @@ def _matches(document: dict[str, Any], query: dict[str, Any]) -> bool:
         elif value != expected:
             return False
     return True
+
+
+def _sort_value(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value
+    return str(value or "")
 
 
 def _database() -> Database:
@@ -365,6 +373,70 @@ def test_read_models_preserve_potential_commercial_status() -> None:
 
     assert lead["commercialStatus"] == "potential"
     assert treatment["commercialStatus"] == "potential"
+
+
+def test_admin_filters_by_current_assignee_and_sorts_leads_by_situation() -> None:
+    """Breaks if an admin filter leaks another owner or ignores the situation order."""
+    database = _database()
+    database["leads"].documents[1]["assigneeId"] = "seller-a"
+    database["leads"].documents.extend(
+        [
+            {
+                "_id": "lead-c",
+                "assigneeId": "seller-b",
+                "contactName": "Beatriz",
+                "commercialStatus": "potential",
+                "createdAt": datetime(2026, 8, 30, 10, tzinfo=UTC),
+            },
+                {
+                    "_id": "lead-d",
+                    "assigneeId": "seller-b",
+                    "contactName": "Carla",
+                    "commercialStatus": "negotiation",
+                    "createdAt": datetime(2026, 8, 30, 11, tzinfo=UTC),
+                },
+                {
+                    "_id": "lead-e",
+                    "assigneeId": "seller-b",
+                    "contactName": "Daniela",
+                    "commercialStatus": "negotiation",
+                    "createdAt": datetime(2026, 8, 30, 11, tzinfo=UTC),
+                },
+        ]
+    )
+
+    response = DashboardService(database).for_user(
+        _admin(), assignee_id="seller-b", sort="situation"
+    )
+
+    assert [item["sellerName"] for item in response["leads"]["items"]] == ["Sandra", "Sandra", "Sandra"]
+    assert [item["id"] for item in response["leads"]["items"]] == ["lead-d", "lead-e", "lead-c"]
+    assert [item["commercialStatus"] for item in response["leads"]["items"]] == [
+        "negotiation",
+        "negotiation",
+        "potential",
+    ]
+
+
+def test_seller_cannot_override_dashboard_scope_with_assignee_filter() -> None:
+    """Breaks if a query parameter can widen a seller's server-side lead scope."""
+    response = DashboardService(_database()).for_user(
+        _seller_a(), assignee_id="seller-b", sort="situation"
+    )
+
+    assert {item["sellerName"] for item in response["leads"]["items"]} == {"Renato"}
+
+
+def test_dashboard_route_rejects_an_unknown_sort() -> None:
+    """Breaks if an unsupported sort silently produces an arbitrary lead order."""
+    app = FastAPI()
+    app.state.dashboard_service = DashboardService(_database())
+    app.include_router(dashboard_router)
+    app.dependency_overrides[get_current_user] = _admin
+
+    response = TestClient(app).get("/api/dashboard", params={"sort": "createdAt"})
+
+    assert response.status_code == 422
 
 
 def test_previous_seller_cannot_read_treatments_after_lead_transfer() -> None:

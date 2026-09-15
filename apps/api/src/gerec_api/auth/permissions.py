@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Mapping
 
 from bson import ObjectId
@@ -56,6 +56,21 @@ class PermissionService:
             return {"sellerId": {"$in": ids}}
         raise PermissionDenied(f"seller cannot read {resource}")
 
+    @classmethod
+    def dashboard_lead_scope(
+        cls, user: CurrentUser | None, *, assignee_id: str | None = None
+    ) -> dict[str, Any]:
+        """Build the dashboard lead scope without accepting a seller's override."""
+        current = cls.require_current_user(user)
+        if current.role != "admin":
+            return cls.scope_query(current, "leads")
+        if assignee_id is None:
+            return {}
+        requested_id = assignee_id.strip()
+        if not requested_id:
+            raise ValueError("assigneeId must not be empty")
+        return {"assigneeId": {"$in": _identity_values(requested_id)}}
+
 
 class DashboardService:
     """Read-model boundary with intentionally different contracts for each role.
@@ -81,12 +96,26 @@ class DashboardService:
         *,
         page: int = 1,
         limit: int | None = None,
+        assignee_id: str | None = None,
+        sort: str | None = None,
     ) -> dict[str, Any]:
         current = PermissionService.require_current_user(user)
         return (
-            self.for_admin(current, page=page, limit=limit)
+            self.for_admin(
+                current,
+                page=page,
+                limit=limit,
+                assignee_id=assignee_id,
+                sort=sort,
+            )
             if current.role == "admin"
-            else self.for_seller(current, page=page, limit=limit)
+            else self.for_seller(
+                current,
+                page=page,
+                limit=limit,
+                assignee_id=assignee_id,
+                sort=sort,
+            )
         )
 
     def for_admin(
@@ -95,13 +124,20 @@ class DashboardService:
         *,
         page: int = 1,
         limit: int | None = None,
+        assignee_id: str | None = None,
+        sort: str | None = None,
     ) -> dict[str, Any]:
         PermissionService.require_admin(user)
         current = PermissionService.require_current_user(user)
         page, page_size = self._pagination(page, limit)
         return {
             "user": _public_user(current),
-            "leads": self._lead_page({}, page, page_size),
+            "leads": self._lead_page(
+                PermissionService.dashboard_lead_scope(current, assignee_id=assignee_id),
+                page,
+                page_size,
+                sort=sort,
+            ),
             "history": self._treatment_page({}, page, page_size, include_lead_name=True),
             "queue": self._admin_queue(),
         }
@@ -112,6 +148,8 @@ class DashboardService:
         *,
         page: int = 1,
         limit: int | None = None,
+        assignee_id: str | None = None,
+        sort: str | None = None,
     ) -> dict[str, Any]:
         current = PermissionService.require_current_user(user)
         if current.role != "seller":
@@ -119,7 +157,12 @@ class DashboardService:
         page, page_size = self._pagination(page, limit)
         return {
             "user": _public_user(current),
-            "leads": self._lead_page(PermissionService.scope_query(current, "leads"), page, page_size),
+            "leads": self._lead_page(
+                PermissionService.dashboard_lead_scope(current, assignee_id=assignee_id),
+                page,
+                page_size,
+                sort=sort,
+            ),
             "history": self._treatment_page(
                 self._seller_history_query(current),
                 page,
@@ -173,11 +216,75 @@ class DashboardService:
     def _pagination(self, page: int, limit: int | None) -> tuple[int, int]:
         return _page_number(page), _page_limit(self._page_size if limit is None else limit)
 
-    def _lead_page(self, query: Mapping[str, Any], page: int, page_size: int) -> dict[str, Any]:
+    def lead_distribution(
+        self,
+        user: CurrentUser | None,
+        *,
+        from_at: datetime,
+        to_at: datetime,
+    ) -> dict[str, Any]:
+        """Aggregate current lead ownership by situation in an assignment interval."""
+        PermissionService.require_admin(user)
+        from_utc = _as_utc(from_at, name="fromAt")
+        to_utc = _as_utc(to_at, name="toAt")
+        if from_utc >= to_utc:
+            raise ValueError("fromAt must be earlier than toAt")
+        leads = list(
+            self._database[MongoCollections.LEADS].find(
+                {"assignedAt": {"$gte": from_utc, "$lt": to_utc}}
+            )
+        )
+        by_situation: dict[str, int] = {}
+        by_seller: dict[str, dict[str, Any]] = {}
+        seller_ids: list[Any] = []
+        for lead in leads:
+            situation = _commercial_status(lead)
+            by_situation[situation] = by_situation.get(situation, 0) + 1
+            assignee_id = lead.get("assigneeId")
+            if assignee_id is None:
+                continue
+            seller_id = str(assignee_id)
+            by_seller[seller_id] = {
+                "sellerId": seller_id,
+                "sellerName": NOT_INFORMED,
+                "count": by_seller.get(seller_id, {}).get("count", 0) + 1,
+            }
+            seller_ids.extend(_identity_values(assignee_id))
+
+        users = self._database[MongoCollections.USERS].find(
+            {"_id": {"$in": list(dict.fromkeys(seller_ids))}}
+        ) if seller_ids else []
+        names = {
+            str(candidate): _name_or_fallback(document)
+            for document in users
+            for candidate in _identity_values(document.get("_id"))
+        }
+        for seller in by_seller.values():
+            seller["sellerName"] = names.get(seller["sellerId"], NOT_INFORMED)
+
+        return {
+            "period": {"from": from_utc.isoformat(), "to": to_utc.isoformat()},
+            "bySituation": [
+                {"commercialStatus": situation, "count": count}
+                for situation, count in sorted(by_situation.items())
+            ],
+            "bySeller": sorted(
+                by_seller.values(), key=lambda item: (item["sellerName"], item["sellerId"])
+            ),
+        }
+
+    def _lead_page(
+        self,
+        query: Mapping[str, Any],
+        page: int,
+        page_size: int,
+        *,
+        sort: str | None = None,
+    ) -> dict[str, Any]:
         collection = self._database[MongoCollections.LEADS]
         cursor = collection.find(dict(query))
         if hasattr(cursor, "sort"):
-            cursor = cursor.sort("createdAt", -1)
+            cursor = cursor.sort(_lead_sort(sort))
         if hasattr(cursor, "skip"):
             cursor = cursor.skip((page - 1) * page_size)
         if hasattr(cursor, "limit"):
@@ -521,6 +628,20 @@ def _commercial_status(document: Mapping[str, Any]) -> str:
     if document.get("qualificationStatus") in {"qualified", "in_negotiation", "negotiation"}:
         return "negotiation"
     return "undefined"
+
+
+def _lead_sort(sort: str | None) -> list[tuple[str, int]]:
+    if sort is None:
+        return [("createdAt", -1)]
+    if sort != "situation":
+        raise ValueError("sort must be situation")
+    return [("commercialStatus", 1), ("createdAt", -1), ("_id", 1)]
+
+
+def _as_utc(value: datetime, *, name: str) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{name} must include a timezone")
+    return value.astimezone(UTC)
 
 
 def _page_number(value: int) -> int:

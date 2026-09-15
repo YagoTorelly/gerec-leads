@@ -29,6 +29,7 @@ from gerec_api.routes.queue import router as queue_router
 from gerec_api.routes.dashboard import router as dashboard_router
 from gerec_api.routes.admin import router as admin_router
 from gerec_api.routes.lead_notifications import router as lead_notifications_router
+from gerec_api.routes.reports import router as reports_router
 
 
 API_CONTRACT_VERSION = "1"
@@ -94,4 +95,5 @@ def create_app(
     app.include_router(dashboard_router)
     app.include_router(admin_router)
     app.include_router(lead_notifications_router)
+    app.include_router(reports_router)
     return app
