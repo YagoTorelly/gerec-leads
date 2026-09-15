@@ -59,6 +59,20 @@ describe("janela de novos leads", () => {
     expect(screen.getByRole("dialog", { name: "Novos leads" })).toBeTruthy();
   });
 
+  it("permite nova tentativa quando a confirmação remota é rejeitada", async () => {
+    acknowledge.mockRejectedValue(new Error("falha de transporte"));
+    const user = userEvent.setup();
+    render(<NewLeadsNotificationModal snapshot={snapshot} />);
+
+    await user.click(screen.getByRole("button", { name: "Fechar" }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "Não foi possível confirmar os novos leads.",
+    );
+    expect(screen.getByRole("dialog", { name: "Novos leads" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Fechar" }).hasAttribute("disabled")).toBe(false);
+  });
+
   it("devolve o foco anterior depois de fechar", async () => {
     acknowledge.mockResolvedValue({ ok: true, message: "Novos leads confirmados." });
     const user = userEvent.setup();

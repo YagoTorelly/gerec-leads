@@ -33,13 +33,18 @@ export function NewLeadsNotificationModal({
     if (pending) return;
     setPending(true);
     setError(null);
-    const result = await acknowledgeNewLeadsAction(snapshot);
-    if (result.ok) {
-      setOpen(false);
-      return;
+    try {
+      const result = await acknowledgeNewLeadsAction(snapshot);
+      if (result.ok) {
+        setOpen(false);
+        return;
+      }
+      setError(result.message);
+    } catch {
+      setError("Não foi possível confirmar os novos leads.");
+    } finally {
+      setPending(false);
     }
-    setError(result.message);
-    setPending(false);
   }, [pending, snapshot]);
 
   if (!open) return null;
