@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 
 import { AppShell } from "../../components/app-shell";
+import { ManualLeadForm } from "../../components/manual-lead-form";
 import { Pagination } from "../../components/pagination";
 import { UserManagement } from "../../components/user-management";
 import { getManagedUsers } from "../../lib/api/client";
@@ -22,6 +23,7 @@ export default async function UsersPage({
 
   return (
     <AppShell profile={session.profile} activePath="/usuarios" eyebrow="Administração" heading="Usuários">
+      <ManualLeadForm latestCampaignDefaults={null} />
       <UserManagement key={`users-page-${users.page}`} users={users.items} page={users.page} />
       <Pagination href="/usuarios" page={users} />
     </AppShell>

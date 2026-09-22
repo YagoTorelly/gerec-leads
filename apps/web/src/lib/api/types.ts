@@ -95,6 +95,23 @@ export type CreateManagedUserInput = {
 
 export type ResetManagedUserPasswordInput = { password: string };
 
+export type ManualLeadInput = {
+  name: string;
+  email: string;
+  phone: string;
+  campaign?: string;
+  source?: string;
+};
+
+export type ManualLead = {
+  leadId: string;
+  manualQueueLeadId: string;
+  assigneeId: string | null;
+  assignedAt: string | null;
+  commercialStatus: "undefined";
+  source: "manual";
+};
+
 export type TreatmentInput = {
   comment: string;
   commercialStatus: CommercialStatus;

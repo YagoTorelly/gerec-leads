@@ -1,6 +1,8 @@
 import type {
   CreateManagedUserInput,
   ManagedUser,
+  ManualLead,
+  ManualLeadInput,
   NewLeadNotificationSnapshot,
   Page,
   Treatment,
@@ -107,6 +109,35 @@ function text(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+function manualLead(value: unknown): ManualLead {
+  if (typeof value !== "object" || value === null) {
+    throw new ApiRequestError("A resposta do cadastro de lead é inválida.", 502);
+  }
+  const record = value as Record<string, unknown>;
+  const leadId = text(record.leadId);
+  const manualQueueLeadId = text(record.manualQueueLeadId);
+  const assigneeId = record.assigneeId === null ? null : text(record.assigneeId);
+  const assignedAt = record.assignedAt === null ? null : text(record.assignedAt);
+  if (
+    !leadId ||
+    !manualQueueLeadId ||
+    (record.assigneeId !== null && !assigneeId) ||
+    (record.assignedAt !== null && !assignedAt) ||
+    record.commercialStatus !== "undefined" ||
+    record.source !== "manual"
+  ) {
+    throw new ApiRequestError("A resposta do cadastro de lead é inválida.", 502);
+  }
+  return {
+    leadId,
+    manualQueueLeadId,
+    assigneeId,
+    assignedAt,
+    commercialStatus: "undefined",
+    source: "manual",
+  };
+}
+
 function managedUserPage(value: unknown): Page<ManagedUser> {
   if (typeof value !== "object" || value === null) {
     throw new ApiRequestError("A resposta de usuários é inválida.", 502);
@@ -153,6 +184,27 @@ export async function createManagedUser(
       method: "POST",
       headers: sessionHeaders(sessionToken),
       body: JSON.stringify(input),
+    }),
+  );
+}
+
+export async function createManualLead(
+  input: ManualLeadInput,
+  idempotencyKey: string,
+  sessionToken: string,
+): Promise<ManualLead> {
+  const payload: ManualLeadInput = {
+    name: input.name,
+    email: input.email,
+    phone: input.phone,
+    ...(input.campaign ? { campaign: input.campaign } : {}),
+    ...(input.source ? { source: input.source } : {}),
+  };
+  return manualLead(
+    await apiFetch<unknown>("/api/admin/leads/manual", {
+      method: "POST",
+      headers: sessionHeaders(sessionToken, { "Idempotency-Key": idempotencyKey }),
+      body: JSON.stringify(payload),
     }),
   );
 }

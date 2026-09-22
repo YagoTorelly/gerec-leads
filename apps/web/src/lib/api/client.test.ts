@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   apiFetch,
+  createManualLead,
   createManagedUser,
   getManagedUsers,
   getLeadTreatments,
@@ -182,6 +183,52 @@ describe("cliente HTTP operacional", () => {
         headers: expect.objectContaining({
           "Content-Type": "application/json",
           Cookie: "gerec_session=sessao",
+        }),
+      }),
+    );
+  });
+
+  it("serializa o lead manual com chave idempotente e valida a resposta pública", async () => {
+    vi.stubEnv("NEXT_PUBLIC_API_URL", "https://api.wtg.example");
+    const response = {
+      leadId: "lead-1",
+      manualQueueLeadId: "MAN-123",
+      assigneeId: "seller-1",
+      assignedAt: "2026-09-22T13:00:00Z",
+      commercialStatus: "undefined",
+      source: "manual",
+    };
+    const request = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify(response), { status: 201 }));
+    vi.stubGlobal("fetch", request);
+
+    await expect(
+      createManualLead(
+        {
+          name: "Contato manual",
+          email: "contato@example.com",
+          phone: "+55 11 99999-1234",
+          campaign: undefined,
+          source: undefined,
+        },
+        "command-1",
+        "sessao-admin",
+      ),
+    ).resolves.toEqual(response);
+    expect(request).toHaveBeenCalledWith(
+      "https://api.wtg.example/api/admin/leads/manual",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          "Content-Type": "application/json",
+          Cookie: "gerec_session=sessao-admin",
+          "Idempotency-Key": "command-1",
+        }),
+        body: JSON.stringify({
+          name: "Contato manual",
+          email: "contato@example.com",
+          phone: "+55 11 99999-1234",
         }),
       }),
     );
