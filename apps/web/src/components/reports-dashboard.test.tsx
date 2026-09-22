@@ -17,13 +17,23 @@ const report = {
 afterEach(cleanup);
 
 describe("ReportsDashboard", () => {
-  it("renderiza distribui\u00e7\u00f5es por situa\u00e7\u00e3o e vendedor com equivalentes textuais", () => {
-    render(<ReportsDashboard report={report} period="all" />);
+  it("renderiza os dois gr\u00e1ficos em linhas completas com colunas verticais e equivalentes textuais", () => {
+    const { container } = render(<ReportsDashboard report={report} period="all" />);
 
     expect(screen.getByRole("heading", { name: "Por situa\u00e7\u00e3o" })).toBeTruthy();
     expect(screen.getByText("Potencial: 3")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Por vendedor" })).toBeTruthy();
     expect(screen.getByText("Jessica: 4")).toBeTruthy();
+
+    expect(container.querySelector(".reports-dashboard--stacked")).toBeTruthy();
+    expect(container.querySelectorAll(".report-card--full")).toHaveLength(2);
+    expect(container.querySelectorAll(".report-columns")).toHaveLength(2);
+    expect(container.querySelectorAll(".report-column")).toHaveLength(3);
+
+    const bars = container.querySelectorAll<HTMLElement>(".report-column__bar");
+    expect(bars[0]?.style.height).toBe("100%");
+    expect(bars[1]?.style.height).toBe("33.33333333333333%");
+    expect(bars[2]?.style.height).toBe("100%");
   });
 
   it("mostra estado vazio para ambas as distribui\u00e7\u00f5es", () => {

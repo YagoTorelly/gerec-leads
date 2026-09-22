@@ -11,15 +11,21 @@ function DistributionBars({
   items: Array<{ name: string; count: number }>;
   label: string;
 }) {
-  if (items.length === 0) return <p className="empty-state">Nenhum dado para o período selecionado.</p>;
+  if (items.length === 0)
+    return <p className="empty-state">Nenhum dado para o período selecionado.</p>;
   const maximum = Math.max(...items.map((item) => item.count), 1);
   return (
-    <ul className="report-bars" aria-label={label}>
+    <ul className="report-columns" aria-label={label}>
       {items.map((item) => (
-        <li key={item.name} className="report-bar">
-          <span className="report-bar__label">{item.name}: {item.count}</span>
-          <span className="report-bar__track" aria-hidden="true">
-            <span className="report-bar__fill" style={{ width: `${(item.count / maximum) * 100}%` }} />
+        <li key={item.name} className="report-column">
+          <span className="report-column__plot" aria-hidden="true">
+            <span
+              className="report-column__bar"
+              style={{ height: `${(item.count / maximum) * 100}%` }}
+            />
+          </span>
+          <span className="report-column__label">
+            {item.name}: {item.count}
           </span>
         </li>
       ))}
@@ -57,13 +63,14 @@ export function ReportsDashboard({
   interval?: { from: string; to: string };
 }) {
   const reportPeriod = report?.period ?? interval;
-  const customFrom = from ?? (period === "custom" ? saoPauloDateInputValue(reportPeriod?.from) : "");
+  const customFrom =
+    from ?? (period === "custom" ? saoPauloDateInputValue(reportPeriod?.from) : "");
   const customTo = to ?? (period === "custom" ? saoPauloDateInputValue(reportPeriod?.to) : "");
   const periodFrom = reportPeriod?.from ?? (customFrom ? `${customFrom}T00:00:00` : null);
   const periodTo = reportPeriod?.to ?? (customTo ? `${customTo}T00:00:00` : null);
 
   return (
-    <section className="reports-dashboard">
+    <section className="reports-dashboard reports-dashboard--stacked">
       <form className="report-filters" action="/relatorios" method="get">
         <label>
           Período
@@ -74,23 +81,46 @@ export function ReportsDashboard({
             <option value="custom">Personalizado</option>
           </select>
         </label>
-        <label>De<input name="from" type="date" defaultValue={customFrom} /></label>
-        <label>Até<input name="to" type="date" defaultValue={customTo} /></label>
-        <button className="table-action" type="submit">{error ? "Tentar novamente" : "Atualizar relatório"}</button>
+        <label>
+          De
+          <input name="from" type="date" defaultValue={customFrom} />
+        </label>
+        <label>
+          Até
+          <input name="to" type="date" defaultValue={customTo} />
+        </label>
+        <button className="table-action" type="submit">
+          {error ? "Tentar novamente" : "Atualizar relatório"}
+        </button>
       </form>
       {periodFrom && periodTo ? (
-        <p className="muted">Período baseado na atribuição atual: {periodFrom} até {periodTo}.</p>
+        <p className="muted">
+          Período baseado na atribuição atual: {periodFrom} até {periodTo}.
+        </p>
       ) : null}
-      {error ? <p className="form-error" role="alert">{error}</p> : null}
+      {error ? (
+        <p className="form-error" role="alert">
+          {error}
+        </p>
+      ) : null}
       {report ? (
         <>
-          <section className="report-card" aria-labelledby="report-by-situation">
+          <section className="report-card report-card--full" aria-labelledby="report-by-situation">
             <h2 id="report-by-situation">Por situação</h2>
-            <DistributionBars label="Distribuição por situação" items={report.bySituation.map((item) => ({ name: formatCommercialStatus(item.commercialStatus), count: item.count }))} />
+            <DistributionBars
+              label="Distribuição por situação"
+              items={report.bySituation.map((item) => ({
+                name: formatCommercialStatus(item.commercialStatus),
+                count: item.count,
+              }))}
+            />
           </section>
-          <section className="report-card" aria-labelledby="report-by-seller">
+          <section className="report-card report-card--full" aria-labelledby="report-by-seller">
             <h2 id="report-by-seller">Por vendedor</h2>
-            <DistributionBars label="Distribuição por vendedor" items={report.bySeller.map((item) => ({ name: item.sellerName, count: item.count }))} />
+            <DistributionBars
+              label="Distribuição por vendedor"
+              items={report.bySeller.map((item) => ({ name: item.sellerName, count: item.count }))}
+            />
           </section>
         </>
       ) : null}
