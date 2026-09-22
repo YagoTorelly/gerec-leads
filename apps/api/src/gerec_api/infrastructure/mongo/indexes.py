@@ -220,3 +220,18 @@ INDEXES: Final[tuple[MongoIndex, ...]] = (
         "exportations_actor_created_at_desc",
     ),
 )
+
+
+# Kept separate so the already-applied 20260923 migration retains its original
+# behavior. The 20260924 migration backfills attemptId before bootstrap applies
+# this unique index.
+VERSIONED_INDEXES: Final[tuple[MongoIndex, ...]] = (
+    MongoIndex(
+        MongoCollections.EXPORTATIONS,
+        (("attemptId", ASCENDING),),
+        "exportations_attempt_id_unique",
+        unique=True,
+    ),
+)
+
+ALL_INDEXES: Final[tuple[MongoIndex, ...]] = (*INDEXES, *VERSIONED_INDEXES)

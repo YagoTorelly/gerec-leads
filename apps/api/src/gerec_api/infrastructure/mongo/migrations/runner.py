@@ -27,12 +27,16 @@ _manual_queue_exportations = import_module(
 _exportation_history = import_module(
     "gerec_api.infrastructure.mongo.migrations.20260923_exportation_history"
 )
+_exportation_attempt_id = import_module(
+    "gerec_api.infrastructure.mongo.migrations.20260924_exportation_attempt_id"
+)
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     (_operacao_comercial.VERSION, _operacao_comercial.apply),
     (_remove_operational_sla.VERSION, _remove_operational_sla.apply),
     (_initialize_new_lead_notification_cursor.VERSION, _initialize_new_lead_notification_cursor.apply),
     (_manual_queue_exportations.VERSION, _manual_queue_exportations.apply),
     (_exportation_history.VERSION, _exportation_history.apply),
+    (_exportation_attempt_id.VERSION, _exportation_attempt_id.apply),
 )
 
 

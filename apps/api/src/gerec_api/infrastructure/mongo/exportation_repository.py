@@ -31,6 +31,7 @@ class MongoExportationRepository:
     def record_exportation(
         self,
         *,
+        attempt_id: str,
         actor_id: str,
         administrator_fallback: str,
         lead_count: int,
@@ -38,12 +39,13 @@ class MongoExportationRepository:
         status: str,
         created_at: datetime,
         error_code: str | None = None,
-    ) -> None:
+    ) -> str:
         if status not in {"success", "error"}:
             raise ValueError("exportation status is invalid")
         administrator = self._find_by_id(MongoCollections.USERS, actor_id)
         administrator_name = _name(administrator, administrator_fallback)
         document = {
+            "attemptId": attempt_id,
             "actorId": actor_id,
             "administratorName": administrator_name,
             "leadCount": int(lead_count),
@@ -53,7 +55,27 @@ class MongoExportationRepository:
         }
         if error_code is not None:
             document["errorCode"] = error_code
-        self._database[MongoCollections.EXPORTATIONS].insert_one(document)
+        collection = self._database[MongoCollections.EXPORTATIONS]
+        collection.update_one(
+            {"attemptId": attempt_id},
+            {"$setOnInsert": document},
+            upsert=True,
+        )
+        final_status = self.get_exportation_status(attempt_id)
+        if final_status is None:
+            raise RuntimeError("exportation result was not persisted")
+        return final_status
+
+    def get_exportation_status(self, attempt_id: str) -> str | None:
+        document = self._database[MongoCollections.EXPORTATIONS].find_one(
+            {"attemptId": attempt_id}
+        )
+        if document is None:
+            return None
+        status = str(document.get("status", ""))
+        if status not in {"success", "error"}:
+            raise RuntimeError("persisted exportation status is invalid")
+        return status
 
     def list_exportations(self, *, page: int, limit: int) -> dict[str, Any]:
         collection = self._database[MongoCollections.EXPORTATIONS]

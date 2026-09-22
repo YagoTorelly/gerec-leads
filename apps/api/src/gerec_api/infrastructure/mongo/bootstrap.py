@@ -6,7 +6,7 @@ from pymongo.errors import CollectionInvalid
 from pymongo.database import Database
 
 from gerec_api.infrastructure.mongo.collections import MongoCollections, collection
-from gerec_api.infrastructure.mongo.indexes import INDEXES
+from gerec_api.infrastructure.mongo.indexes import ALL_INDEXES
 from gerec_api.infrastructure.mongo.migrations.runner import run_migrations
 
 
@@ -122,6 +122,7 @@ SCHEMA_VALIDATORS: Final[dict[str, dict[str, Any]]] = {
         "$jsonSchema": {
             "bsonType": "object",
             "required": [
+                "attemptId",
                 "actorId",
                 "administratorName",
                 "leadCount",
@@ -130,6 +131,7 @@ SCHEMA_VALIDATORS: Final[dict[str, dict[str, Any]]] = {
                 "createdAt",
             ],
             "properties": {
+                "attemptId": {"bsonType": "string", "minLength": 1},
                 "actorId": {"bsonType": "string", "minLength": 1},
                 "administratorName": {"bsonType": "string", "minLength": 1},
                 "leadCount": {"bsonType": "int", "minimum": 0},
@@ -155,7 +157,7 @@ def ensure_schema(db: Database) -> None:
     run_migrations(db)
     _drop_retired_indexes(db)
 
-    for index in INDEXES:
+    for index in ALL_INDEXES:
         index.apply(collection(db, index.collection_name))
 
 

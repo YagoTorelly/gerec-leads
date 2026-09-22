@@ -313,6 +313,7 @@ def test_ensure_schema_creates_canonical_collections_and_is_idempotent(mongo_db)
     }
     assert indexes[MongoCollections.SESSIONS]["sessions_token_hash_unique"]["unique"] is True
     assert indexes[MongoCollections.COMMAND_RESULTS]["command_results_idempotency_key_unique"]["unique"] is True
+    assert indexes[MongoCollections.EXPORTATIONS]["exportations_attempt_id_unique"]["unique"] is True
 
 
 def test_unique_indexes_protect_active_records_without_blocking_archived_or_reversed_ones(mongo_db) -> None:
@@ -337,6 +338,16 @@ def test_unique_indexes_protect_active_records_without_blocking_archived_or_reve
             "createdAt": datetime.now(UTC),
         }
     )
+    exportation = {
+        "attemptId": "attempt-unique",
+        "actorId": "admin-yago",
+        "administratorName": "Yago",
+        "leadCount": 1,
+        "filters": {},
+        "status": "success",
+        "createdAt": datetime.now(UTC),
+    }
+    mongo_db[MongoCollections.EXPORTATIONS].insert_one(exportation)
 
     with pytest.raises(DuplicateKeyError):
         mongo_db[MongoCollections.USERS].insert_one({"emailNormalized": "yago@wtgseguros.com.br"})
@@ -361,6 +372,8 @@ def test_unique_indexes_protect_active_records_without_blocking_archived_or_reve
                 "createdAt": datetime.now(UTC),
             }
         )
+    with pytest.raises(DuplicateKeyError):
+        mongo_db[MongoCollections.EXPORTATIONS].insert_one(exportation)
 
     mongo_db[MongoCollections.LEADS].insert_one(
         {"companyId": company_id, "campaignId": campaign_id, "archivedAt": datetime.now(UTC)}

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from io import BytesIO
 from typing import Any, Mapping, Protocol
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from openpyxl import Workbook
@@ -53,6 +54,7 @@ class ExportationPersistence(Protocol):
     def record_exportation(
         self,
         *,
+        attempt_id: str,
         actor_id: str,
         administrator_fallback: str,
         lead_count: int,
@@ -60,7 +62,9 @@ class ExportationPersistence(Protocol):
         status: str,
         created_at: datetime,
         error_code: str | None = None,
-    ) -> None: ...
+    ) -> str: ...
+
+    def get_exportation_status(self, attempt_id: str) -> str | None: ...
 
     def list_exportations(self, *, page: int, limit: int) -> dict[str, Any]: ...
 
@@ -80,6 +84,7 @@ class ExportationService:
         actor_id, actor_fallback = _administrator(actor)
         timestamp = _aware_utc(now)
         normalized_filters = dict(filters or {})
+        attempt_id = str(uuid4())
         lead_count = 0
         try:
             leads = self._persistence.list_leads(normalized_filters)
@@ -87,6 +92,7 @@ class ExportationService:
             content = _workbook_bytes(leads)
         except Exception as error:
             self._record_error(
+                attempt_id=attempt_id,
                 actor_id=actor_id,
                 actor_fallback=actor_fallback,
                 lead_count=lead_count,
@@ -96,7 +102,8 @@ class ExportationService:
             raise ExportationError("Não foi possível gerar a exportação.") from error
 
         try:
-            self._persistence.record_exportation(
+            final_status = self._persistence.record_exportation(
+                attempt_id=attempt_id,
                 actor_id=actor_id,
                 administrator_fallback=actor_fallback,
                 lead_count=lead_count,
@@ -105,14 +112,18 @@ class ExportationService:
                 created_at=timestamp,
             )
         except Exception as error:
-            self._record_error(
+            final_status = self._reconcile_ambiguous_success(
+                attempt_id=attempt_id,
                 actor_id=actor_id,
                 actor_fallback=actor_fallback,
                 lead_count=lead_count,
                 filters=normalized_filters,
                 created_at=timestamp,
             )
-            raise ExportationError("Não foi possível gerar a exportação.") from error
+            if final_status != "success":
+                raise ExportationError("Não foi possível gerar a exportação.") from error
+        if final_status != "success":
+            raise ExportationError("Não foi possível gerar a exportação.")
 
         local_timestamp = timestamp.astimezone(SAO_PAULO)
         return ExportationResult(
@@ -141,14 +152,16 @@ class ExportationService:
     def _record_error(
         self,
         *,
+        attempt_id: str,
         actor_id: str,
         actor_fallback: str,
         lead_count: int,
         filters: dict[str, Any],
         created_at: datetime,
-    ) -> None:
+    ) -> str | None:
         try:
-            self._persistence.record_exportation(
+            return self._persistence.record_exportation(
+                attempt_id=attempt_id,
                 actor_id=actor_id,
                 administrator_fallback=actor_fallback,
                 lead_count=lead_count,
@@ -159,7 +172,35 @@ class ExportationService:
             )
         except Exception:
             # The public error remains safe even when the audit store itself is unavailable.
-            return
+            return self._safe_status(attempt_id)
+
+    def _reconcile_ambiguous_success(
+        self,
+        *,
+        attempt_id: str,
+        actor_id: str,
+        actor_fallback: str,
+        lead_count: int,
+        filters: dict[str, Any],
+        created_at: datetime,
+    ) -> str | None:
+        status = self._safe_status(attempt_id)
+        if status is not None:
+            return status
+        return self._record_error(
+            attempt_id=attempt_id,
+            actor_id=actor_id,
+            actor_fallback=actor_fallback,
+            lead_count=lead_count,
+            filters=filters,
+            created_at=created_at,
+        )
+
+    def _safe_status(self, attempt_id: str) -> str | None:
+        try:
+            return self._persistence.get_exportation_status(attempt_id)
+        except Exception:
+            return None
 
 
 def _workbook_bytes(leads: list[dict[str, Any]]) -> bytes:

@@ -72,3 +72,43 @@ cenários.
   `tools/google-sheets-diagnostic/` foram preservados fora do staging/commit.
 - A revisão por subagente não foi executada porque a delegação da Task 3 proibiu
   subagentes; a revisão foi feita diretamente sobre o diff e validada pela suíte.
+
+## Correção pós-revisão — rodada 1
+
+### Causa corrigida
+
+A gravação de `success` usava `insert_one` sem identidade da tentativa. Se o
+MongoDB confirmasse a escrita e o ACK fosse perdido, o serviço interpretava a
+exceção como ausência de commit e inseria outro documento `error`, deixando o
+histórico contraditório.
+
+Cada chamada agora gera um `attemptId` UUID estável. O repositório finaliza a
+tentativa com `upsert + $setOnInsert`, de modo que o primeiro estado final vence.
+Após uma exceção ao gravar `success`, o serviço consulta a mesma tentativa: se o
+sucesso já estiver persistido, entrega o arquivo; se não houver registro,
+finaliza aquela identidade como `error`. Nenhum segundo documento é criado.
+
+Foi adicionada a migração versionada
+`20260924_exportation_attempt_id.py`, que atribui IDs determinísticos
+`legacy:<_id>` aos registros anteriores. O bootstrap aplica depois da migração o
+índice único `exportations_attempt_id_unique`. A migração aplicada de 23/09 não
+foi editada nem passou a criar implicitamente o índice novo.
+
+### Evidência RED → GREEN
+
+- RED dirigido: `4 failed, 9 passed`:
+  - falha antes do commit não possuía `attemptId`;
+  - sucesso confirmado com ACK perdido retornava `ExportationError`;
+  - repositório não aceitava finalização idempotente por tentativa;
+  - migração/índice único ainda não existiam.
+- GREEN focado: `13 passed`.
+- Runner/schema/índices: `30 passed, 4 skipped` por `rs0` indisponível.
+- API completa: `226 passed, 12 skipped` por `rs0` indisponível.
+
+### Verificações da correção
+
+- `python -m pytest apps/api/tests/integration/test_exportations.py -q` —
+  `13 passed`.
+- `python -m pytest apps/api/tests -q -rs` — `226 passed, 12 skipped`.
+- `python -m compileall -q apps/api/src apps/api/tests` — exit `0`.
+- `git diff --check` — exit `0`.

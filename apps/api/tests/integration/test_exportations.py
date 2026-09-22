@@ -79,6 +79,31 @@ class FakeCollection:
         self.documents.append(stored)
         return SimpleNamespace(inserted_id=stored["_id"])
 
+    def update_one(
+        self,
+        query: dict[str, Any],
+        update: dict[str, Any],
+        *,
+        upsert: bool = False,
+        **_: Any,
+    ):
+        for document in self.documents:
+            if _matches(document, query):
+                document.update(deepcopy(update.get("$set", {})))
+                return SimpleNamespace(matched_count=1, modified_count=1, upserted_id=None)
+        if not upsert:
+            return SimpleNamespace(matched_count=0, modified_count=0, upserted_id=None)
+        stored = {
+            key: deepcopy(value)
+            for key, value in query.items()
+            if not isinstance(value, dict)
+        }
+        stored.update(deepcopy(update.get("$setOnInsert", {})))
+        stored.update(deepcopy(update.get("$set", {})))
+        stored.setdefault("_id", ObjectId())
+        self.documents.append(stored)
+        return SimpleNamespace(matched_count=0, modified_count=0, upserted_id=stored["_id"])
+
     def count_documents(self, query: dict[str, Any], **_: Any) -> int:
         return sum(1 for item in self.documents if _matches(item, query))
 
@@ -106,6 +131,9 @@ def _matches(document: dict[str, Any], query: dict[str, Any]) -> bool:
         actual = document.get(key)
         if isinstance(expected, dict) and "$in" in expected:
             if actual not in expected["$in"]:
+                return False
+        elif isinstance(expected, dict) and "$exists" in expected:
+            if (key in document) is not expected["$exists"]:
                 return False
         elif actual != expected:
             return False
@@ -343,6 +371,13 @@ class FailingReadRepository:
     def record_exportation(self, **record: Any) -> None:
         self.records.append(record)
 
+    def get_exportation_status(self, attempt_id: str) -> str | None:
+        stored = next(
+            (record for record in self.records if record.get("attempt_id") == attempt_id),
+            None,
+        )
+        return None if stored is None else str(stored["status"])
+
     def list_exportations(self, *, page: int, limit: int) -> dict[str, Any]:
         return {"items": [], "page": page, "pageSize": limit, "total": 0}
 
@@ -379,6 +414,93 @@ def test_http_export_failure_returns_recoverable_safe_error_without_false_succes
     assert response.status_code == 503
     assert response.json() == {"detail": "Não foi possível gerar a exportação."}
     assert "secret-host" not in response.text
+
+
+class BeforeCommitFailureRepository(FailingReadRepository):
+    def list_leads(self, filters: dict[str, Any]) -> list[dict[str, Any]]:
+        return []
+
+    def record_exportation(self, **record: Any) -> None:
+        if record["status"] == "success":
+            raise TimeoutError("success was not committed")
+        super().record_exportation(**record)
+
+
+def test_success_write_failure_before_commit_finalizes_one_error_attempt() -> None:
+    """Breaks if a pre-commit failure creates duplicates or loses the stable attempt identity."""
+    repository = BeforeCommitFailureRepository()
+
+    try:
+        ExportationService(repository).export_leads(
+            CurrentUser("admin-yago", "yago@example.test", "admin"), {}, NOW
+        )
+    except ExportationError:
+        pass
+    else:
+        raise AssertionError("the export was expected to fail")
+
+    assert len(repository.records) == 1
+    assert repository.records[0]["status"] == "error"
+    assert repository.records[0]["attempt_id"]
+
+
+class LostAcknowledgementRepository(FailingReadRepository):
+    def list_leads(self, filters: dict[str, Any]) -> list[dict[str, Any]]:
+        return []
+
+    def record_exportation(self, **record: Any) -> None:
+        existing = next(
+            (
+                item
+                for item in self.records
+                if item.get("attempt_id") == record.get("attempt_id")
+            ),
+            None,
+        )
+        if existing is None:
+            self.records.append(record)
+        if record["status"] == "success":
+            raise TimeoutError("success committed but acknowledgement was lost")
+
+
+def test_committed_success_with_lost_ack_is_reconciled_without_error_history() -> None:
+    """Breaks if an ambiguous ACK creates success and error for one export attempt."""
+    repository = LostAcknowledgementRepository()
+
+    result = ExportationService(repository).export_leads(
+        CurrentUser("admin-yago", "yago@example.test", "admin"), {}, NOW
+    )
+
+    assert result.content.startswith(b"PK")
+    assert len(repository.records) == 1
+    assert repository.records[0]["status"] == "success"
+    assert repository.records[0]["attempt_id"]
+
+
+def test_mongo_history_finalization_is_first_write_wins_per_attempt() -> None:
+    """Breaks if retries can persist two final states for the same attempt ID."""
+    database = FakeDatabase()
+    repository = MongoExportationRepository(database)
+    values = {
+        "attempt_id": "attempt-1",
+        "actor_id": "admin-yago",
+        "administrator_fallback": "yago@example.test",
+        "lead_count": 1,
+        "filters": {},
+        "created_at": NOW,
+    }
+
+    first = repository.record_exportation(**values, status="success")
+    replay = repository.record_exportation(
+        **values,
+        status="error",
+        error_code="export_failed",
+    )
+
+    assert first == "success"
+    assert replay == "success"
+    assert len(database[MongoCollections.EXPORTATIONS].documents) == 1
+    assert database[MongoCollections.EXPORTATIONS].documents[0]["status"] == "success"
 
 
 class IndexTrackingCollection:
@@ -429,6 +551,7 @@ def test_exportation_history_collection_and_indexes_are_versioned_idempotently()
     }
     schema = SCHEMA_VALIDATORS[MongoCollections.EXPORTATIONS]["$jsonSchema"]
     assert schema["required"] == [
+        "attemptId",
         "actorId",
         "administratorName",
         "leadCount",
@@ -437,3 +560,49 @@ def test_exportation_history_collection_and_indexes_are_versioned_idempotently()
         "createdAt",
     ]
     assert schema["properties"]["status"] == {"enum": ["success", "error"]}
+
+
+def test_exportation_attempt_migration_backfills_ids_and_declares_unique_index() -> None:
+    """Breaks if existing history cannot satisfy the new idempotent attempt contract."""
+    from gerec_api.infrastructure.mongo.indexes import VERSIONED_INDEXES
+
+    migration = import_module(
+        "gerec_api.infrastructure.mongo.migrations.20260924_exportation_attempt_id"
+    )
+    database = FakeDatabase()
+    first_id = database[MongoCollections.EXPORTATIONS].insert_one(
+        {
+            "actorId": "admin-yago",
+            "administratorName": "Yago",
+            "leadCount": 1,
+            "filters": {},
+            "status": "success",
+            "createdAt": NOW,
+        }
+    ).inserted_id
+    second_id = database[MongoCollections.EXPORTATIONS].insert_one(
+        {
+            "actorId": "admin-yago",
+            "administratorName": "Yago",
+            "leadCount": 0,
+            "filters": {},
+            "status": "error",
+            "createdAt": NOW,
+        }
+    ).inserted_id
+
+    migration.apply(database)
+    migration.apply(database)
+
+    documents = database[MongoCollections.EXPORTATIONS].documents
+    assert {item["attemptId"] for item in documents} == {
+        f"legacy:{first_id}",
+        f"legacy:{second_id}",
+    }
+    assert migration.VERSION in {version for version, _ in MIGRATIONS}
+    assert [definition.name for definition in VERSIONED_INDEXES] == [
+        "exportations_attempt_id_unique"
+    ]
+    assert VERSIONED_INDEXES[0].unique is True
+    schema = SCHEMA_VALIDATORS[MongoCollections.EXPORTATIONS]["$jsonSchema"]
+    assert "attemptId" in schema["required"]
