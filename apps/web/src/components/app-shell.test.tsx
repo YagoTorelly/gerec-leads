@@ -18,7 +18,13 @@ const admin = {
   role: "admin" as const,
 };
 
-const seller = { ...admin, id: "seller-1", userId: "seller-1", fullName: "Jessica", role: "seller" as const };
+const seller = {
+  ...admin,
+  id: "seller-1",
+  userId: "seller-1",
+  fullName: "Jessica",
+  role: "seller" as const,
+};
 
 function renderShell(profile: typeof admin | typeof seller) {
   return render(
@@ -35,5 +41,19 @@ describe("navega\u00e7\u00e3o do AppShell", () => {
     expect(renderShell(admin).getByRole("link", { name: "Relat\u00f3rios" })).toBeTruthy();
     cleanup();
     expect(renderShell(seller).queryByRole("link", { name: "Relat\u00f3rios" })).toBeNull();
+  });
+
+  it("mostra Exporta\u00e7\u00f5es somente para administrador e marca a guia ativa", () => {
+    const adminShell = render(
+      <AppShell profile={admin} activePath="/exportacoes">
+        <p>Conte\u00fado</p>
+      </AppShell>,
+    );
+    const link = adminShell.getByRole("link", { name: "Exporta\u00e7\u00f5es" });
+    expect(link.getAttribute("href")).toBe("/exportacoes");
+    expect(link.className).toContain("nav-active");
+
+    cleanup();
+    expect(renderShell(seller).queryByRole("link", { name: "Exporta\u00e7\u00f5es" })).toBeNull();
   });
 });

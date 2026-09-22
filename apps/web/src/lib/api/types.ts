@@ -147,3 +147,13 @@ export type LeadDistributionReport = {
   bySituation: Array<{ commercialStatus: CommercialStatus; count: number }>;
   bySeller: Array<{ sellerId: string; sellerName: string; count: number }>;
 };
+
+export type ExportationStatus = "success" | "error";
+
+export type ExportationHistoryItem = {
+  createdAt: string;
+  administratorName: string;
+  leadCount: number;
+  filters: Record<string, unknown>;
+  status: ExportationStatus;
+};

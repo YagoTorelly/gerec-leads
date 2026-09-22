@@ -781,6 +781,78 @@ button:disabled {
   max-width: 620px;
   margin: 8px 0 0;
 }
+.exportations-layout {
+  display: grid;
+  gap: 18px;
+  margin-top: 22px;
+}
+.exportations-panel__head {
+  align-items: center;
+  margin-bottom: 0;
+}
+.exportations-download {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.exportations-history {
+  margin-top: 0;
+}
+.exportations-history table {
+  min-width: 0;
+  table-layout: fixed;
+}
+.exportations-history th,
+.exportations-history td {
+  overflow-wrap: anywhere;
+}
+.exportations-history th:nth-child(1),
+.exportations-history td:nth-child(1) {
+  width: 18%;
+}
+.exportations-history th:nth-child(2),
+.exportations-history td:nth-child(2) {
+  width: 23%;
+}
+.exportations-history th:nth-child(3),
+.exportations-history td:nth-child(3) {
+  width: 12%;
+}
+.exportations-history th:nth-child(4),
+.exportations-history td:nth-child(4) {
+  width: 32%;
+}
+.exportations-history th:nth-child(5),
+.exportations-history td:nth-child(5) {
+  width: 15%;
+}
+.exportations-history__state {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 24px;
+}
+.exportations-history__state p {
+  margin: 0;
+  color: var(--text);
+}
+.exportations-history__state .secondary-button {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.status-badge--export-success {
+  background: var(--status-won-bg);
+  color: var(--status-won-text);
+}
+.status-badge--export-error {
+  background: var(--status-undefined-bg);
+  color: var(--status-undefined-text);
+}
 .reports-dashboard {
   display: grid;
   gap: 16px;

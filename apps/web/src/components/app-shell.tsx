@@ -12,7 +12,7 @@ export function AppShell({
   children,
 }: {
   profile: SessionProfile;
-  activePath?: "/dashboard" | "/fila" | "/historico" | "/usuarios" | "/relatorios";
+  activePath?: "/dashboard" | "/fila" | "/historico" | "/usuarios" | "/relatorios" | "/exportacoes";
   eyebrow?: string;
   heading?: string;
   children: React.ReactNode;
@@ -49,6 +49,13 @@ export function AppShell({
                 href="/relatorios"
               >
                 Relatórios
+              </Link>
+              <Link
+                prefetch={false}
+                className={activePath === "/exportacoes" ? "nav-active" : ""}
+                href="/exportacoes"
+              >
+                Exportações
               </Link>
               <Link
                 prefetch={false}
