@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from typing import Any, Final
 
-from pymongo import ASCENDING
+from pymongo import ASCENDING, DESCENDING
 from pymongo.collection import Collection
 
 from gerec_api.infrastructure.mongo.collections import MongoCollections
@@ -208,5 +208,15 @@ INDEXES: Final[tuple[MongoIndex, ...]] = (
         (("outboxEventId", ASCENDING),),
         "notification_incidents_outbox_event_unique",
         unique=True,
+    ),
+    MongoIndex(
+        MongoCollections.EXPORTATIONS,
+        (("createdAt", DESCENDING),),
+        "exportations_created_at_desc",
+    ),
+    MongoIndex(
+        MongoCollections.EXPORTATIONS,
+        (("actorId", ASCENDING), ("createdAt", DESCENDING)),
+        "exportations_actor_created_at_desc",
     ),
 )

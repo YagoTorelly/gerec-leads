@@ -118,6 +118,28 @@ SCHEMA_VALIDATORS: Final[dict[str, dict[str, Any]]] = {
             },
         }
     },
+    MongoCollections.EXPORTATIONS: {
+        "$jsonSchema": {
+            "bsonType": "object",
+            "required": [
+                "actorId",
+                "administratorName",
+                "leadCount",
+                "filters",
+                "status",
+                "createdAt",
+            ],
+            "properties": {
+                "actorId": {"bsonType": "string", "minLength": 1},
+                "administratorName": {"bsonType": "string", "minLength": 1},
+                "leadCount": {"bsonType": "int", "minimum": 0},
+                "filters": {"bsonType": "object"},
+                "status": {"enum": ["success", "error"]},
+                "createdAt": {"bsonType": "date"},
+                "errorCode": {"bsonType": ["string", "null"]},
+            },
+        }
+    },
 }
 
 

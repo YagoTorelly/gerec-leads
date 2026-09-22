@@ -35,6 +35,7 @@ class MongoCollections:
     SYSTEM_SETTINGS: Final = "system_settings"
     COMMAND_RESULTS: Final = "command_results"
     LEAD_TREATMENTS: Final = "lead_treatments"
+    EXPORTATIONS: Final = "exportations"
     SCHEMA_MIGRATIONS: Final = "schema_migrations"
 
     ALL: Final = (
@@ -64,6 +65,7 @@ class MongoCollections:
         SYSTEM_SETTINGS,
         COMMAND_RESULTS,
         LEAD_TREATMENTS,
+        EXPORTATIONS,
         SCHEMA_MIGRATIONS,
     )
 

@@ -3,13 +3,14 @@
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field
 
 from gerec_api.auth.dependencies import get_current_user
 from gerec_api.auth.permissions import PermissionDenied, PermissionService
 from gerec_api.auth.sessions import CurrentUser
 from gerec_api.domain.manual_leads import ManualLeadCommand, ManualLeadResult, ManualLeadService
+from gerec_api.domain.exportations import ExportationError, ExportationService
 from gerec_api.domain.queue import QueueService
 from gerec_api.infrastructure.mongo.clock import MongoClock
 from gerec_api.infrastructure.mongo.collections import MongoCollections
@@ -97,6 +98,16 @@ def _manual_lead_service(request: Request) -> ManualLeadService:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Manual lead service unavailable",
+        )
+    return service
+
+
+def _exportation_service(request: Request) -> ExportationService:
+    service = getattr(request.app.state, "exportation_service", None)
+    if not isinstance(service, ExportationService):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Exportation service unavailable",
         )
     return service
 
@@ -221,6 +232,45 @@ def create_manual_lead(
             detail=str(error),
         ) from error
     return _manual_response(result)
+
+
+@router.get("/exportations")
+def exportation_history(
+    request: Request,
+    current_user: CurrentUser = Depends(_admin),
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=200),
+) -> dict[str, Any]:
+    try:
+        return _exportation_service(request).history(current_user, page=page, limit=limit)
+    except ExportationError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(error),
+        ) from error
+
+
+@router.get("/exportations/leads")
+def export_leads(
+    request: Request,
+    current_user: CurrentUser = Depends(_admin),
+) -> Response:
+    try:
+        result = _exportation_service(request).export_leads(
+            current_user,
+            {},
+            _database_clock(request).now(),
+        )
+    except ExportationError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(error),
+        ) from error
+    return Response(
+        content=result.content,
+        media_type=result.media_type,
+        headers={"Content-Disposition": f'attachment; filename="{result.filename}"'},
+    )
 
 
 @router.patch("/users/{user_id}/availability", response_model=ManagedUserResponse)

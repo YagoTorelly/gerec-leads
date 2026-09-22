@@ -123,6 +123,8 @@ def test_index_contract_covers_each_persisted_identity_and_active_lifecycle() ->
             "leads_assignee_assigned_at",
             "leads_assignee_assignment_sequence",
             "lead_treatments_seller_created_at",
+            "exportations_created_at_desc",
+            "exportations_actor_created_at_desc",
         }
     )
 
