@@ -1,7 +1,7 @@
 # Design: cadastro manual, fila alternativa e exportações administrativas
 
 **Data:** 2026-09-22  
-**Status:** aprovado em conversa; aguardando revisão final do documento  
+**Status:** aprovado em conversa e revisado
 **Escopo:** Gerenciador de Leads WTG
 
 ## 1. Objetivo

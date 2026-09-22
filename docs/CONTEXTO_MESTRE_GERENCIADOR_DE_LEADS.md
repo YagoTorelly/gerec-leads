@@ -1,6 +1,6 @@
 ﻿# Contexto Mestre - Gerenciador de Leads WTG
 
-> Gerado em 2026-09-15 14:37:26 UTC por `scripts/generate-master-context.ps1`.
+> Gerado em 2026-09-22 14:07:19 UTC por `scripts/generate-master-context.ps1`.
 
 ## Como usar este documento
 
@@ -3920,6 +3920,196 @@ A navegação mostra `Relatórios` somente para administrador. A página usa fil
 7. Administrador filtra por responsável; ambos os perfis ordenam por situação.
 8. Relatórios globais só são acessíveis ao administrador e usam período por atribuição atual e proprietário atual.
 9. Toda alteração preserva a fila FIFO, a propriedade, a autorização e as garantias de transferência já aprovadas.
+
+## Desenho de produto: `docs/superpowers/specs/2026-09-22-cadastro-manual-fila-alternativa-exportacoes-design.md`
+
+# Design: cadastro manual, fila alternativa e exportações administrativas
+
+**Data:** 2026-09-22
+**Status:** aprovado em conversa e revisado
+**Escopo:** Gerenciador de Leads WTG
+
+## 1. Objetivo
+
+Adicionar ao painel administrativo um fluxo para cadastrar leads manualmente,
+distribuí-los em uma fila alternativa independente da fila automática e
+exportar os leads atuais em Excel. O sistema também exibirá um histórico das
+exportações realizadas, sem incluir esse histórico no arquivo baixado.
+
+## 2. Regras funcionais aprovadas
+
+### 2.1 Cadastro manual
+
+- Somente administradores podem criar leads manuais.
+- Campos principais do formulário:
+  - nome, obrigatório;
+  - e-mail, obrigatório;
+  - telefone, obrigatório;
+  - situação, sempre iniciada como `Indefinido`;
+  - dados de campanha/origem, opcionais.
+- O administrador não escolhe o vendedor no formulário.
+- Cada lead manual recebe um identificador único em coluna própria,
+  `manualQueueLeadId`, gerado pelo backend.
+- O identificador manual não reutiliza nem altera `sourceLeadId` ou qualquer
+  identificador originado da planilha.
+- Quando campanha/origem não forem informadas, o backend usa os dados de
+  campanha do lead automático mais recente. Se não existir um lead automático,
+  os campos permanecem vazios.
+- A criação registra auditoria com administrador, data/hora, payload original
+  e identificador gerado.
+
+### 2.2 Fila alternativa
+
+- Leads manuais usam uma fila e um cursor separados da fila automática.
+- A ordem dos vendedores é a mesma ordem configurada para a fila principal.
+- Avançar o cursor alternativo nunca altera cursor, posição, créditos ou
+  atribuições da fila automática.
+- Vendedores Pausados ou indisponíveis são pulados; o próximo vendedor Ativo
+  elegível recebe o lead.
+- A atribuição alternativa registra responsável atual, data de atribuição,
+  sequência e auditoria.
+- O vendedor responsável enxerga o lead na operação normal e pode registrar
+  tratativas com as mesmas regras dos leads automáticos.
+- A atribuição manual gera a notificação interna de novos leads já existente.
+- Transferências futuras usam as regras vigentes de transferência e não
+  reescrevem o cursor da fila automática.
+
+### 2.3 Permissões
+
+- Administrador: cria leads manuais, visualiza ambas as filas, exporta leads e
+  consulta o histórico de exportações.
+- Vendedor: não cria, exporta ou consulta histórico de exportações; vê e trata
+  somente leads que se tornaram seus pela fila alternativa ou automática,
+  conforme as regras de escopo existentes.
+- O frontend não é fonte de autorização; as regras são impostas pela API e
+  pelas operações transacionais do domínio.
+
+## 3. Exportação
+
+### 3.1 Arquivo
+
+- O download será um arquivo Excel `.xlsx`.
+- O arquivo contém somente leads, nunca o histórico de tratativas nem o
+  histórico de exportações.
+- A exportação inicial abrange todos os leads visíveis ao administrador.
+- Colunas mínimas:
+  - `leadId`;
+  - `manualQueueLeadId`, quando existir;
+  - nome;
+  - responsável atual;
+  - telefone;
+  - e-mail;
+  - campanha/origem;
+  - situação comercial;
+  - marcador Desqualificado;
+  - data de criação;
+  - data de atribuição;
+  - última atualização;
+  - origem `automatico` ou `manual`.
+- Datas serão serializadas com timezone operacional
+  `America/Sao_Paulo` para não confundir os vendedores.
+- Telefones e identificadores serão escritos como texto para preservar `55`,
+  zeros à esquerda e a formatação original.
+
+### 3.2 Histórico de exportações
+
+- A guia administrativa terá uma lista somente de leitura das exportações.
+- Cada registro contém data/hora, administrador responsável, quantidade de
+  leads, filtros aplicados e status.
+- A consulta do histórico é exclusiva de administradores.
+- O histórico não é anexado ao Excel.
+- Falhas de geração devem registrar status de erro sem criar um registro falso
+  de sucesso e devem apresentar uma mensagem recuperável na interface.
+
+## 4. Arquitetura proposta
+
+### 4.1 Backend
+
+- Criar um comando transacional de criação de lead manual; controller/rota
+  apenas valida entrada e delega ao domínio.
+- Persistir `manualQueueLeadId`, origem manual e metadados de auditoria em
+  documentos de lead e eventos de atribuição.
+- Reutilizar o motor de seleção de vendedor com um `queueKind` explícito,
+  mantendo estado/cursor separado para `automatic` e `manual`.
+- Criar leitura administrativa para exportação e um gerador `.xlsx` no backend
+  ou serviço de aplicação, sem conexão do navegador ao MongoDB.
+- Criar coleção ou agregado de histórico de exportação com índices por
+  `createdAt` e `actorId`.
+- Manter idempotência, constraints, locks e validação de escopo na API.
+
+### 4.2 Web
+
+- Adicionar ação “Adicionar leads” ao shell de administrador.
+- Criar formulário com validação de campos obrigatórios e estado inicial
+  fixo `Indefinido`.
+- Exibir o responsável atribuído depois da criação, sem seletor de vendedor.
+- Adicionar guia “Exportações” somente para administrador, com botão de
+  download e tabela de histórico.
+- Mostrar estados de carregamento, sucesso, erro e retry sem remover o shell.
+- Revalidar dashboard, fila e notificações após a criação/atribuição.
+
+### 4.3 Relatórios
+
+- Manter somente os dois gráficos já existentes:
+  - distribuição de leads por situação;
+  - distribuição de leads por vendedor.
+- Usar gráficos de colunas verticais, com rótulo textual e valor numérico
+  visível para acessibilidade.
+- Cada gráfico ocupa uma linha completa da área de conteúdo, sem dividir os
+  dois gráficos lado a lado nem deixar uma coluna vazia.
+- Preservar filtros de período e as regras de proprietário atual já aprovadas.
+
+## 5. Concorrência e casos de borda
+
+- Dois administradores criando leads simultaneamente não podem gerar o mesmo
+  `manualQueueLeadId` nem atribuir o mesmo lead duas vezes.
+- Se todos os vendedores estiverem pausados/indisponíveis, o lead manual fica
+  sem atribuição, com estado operacional auditável, até haver elegível.
+- Se o último lead automático não tiver campanha, os campos herdados ficam
+  vazios; não copiar nome, telefone, e-mail ou identidade do último lead.
+- Repetir a confirmação de criação com a mesma chave idempotente não cria
+  outro lead.
+- Exportação vazia deve gerar um Excel válido com cabeçalho e registrar
+  quantidade zero.
+- Falhas de armazenamento/geração não devem expor stack trace ou segredos.
+
+## 6. Testes de aceite
+
+### Backend
+
+- autorização: vendedor não cria lead manual nem exporta;
+- campos obrigatórios e situação inicial `Indefinido`;
+- ID manual único e idempotência;
+- herança apenas de campanha/origem do lead automático mais recente;
+- cursor alternativo independente do cursor automático;
+- salto de vendedores pausados;
+- atribuição e notificação do vendedor;
+- concorrência e rollback da criação/atribuição;
+- exportação Excel com todos os campos e datas em São Paulo;
+- histórico de exportação somente para administradores;
+- falha de exportação sem registro falso de sucesso.
+
+### Web/E2E
+
+- administrador abre formulário, cria lead e vê confirmação;
+- vendedor recebe a notificação e vê/trata o lead;
+- fila automática não muda após cadastro manual;
+- administrador baixa `.xlsx` e confirma as colunas;
+- histórico mostra data, administrador responsável, quantidade e status;
+- relatórios mostram os dois gráficos de colunas em linhas completas;
+- vendedor não vê a guia nem consegue acessar endpoints;
+- estados de loading/erro/retry preservam o shell;
+- captura visual em 1440×900 para cadastro e exportações.
+
+## 7. Decisões e limites
+
+- Não haverá e-mail nesta funcionalidade; a notificação é a janela interna já
+  aprovada.
+- Não haverá escolha manual de responsável no cadastro.
+- Não haverá download de tratativas ou do histórico de exportações.
+- A fila alternativa não altera a FIFO automática.
+- A primeira implementação não inclui filtros adicionais de exportação; o
+  escopo inicial é exportar todos os leads administrativos.
 
 ## Plano histórico ou executável: `docs/superpowers/plans/2026-08-25-etapa-1-esqueleto-executavel.md`
 
@@ -8296,6 +8486,225 @@ Create the evidence table with actual command totals, E2E result, screenshots an
 
 A ordem dos contratos ÃƒÆ’Ã‚Â© consistente: Task 1 introduz potential; Task 2 produz a API que Task 5 consome; Task 3 produz a API que Task 6 consome. Nenhuma tarefa cria e-mail ou modifica o cursor FIFO.
 
+## Plano histórico ou executável: `docs/superpowers/plans/2026-09-22-cadastro-manual-fila-alternativa-exportacoes.md`
+
+# Cadastro manual, fila alternativa e exportações — Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Permitir que administradores cadastrem leads manuais em uma fila alternativa independente, que vendedores recebam/tratem esses leads e que administradores exportem todos os leads em Excel com histórico de exportações separado.
+
+**Architecture:** O backend criará um comando transacional para lead manual e reutilizará o motor FIFO com `queueKind=manual`, mantendo cursor e auditoria separados de `queueKind=automatic`. A web consumirá rotas administrativas para cadastro, exportação e histórico; a geração do `.xlsx` permanecerá no backend. Os dois gráficos de relatórios serão convertidos em colunas verticais, um por linha completa.
+
+**Tech Stack:** Python 3.12, FastAPI, Pydantic, MongoDB/Motor, pytest; Next.js 16, React 19, TypeScript, Vitest, Playwright, `openpyxl` para Excel.
+
+**Spec:** `docs/superpowers/specs/2026-09-22-cadastro-manual-fila-alternativa-exportacoes-design.md`
+
+## Global Constraints
+
+- Somente administradores podem criar leads manuais, exportar leads e consultar o histórico de exportações.
+- O vendedor não escolhe o responsável; a fila alternativa usa a mesma ordem da fila principal e um cursor independente.
+- Vendedores Pausados ou indisponíveis são pulados; o próximo vendedor Ativo elegível recebe o lead.
+- A fila alternativa não altera cursor, posição, créditos ou atribuições da fila automática.
+- Situação inicial de todo lead manual: `Indefinido`.
+- Todo lead manual recebe `manualQueueLeadId` único, gerado pelo backend; não reutiliza `sourceLeadId`.
+- Leads manuais atribuídos geram a notificação interna já existente; não criar envio de e-mail.
+- O download é exclusivamente um arquivo Excel `.xlsx` contendo leads; tratativas e histórico de exportações não são baixados.
+- Datas exportadas usam `America/Sao_Paulo`; telefones e identificadores são células de texto.
+- O histórico de exportações mostra data/hora, administrador responsável, quantidade, filtros e status.
+- O frontend nunca é fonte de autorização; comandos críticos e escopo vivem na API/domínio.
+- Toda alteração de banco usa migração versionada; não editar migrações aplicadas.
+- Testes de concorrência, idempotência, rollback, escopo e falha de exportação são obrigatórios.
+- Preservar os arquivos preexistentes `D apps/api/.env.example` e `?? tools/google-sheets-diagnostic/`.
+
+## Mapa de arquivos e interfaces
+
+### Backend
+
+- `apps/api/src/gerec_api/domain/manual_leads.py`: comando e tipos do cadastro manual.
+- `apps/api/src/gerec_api/domain/queue.py`: seleção com `queueKind` e cursor alternativo.
+- `apps/api/src/gerec_api/domain/exportations.py`: contrato e geração de exportação.
+- `apps/api/src/gerec_api/routes/admin.py`: rotas administrativas de criação, exportação e histórico.
+- `apps/api/src/gerec_api/auth/permissions.py`: leituras administrativas e escopo.
+- `apps/api/src/gerec_api/infrastructure/mongo/lead_repository.py`: persistência do lead manual.
+- `apps/api/src/gerec_api/infrastructure/mongo/queue_repository.py`: estado/cursor por tipo de fila.
+- `apps/api/src/gerec_api/infrastructure/mongo/exportation_repository.py`: histórico de exportações.
+- `apps/api/src/gerec_api/infrastructure/mongo/migrations/20260922_manual_queue_exportations.py`: migração versionada.
+- `apps/api/tests/integration/test_manual_leads.py`: comandos, autorização, fila e notificações.
+- `apps/api/tests/integration/test_exportations.py`: Excel, histórico e falhas.
+
+### Web
+
+- `apps/web/src/app/usuarios/page.tsx` ou shell administrativo: ação “Adicionar leads”.
+- `apps/web/src/components/manual-lead-form.tsx`: formulário administrativo.
+- `apps/web/src/components/exportations-panel.tsx`: download e histórico.
+- `apps/web/src/lib/admin/manual-lead-actions.ts`: Server Action de criação.
+- `apps/web/src/lib/admin/exportation-queries.ts`: consulta do histórico.
+- `apps/web/src/app/exportacoes/download/route.ts`: Route Handler autenticado que transmite o `.xlsx`.
+- `apps/web/src/lib/api/types.ts` e `client.ts`: contratos HTTP.
+- `apps/web/src/app/relatorios/page.tsx`, `reports-dashboard.tsx`, `globals.css`: colunas em linhas completas.
+- Testes DOM/unitários correspondentes em `apps/web/src/components/*test.tsx` e `apps/web/src/lib/admin/*test.ts`.
+
+## Task 1: Modelo de dados, ID manual e cursor alternativo
+
+**Files:**
+- Create: `apps/api/src/gerec_api/domain/manual_leads.py`
+- Modify: `apps/api/src/gerec_api/domain/queue.py`
+- Modify: `apps/api/src/gerec_api/infrastructure/mongo/lead_repository.py`
+- Modify: `apps/api/src/gerec_api/infrastructure/mongo/queue_repository.py`
+- Create: `apps/api/src/gerec_api/infrastructure/mongo/migrations/20260922_manual_queue_exportations.py`
+- Test: `apps/api/tests/integration/test_manual_leads.py`
+
+**Interfaces:**
+- Produces `ManualLeadCommand(name, email, phone, campaign?, source?, idempotency_key)`.
+- Produces `create_manual_lead(actor, command, now) -> ManualLeadResult`.
+- Produces `select_next_seller(queue_kind: Literal["automatic", "manual"], now) -> SellerSelection`.
+- `manualQueueLeadId` é texto `MAN-` + UUID4, com índice único.
+
+- [ ] Escrever testes vermelhos para criação, situação inicial, ID único, cursor independente, salto de Pausado, herança de campanha e idempotência.
+- [ ] Rodar `python -m pytest apps/api/tests/integration/test_manual_leads.py -q`; confirmar falhas por interfaces ausentes.
+- [ ] Implementar o comando transacional e migração sem alterar o cursor automático.
+- [ ] Rodar o teste focado e a suíte de filas; confirmar verde.
+- [ ] Commit: `feat(api): adiciona fila alternativa para leads manuais`.
+
+## Task 2: Rotas administrativas de criação e notificação
+
+**Files:**
+- Modify: `apps/api/src/gerec_api/routes/admin.py`
+- Modify: `apps/api/src/gerec_api/main.py`
+- Modify: `apps/api/src/gerec_api/domain/lead_notifications.py`
+- Test: `apps/api/tests/integration/test_manual_leads.py`
+
+**Interfaces:**
+- `POST /api/admin/leads/manual` recebe nome, e-mail, telefone, campanha/origem opcional e `Idempotency-Key`.
+- Retorna `201` com `leadId`, `manualQueueLeadId`, `assigneeId`, `assignedAt`, `commercialStatus="undefined"` e `source="manual"`.
+- Vendedor recebe `403` em criação; campos inválidos retornam `422`.
+- A atribuição publica a mesma sequência/cursor de notificação já consumida pelo dashboard.
+
+- [ ] Escrever testes vermelhos de autorização, validação, resposta, notificação e rollback.
+- [ ] Rodar testes e confirmar falhas esperadas.
+- [ ] Implementar rota fina, delegando ao comando transacional.
+- [ ] Rodar integração focada e permissões; confirmar verde.
+- [ ] Commit: `feat(api): expõe cadastro manual de leads`.
+
+## Task 3: Exportação Excel e histórico administrativo
+
+**Files:**
+- Create: `apps/api/src/gerec_api/domain/exportations.py`
+- Create: `apps/api/src/gerec_api/infrastructure/mongo/exportation_repository.py`
+- Modify: `apps/api/src/gerec_api/routes/admin.py`
+- Modify: `apps/api/src/gerec_api/main.py`
+- Test: `apps/api/tests/integration/test_exportations.py`
+
+**Interfaces:**
+- `GET /api/admin/exportations` retorna histórico paginado com `createdAt`, `administratorName`, `leadCount`, `filters` e `status`.
+- `GET /api/admin/exportations/leads` retorna `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` e cria registro de sucesso/erro.
+- `ExportationService.export_leads(actor, filters, now) -> ExportationResult`.
+- Datas no workbook são formatadas em `America/Sao_Paulo`; IDs/telefones são texto.
+
+- [ ] Escrever testes vermelhos para Excel com cabeçalhos, exportação vazia, histórico, vendedor proibido e falha sem falso sucesso.
+- [ ] Rodar testes focados e confirmar falhas esperadas.
+- [ ] Implementar geração com `openpyxl`, auditoria de status e tratamento seguro de erro.
+- [ ] Rodar testes de exportação e validar MIME, colunas, timezone e conteúdo.
+- [ ] Commit: `feat(api): adiciona exportação administrativa de leads`.
+
+## Task 4: Formulário web de lead manual
+
+**Files:**
+- Create: `apps/web/src/components/manual-lead-form.tsx`
+- Create: `apps/web/src/lib/admin/manual-lead-actions.ts`
+- Modify: `apps/web/src/lib/api/types.ts`
+- Modify: `apps/web/src/lib/api/client.ts`
+- Modify: `apps/web/src/app/usuarios/page.tsx`
+- Test: `apps/web/src/components/manual-lead-form.test.tsx`
+- Test: `apps/web/src/lib/admin/manual-lead-actions.test.ts`
+
+**Interfaces:**
+- `ManualLeadForm` aceita `latestCampaignDefaults` e não renderiza seletor de responsável.
+- Server Action `createManualLeadAction(input) -> { ok: boolean; message: string; lead? }`.
+- Campos name/email/phone obrigatórios; status é exibido como `Indefinido` e não editável.
+
+- [ ] Escrever testes vermelhos para campos, status fixo, ausência de responsável, sucesso, erro e seller sem acesso.
+- [ ] Rodar Vitest focado e confirmar falhas esperadas.
+- [ ] Implementar modal/painel e Server Action com revalidação de dashboard/fila/notificações.
+- [ ] Rodar Vitest, typecheck e lint.
+- [ ] Commit: `feat(web): adiciona cadastro manual de leads`.
+
+## Task 5: Guia de exportações e histórico
+
+**Files:**
+- Create: `apps/web/src/components/exportations-panel.tsx`
+- Create: `apps/web/src/lib/admin/exportation-queries.ts`
+- Create: `apps/web/src/app/exportacoes/download/route.ts`
+- Modify: `apps/web/src/components/app-shell.tsx`
+- Modify: `apps/web/src/lib/api/types.ts`
+- Modify: `apps/web/src/app/globals.css`
+- Test: `apps/web/src/components/exportations-panel.test.tsx`
+- Test: `apps/web/src/lib/admin/exportation-queries.test.ts`
+- Test: `apps/web/src/components/app-shell.test.tsx`
+
+**Interfaces:**
+- Rota `/exportacoes` somente para administrador.
+- `getExportationHistory()` chama `GET /api/admin/exportations`.
+- `GET /exportacoes/download` no Route Handler web repassa a autenticação e transmite o `.xlsx` sem converter bytes em string ou expor credenciais.
+- A tela mostra data/hora, administrador responsável, quantidade, filtros e status; não mostra botão para baixar histórico.
+
+- [ ] Escrever testes vermelhos de navegação admin/seller, download apenas de leads, histórico, loading, erro e retry.
+- [ ] Rodar Vitest focado e confirmar falhas esperadas.
+- [ ] Implementar guia e integração no shell mantendo o shell em erro.
+- [ ] Rodar Vitest, typecheck e lint.
+- [ ] Commit: `feat(web): adiciona guia de exportações`.
+
+## Task 6: Layout dos relatórios em colunas
+
+**Files:**
+- Modify: `apps/web/src/components/reports-dashboard.tsx`
+- Modify: `apps/web/src/app/globals.css`
+- Test: `apps/web/src/components/reports-dashboard.test.tsx`
+
+**Interfaces:**
+- Mantém somente os grupos `bySituation` e `bySeller` já existentes.
+- Cada grupo renderiza colunas verticais em um container de largura total.
+- Cada coluna possui texto acessível `Nome: N` e altura proporcional ao maior valor do próprio grupo.
+
+- [ ] Escrever teste vermelho que exija dois containers em linhas distintas, classes de coluna e texto equivalente.
+- [ ] Rodar o teste e confirmar falha com o layout atual.
+- [ ] Implementar CSS/markup sem dependência de biblioteca de gráficos.
+- [ ] Rodar testes, typecheck, lint e screenshot local 1440x900.
+- [ ] Commit: `feat(web): reorganiza relatórios em colunas`.
+
+## Task 7: E2E, evidências e contexto mestre
+
+**Files:**
+- Create or Modify: `apps/web/e2e/cadastro-manual-exportacoes.spec.ts`
+- Create: `docs/evidencias/2026-09-22-cadastro-manual-fila-alternativa-exportacoes.md`
+- Modify: `docs/CONTEXTO_MESTRE_GERENCIADOR_DE_LEADS.md` only through generator
+- Modify: `.github/workflows/gerec-leads-ci.yml` only if the existing contract tests require the new route/build gate
+
+**Interfaces:**
+- E2E admin cria lead manual, confirma ID/Indefinido, aguarda notificação do vendedor e verifica tratativa.
+- E2E admin baixa `.xlsx`, valida nome/MIME/colunas e confere uma linha no arquivo.
+- E2E admin consulta histórico; seller não vê `/exportacoes` nem acessa endpoints.
+- E2E confirma fila automática sem alteração e relatórios com duas linhas completas de colunas.
+
+- [ ] Escrever os fluxos E2E antes da implementação final da integração.
+- [ ] Rodar `npm run test:e2e -- cadastro-manual-exportacoes.spec.ts` e corrigir somente fixture/selector/contrato legítimo.
+- [ ] Capturar telas 1440x900 de cadastro, exportação e relatórios.
+- [ ] Rodar gates: `python -m pytest apps/api/tests -q`, `npm run test`, `npm run lint`, `npm run typecheck`, `npm run build`, `npm run test:e2e`, `git diff --check`.
+- [ ] Registrar totais, screenshots, permissões e limitações reais na evidência.
+- [ ] Regenerar contexto com `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/generate-master-context.ps1`.
+- [ ] Commit: `test: valida cadastro manual e exportações`.
+
+## Execution order and review gates
+
+Tasks 1–3 são backend e devem ser revisadas antes de Tasks 4–5. Task 6 pode
+rodar em paralelo com Task 4–5 porque usa apenas o contrato já existente de
+relatórios. Task 7 só começa após todas as integrações anteriores.
+
+Cada task exige implementador separado, pacote de revisão, revisor independente,
+correção e re-revisão até não haver findings críticos/importantes. Nenhuma task
+é marcada como concluída sem testes recentes e registro no ledger SDD.
+
 ## Documento complementar: `apps/web/README.md`
 
 # Aplicação web
@@ -9368,13 +9777,20 @@ class DashboardService:
     ) -> dict[str, Any]:
         collection = self._database[MongoCollections.LEADS]
         cursor = collection.find(dict(query))
-        if hasattr(cursor, "sort"):
-            cursor = cursor.sort(_lead_sort(sort))
-        if hasattr(cursor, "skip"):
-            cursor = cursor.skip((page - 1) * page_size)
-        if hasattr(cursor, "limit"):
-            cursor = cursor.limit(page_size)
-        leads = list(cursor)
+        if sort == "situation":
+            leads = list(cursor)
+            leads.sort(key=lambda lead: str(lead.get("_id") or ""))
+            leads.sort(key=_lead_created_at_sort_value, reverse=True)
+            leads.sort(key=lambda lead: _situation_sort_rank(_commercial_status(lead)))
+            leads = leads[(page - 1) * page_size : page * page_size]
+        else:
+            if hasattr(cursor, "sort"):
+                cursor = cursor.sort(_lead_sort(sort))
+            if hasattr(cursor, "skip"):
+                cursor = cursor.skip((page - 1) * page_size)
+            if hasattr(cursor, "limit"):
+                cursor = cursor.limit(page_size)
+            leads = list(cursor)
         references = self._lead_references(leads)
         items = [self._lead_projection(lead, references=references) for lead in leads]
         total = collection.count_documents(dict(query)) if hasattr(collection, "count_documents") else len(items)
@@ -9720,7 +10136,21 @@ def _lead_sort(sort: str | None) -> list[tuple[str, int]]:
         return [("createdAt", -1)]
     if sort != "situation":
         raise ValueError("sort must be situation")
-    return [("commercialStatus", 1), ("createdAt", -1), ("_id", 1)]
+    return [("createdAt", -1), ("_id", 1)]
+
+
+_SITUATION_SORT_ORDER = {"won": 0, "undefined": 1, "negotiation": 2, "potential": 3}
+
+
+def _situation_sort_rank(status: str) -> int:
+    return _SITUATION_SORT_ORDER[status]
+
+
+def _lead_created_at_sort_value(lead: Mapping[str, Any]) -> float:
+    value = lead.get("createdAt")
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=UTC).timestamp() if value.tzinfo is None else value.timestamp()
+    return float("-inf")
 
 
 def _as_utc(value: datetime, *, name: str) -> datetime:
@@ -18278,9 +18708,10 @@ export default function Home() {
 ````tsx
 import { describe, expect, it, vi } from "vitest";
 
-const { getLeadDistributionReport, getSessionContext, redirect } = vi.hoisted(() => ({
+const { getLeadDistributionReport, getSessionContext, isReportPeriod, redirect } = vi.hoisted(() => ({
   getLeadDistributionReport: vi.fn(),
   getSessionContext: vi.fn(),
+  isReportPeriod: vi.fn(),
   redirect: vi.fn(),
 }));
 
@@ -18288,6 +18719,7 @@ vi.mock("next/navigation", () => ({ redirect }));
 vi.mock("../../lib/auth/session", () => ({ getSessionContext }));
 vi.mock("../../lib/reports/queries", () => ({
   getLeadDistributionReport,
+  isReportPeriod,
   reportPeriod: vi.fn(),
 }));
 
@@ -18325,21 +18757,100 @@ import { redirect } from "next/navigation";
 import { AppShell } from "../../components/app-shell";
 import { ReportsDashboard } from "../../components/reports-dashboard";
 import { getSessionContext } from "../../lib/auth/session";
-import { getLeadDistributionReport, reportPeriod, type ReportSearchParams } from "../../lib/reports/queries";
+import {
+  getLeadDistributionReport,
+  isReportPeriod,
+  reportPeriod,
+  type ReportSearchParams,
+} from "../../lib/reports/queries";
 
 export const dynamic = "force-dynamic";
 
 export default async function ReportsPage({ searchParams }: { searchParams: Promise<ReportSearchParams> }) {
   const session = await getSessionContext();
   if (session.status !== "authenticated" || session.profile.role !== "admin") redirect("/dashboard");
+
   const period = reportPeriod(await searchParams);
-  const report = await getLeadDistributionReport(session.sessionToken, period);
+  let report = null;
+  let error: string | null = null;
+  if (isReportPeriod(period)) {
+    try {
+      report = await getLeadDistributionReport(session.sessionToken, period);
+    } catch {
+      error = "Não foi possível carregar os relatórios. Tente novamente.";
+    }
+  } else {
+    error = period.error;
+  }
+
   return (
     <AppShell profile={session.profile} activePath="/relatorios" eyebrow="Leitura gerencial" heading="Relatórios">
-      <ReportsDashboard report={report} period={period.key} />
+      <ReportsDashboard
+        report={report}
+        period={period.key}
+        error={error}
+        from={isReportPeriod(period) ? undefined : period.from}
+        to={isReportPeriod(period) ? undefined : period.to}
+        interval={isReportPeriod(period) ? { from: period.fromAt, to: period.toAt } : undefined}
+      />
     </AppShell>
   );
 }
+````
+
+## Snapshot de código: `apps/web/src/app/relatorios/page-regression.test.tsx`
+
+````tsx
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const { AppShell, ReportsDashboard, getLeadDistributionReport, getSessionContext, isReportPeriod, reportPeriod } = vi.hoisted(() => ({
+  AppShell: vi.fn(),
+  ReportsDashboard: vi.fn(),
+  getLeadDistributionReport: vi.fn(),
+  getSessionContext: vi.fn(),
+  isReportPeriod: vi.fn((period) => "fromAt" in period),
+  reportPeriod: vi.fn(),
+}));
+
+vi.mock("../../components/app-shell", () => ({ AppShell }));
+vi.mock("../../components/reports-dashboard", () => ({ ReportsDashboard }));
+vi.mock("../../lib/auth/session", () => ({ getSessionContext }));
+vi.mock("../../lib/reports/queries", () => ({ getLeadDistributionReport, isReportPeriod, reportPeriod }));
+
+import ReportsPage from "./page";
+
+describe("recuperação da página de relatórios", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getSessionContext.mockResolvedValue({
+      status: "authenticated",
+      sessionToken: "admin-session",
+      profile: { id: "admin-1", userId: "admin-1", fullName: "Yago", email: "yago@wtg.test", role: "admin" },
+    });
+    reportPeriod.mockReturnValue({
+      key: "custom",
+      fromAt: "2026-09-01T03:00:00.000Z",
+      toAt: "2026-09-15T03:00:00.000Z",
+    });
+  });
+
+  it("preserva shell e nova tentativa quando a consulta falha", async () => {
+    getLeadDistributionReport.mockRejectedValue(new Error("indisponível"));
+
+    const page = await ReportsPage({ searchParams: Promise.resolve({ period: "custom" }) });
+
+    expect(page.type).toBe(AppShell);
+    expect(page.props.children.type).toBe(ReportsDashboard);
+    expect(page.props.children.props).toMatchObject({
+      report: null,
+      interval: {
+        from: "2026-09-01T03:00:00.000Z",
+        to: "2026-09-15T03:00:00.000Z",
+      },
+      error: "Não foi possível carregar os relatórios. Tente novamente.",
+    });
+  });
+});
 ````
 
 ## Snapshot de código: `apps/web/src/app/route-access.test.ts`
@@ -20381,6 +20892,30 @@ describe("janela de novos leads", () => {
     expect(screen.queryByRole("dialog", { name: "Novos leads" })).toBeNull();
   });
 
+  it("abre a nova janela quando a revalidação entrega outro snapshot", async () => {
+    acknowledge.mockResolvedValue({ ok: true, message: "Novos leads confirmados." });
+    const user = userEvent.setup();
+    const { rerender } = render(<NewLeadsNotificationModal snapshot={snapshot} />);
+
+    await user.click(screen.getByRole("button", { name: "Fechar" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Novos leads" })).toBeNull());
+
+    rerender(
+      <NewLeadsNotificationModal
+        snapshot={{
+          ...snapshot,
+          items: [{ ...snapshot.items[0], leadId: "lead-2", contactName: "Beatriz Lima" }],
+          watermark: "2026-09-15T12:02:00.000Z",
+          acknowledgementToken: "outro-token-assinado",
+          watermarkSequence: 9,
+        }}
+      />,
+    );
+
+    expect(await screen.findByRole("dialog", { name: "Novos leads" })).toBeTruthy();
+    expect(screen.getByText("Beatriz Lima")).toBeTruthy();
+  });
+
   it("mantém a janela aberta após falha de confirmação", async () => {
     acknowledge.mockResolvedValue({
       ok: false,
@@ -20450,7 +20985,17 @@ export function NewLeadsNotificationModal({
   const closeRef = useRef<HTMLButtonElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const wasOpenRef = useRef(true);
+  const snapshotIdentity = `${snapshot.watermarkSequence}:${snapshot.acknowledgementToken}`;
+  const previousSnapshotIdentityRef = useRef(snapshotIdentity);
   const titleId = "new-leads-notification-title";
+
+  useEffect(() => {
+    if (previousSnapshotIdentityRef.current === snapshotIdentity) return;
+    previousSnapshotIdentityRef.current = snapshotIdentity;
+    setOpen(true);
+    setPending(false);
+    setError(null);
+  }, [snapshotIdentity]);
 
   useEffect(() => {
     if (open) {
@@ -20821,6 +21366,8 @@ import type { LeadDistributionReport } from "../lib/api/types";
 import { formatCommercialStatus } from "../lib/dashboard/format";
 import type { ReportPeriodKey } from "../lib/reports/queries";
 
+const SAO_PAULO_TIME_ZONE = "America/Sao_Paulo";
+
 function DistributionBars({
   items,
   label,
@@ -20844,7 +21391,41 @@ function DistributionBars({
   );
 }
 
-export function ReportsDashboard({ report, period }: { report: LeadDistributionReport; period: ReportPeriodKey }) {
+function saoPauloDateInputValue(value: string | null | undefined): string {
+  if (!value) return "";
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: SAO_PAULO_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date(value));
+  const fields = Object.fromEntries(
+    parts.filter((part) => part.type !== "literal").map((part) => [part.type, part.value]),
+  );
+  return `${fields.year}-${fields.month}-${fields.day}`;
+}
+
+export function ReportsDashboard({
+  report,
+  period,
+  error,
+  from,
+  to,
+  interval,
+}: {
+  report: LeadDistributionReport | null;
+  period: ReportPeriodKey;
+  error?: string | null;
+  from?: string | null;
+  to?: string | null;
+  interval?: { from: string; to: string };
+}) {
+  const reportPeriod = report?.period ?? interval;
+  const customFrom = from ?? (period === "custom" ? saoPauloDateInputValue(reportPeriod?.from) : "");
+  const customTo = to ?? (period === "custom" ? saoPauloDateInputValue(reportPeriod?.to) : "");
+  const periodFrom = reportPeriod?.from ?? (customFrom ? `${customFrom}T00:00:00` : null);
+  const periodTo = reportPeriod?.to ?? (customTo ? `${customTo}T00:00:00` : null);
+
   return (
     <section className="reports-dashboard">
       <form className="report-filters" action="/relatorios" method="get">
@@ -20857,21 +21438,78 @@ export function ReportsDashboard({ report, period }: { report: LeadDistributionR
             <option value="custom">Personalizado</option>
           </select>
         </label>
-        <label>De<input name="from" type="date" /></label>
-        <label>Até<input name="to" type="date" /></label>
-        <button className="table-action" type="submit">Atualizar relatório</button>
+        <label>De<input name="from" type="date" defaultValue={customFrom} /></label>
+        <label>Até<input name="to" type="date" defaultValue={customTo} /></label>
+        <button className="table-action" type="submit">{error ? "Tentar novamente" : "Atualizar relatório"}</button>
       </form>
-      <section className="report-card" aria-labelledby="report-by-situation">
-        <h2 id="report-by-situation">Por situação</h2>
-        <DistributionBars label="Distribuição por situação" items={report.bySituation.map((item) => ({ name: formatCommercialStatus(item.commercialStatus), count: item.count }))} />
-      </section>
-      <section className="report-card" aria-labelledby="report-by-seller">
-        <h2 id="report-by-seller">Por vendedor</h2>
-        <DistributionBars label="Distribuição por vendedor" items={report.bySeller.map((item) => ({ name: item.sellerName, count: item.count }))} />
-      </section>
+      {periodFrom && periodTo ? (
+        <p className="muted">Período baseado na atribuição atual: {periodFrom} até {periodTo}.</p>
+      ) : null}
+      {error ? <p className="form-error" role="alert">{error}</p> : null}
+      {report ? (
+        <>
+          <section className="report-card" aria-labelledby="report-by-situation">
+            <h2 id="report-by-situation">Por situação</h2>
+            <DistributionBars label="Distribuição por situação" items={report.bySituation.map((item) => ({ name: formatCommercialStatus(item.commercialStatus), count: item.count }))} />
+          </section>
+          <section className="report-card" aria-labelledby="report-by-seller">
+            <h2 id="report-by-seller">Por vendedor</h2>
+            <DistributionBars label="Distribuição por vendedor" items={report.bySeller.map((item) => ({ name: item.sellerName, count: item.count }))} />
+          </section>
+        </>
+      ) : null}
     </section>
   );
 }
+````
+
+## Snapshot de código: `apps/web/src/components/reports-dashboard-regression.test.tsx`
+
+````tsx
+// @vitest-environment jsdom
+
+import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it } from "vitest";
+
+import { ReportsDashboard } from "./reports-dashboard";
+
+afterEach(cleanup);
+
+describe("regressões do painel de relatórios", () => {
+  it("mantém datas e contexto do intervalo personalizado no formulário", () => {
+    render(
+      <ReportsDashboard
+        report={{
+          period: { from: "2026-09-01T03:00:00.000Z", to: "2026-09-15T03:00:00.000Z" },
+          bySituation: [],
+          bySeller: [],
+        }}
+        period="custom"
+      />,
+    );
+
+    expect(screen.getByLabelText("De").getAttribute("value")).toBe("2026-09-01");
+    expect(screen.getByLabelText("Até").getAttribute("value")).toBe("2026-09-15");
+    expect(screen.getByText(/baseado na atribuição atual/i)).toBeTruthy();
+  });
+
+  it("mantem datas personalizadas quando a consulta falha", () => {
+    render(
+      <ReportsDashboard
+        report={null}
+        period="custom"
+        error="Erro ao carregar relatorio."
+        interval={{
+          from: "2026-09-01T03:00:00.000Z",
+          to: "2026-09-15T03:00:00.000Z",
+        }}
+      />,
+    );
+
+    expect(screen.getByLabelText("De").getAttribute("value")).toBe("2026-09-01");
+    expect(screen.getByRole("alert")).toBeTruthy();
+  });
+});
 ````
 
 ## Snapshot de código: `apps/web/src/components/seller-dashboard.tsx`
@@ -23424,10 +24062,10 @@ describe("consultas de relat\u00f3rios", () => {
   });
 
   it("calcula o m\u00eas atual a partir do primeiro dia UTC", () => {
-    expect(reportPeriod({ period: "month" }, new Date("2026-09-15T15:30:00.000Z"))).toEqual({
+    expect(reportPeriod({ period: "month" }, new Date("2026-10-01T01:00:00.000Z"))).toEqual({
       key: "month",
-      fromAt: "2026-09-01T00:00:00.000Z",
-      toAt: "2026-09-15T15:30:00.000Z",
+      fromAt: "2026-09-01T03:00:00.000Z",
+      toAt: "2026-10-01T01:00:00.000Z",
     });
   });
 
@@ -23447,8 +24085,8 @@ describe("consultas de relat\u00f3rios", () => {
       ),
     ).toEqual({
       key: "custom",
-      fromAt: "2026-09-01T00:00:00.000Z",
-      toAt: "2026-09-15T00:00:00.000Z",
+      fromAt: "2026-09-01T03:00:00.000Z",
+      toAt: "2026-09-15T03:00:00.000Z",
     });
   });
 
@@ -23477,39 +24115,102 @@ import { SESSION_COOKIE } from "../auth/session";
 
 export type ReportPeriodKey = "all" | "month" | "last30" | "custom";
 export type ReportPeriod = { key: ReportPeriodKey; fromAt: string; toAt: string };
+export type InvalidCustomReportPeriod = {
+  key: "custom";
+  from: string | null;
+  to: string | null;
+  error: string;
+};
+export type ReportPeriodResolution = ReportPeriod | InvalidCustomReportPeriod;
 export type ReportSearchParams = Record<string, string | string[] | undefined>;
 
 const ALL_HISTORY_FROM = "1970-01-01T00:00:00.000Z";
+const SAO_PAULO_TIME_ZONE = "America/Sao_Paulo";
+const dateTimeFormatter = new Intl.DateTimeFormat("en-US", {
+  timeZone: SAO_PAULO_TIME_ZONE,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hourCycle: "h23",
+  timeZoneName: "longOffset",
+});
 
 function valueOf(value: string | string[] | undefined): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
-function utcDate(value: string | null): Date | null {
+function dateParts(date: Date): Record<string, string> {
+  return Object.fromEntries(
+    dateTimeFormatter
+      .formatToParts(date)
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, part.value]),
+  );
+}
+
+function saoPauloOffsetMilliseconds(date: Date): number {
+  const offset = dateParts(date).timeZoneName;
+  const match = /^GMT([+-])(\d{2}):(\d{2})$/.exec(offset ?? "");
+  if (!match) throw new Error("Não foi possível determinar o fuso de São Paulo.");
+  const milliseconds = (Number(match[2]) * 60 + Number(match[3])) * 60 * 1000;
+  return match[1] === "+" ? milliseconds : -milliseconds;
+}
+
+function saoPauloDate(value: string | null): Date | null {
   if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
-  const date = new Date(`${value}T00:00:00.000Z`);
-  return Number.isNaN(date.getTime()) ? null : date;
+  const [year, month, day] = value.split("-").map(Number);
+  const localMidnight = Date.UTC(year, month - 1, day);
+  if (Number.isNaN(localMidnight)) return null;
+  const calendarDate = new Date(localMidnight);
+  if (
+    calendarDate.getUTCFullYear() !== year
+    || calendarDate.getUTCMonth() !== month - 1
+    || calendarDate.getUTCDate() !== day
+  ) return null;
+  let instant = localMidnight - saoPauloOffsetMilliseconds(new Date(localMidnight));
+  instant = localMidnight - saoPauloOffsetMilliseconds(new Date(instant));
+  return new Date(instant);
+}
+
+function saoPauloMonthStart(now: Date): Date {
+  const parts = dateParts(now);
+  return saoPauloDate(`${parts.year}-${parts.month}-01`) as Date;
 }
 
 function allHistory(now: Date): ReportPeriod {
   return { key: "all", fromAt: ALL_HISTORY_FROM, toAt: now.toISOString() };
 }
 
-/** Converts report controls into the explicit UTC interval required by the API. */
-export function reportPeriod(searchParams: ReportSearchParams, now = new Date()): ReportPeriod {
+export function isReportPeriod(period: ReportPeriodResolution): period is ReportPeriod {
+  return "fromAt" in period;
+}
+
+/** Converts São Paulo calendar controls into the explicit UTC interval required by the API. */
+export function reportPeriod(searchParams: ReportSearchParams, now = new Date()): ReportPeriodResolution {
   const key = valueOf(searchParams.period);
   if (key === "last30") {
     return { key, fromAt: new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString(), toAt: now.toISOString() };
   }
   if (key === "month") {
-    return { key, fromAt: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString(), toAt: now.toISOString() };
+    return { key, fromAt: saoPauloMonthStart(now).toISOString(), toAt: now.toISOString() };
   }
   if (key === "custom") {
-    const from = utcDate(valueOf(searchParams.from));
-    const to = utcDate(valueOf(searchParams.to));
+    const fromValue = valueOf(searchParams.from);
+    const toValue = valueOf(searchParams.to);
+    const from = saoPauloDate(fromValue);
+    const to = saoPauloDate(toValue);
     if (from && to && from < to) {
       return { key, fromAt: from.toISOString(), toAt: to.toISOString() };
     }
+    return {
+      key,
+      from: fromValue,
+      to: toValue,
+      error: "Informe as duas datas de um período personalizado válido.",
+    };
   }
   return allHistory(now);
 }
@@ -23524,6 +24225,44 @@ export async function getLeadDistributionReport(
     { cache: "no-store", headers: { Cookie: `${SESSION_COOKIE}=${sessionToken}` } },
   );
 }
+````
+
+## Snapshot de código: `apps/web/src/lib/reports/queries-regression.test.ts`
+
+````typescript
+import { describe, expect, it } from "vitest";
+
+import { reportPeriod } from "./queries";
+
+describe("regressões de período de relatórios", () => {
+  it("rejeita dia e mês inexistentes sem normalizar o intervalo personalizado", () => {
+    for (const searchParams of [
+      { period: "custom", from: "2026-02-30", to: "2026-03-05" },
+      { period: "custom", from: "2026-13-01", to: "2026-13-02" },
+    ]) {
+      expect(reportPeriod(searchParams, new Date("2026-09-15T15:30:00.000Z"))).toEqual({
+        key: "custom",
+        from: searchParams.from,
+        to: searchParams.to,
+        error: "Informe as duas datas de um período personalizado válido.",
+      });
+    }
+  });
+
+  it("mantém período personalizado inválido fora do histórico inteiro", () => {
+    expect(
+      reportPeriod(
+        { period: "custom", from: "2026-09-01", to: "" },
+        new Date("2026-09-15T15:30:00.000Z"),
+      ),
+    ).toEqual({
+      key: "custom",
+      from: "2026-09-01",
+      to: null,
+      error: "Informe as duas datas de um período personalizado válido.",
+    });
+  });
+});
 ````
 
 ## Snapshot de código: `apps/web/src/lib/users/actions.ts`
