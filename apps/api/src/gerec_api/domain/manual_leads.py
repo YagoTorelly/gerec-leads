@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Mapping, Protocol
 
+from gerec_api.domain.normalization import normalize_email, normalize_phone
+
 
 @dataclass(frozen=True)
 class ManualLeadCommand:
@@ -91,7 +93,7 @@ class ManualLeadService:
         normalized = ManualLeadCommand(
             name=_required(command.name, "name"),
             email=_email(command.email),
-            phone=_required(command.phone, "phone"),
+            phone=_phone(command.phone),
             campaign=_optional(command.campaign),
             source=_optional(command.source),
             idempotency_key=_required(command.idempotency_key, "idempotency key"),
@@ -130,8 +132,14 @@ def _optional(value: str | None) -> str | None:
 
 
 def _email(value: str) -> str:
-    normalized = _required(value, "email").casefold()
-    local, separator, domain = normalized.partition("@")
-    if not separator or not local or not domain:
+    normalized = normalize_email(_required(value, "email"))
+    if normalized is None:
         raise ValueError("email is invalid")
     return normalized
+
+
+def _phone(value: str) -> str:
+    original = _required(value, "phone")
+    if normalize_phone(original) is None:
+        raise ValueError("phone is invalid")
+    return original

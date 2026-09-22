@@ -75,3 +75,29 @@ cenários.
 - A remoção preexistente de `apps/api/.env.example` e o diretório não rastreado
   `tools/google-sheets-diagnostic/` foram preservados fora deste trabalho e não
   devem entrar no commit.
+
+## Correção pós-revisão — rodada 1
+
+### Finding corrigido
+
+O cadastro manual agora reutiliza `normalize_email` e `normalize_phone` para
+validar os contatos antes de entrar na persistência. E-mails com espaço ou mais
+de um `@` e telefones alfabéticos ou curtos são rejeitados com `422`, sem criar
+lead. Formatos reais com pontuação, DDD e código `55` continuam aceitos.
+
+O e-mail segue persistido na forma canônica em minúsculas. O telefone informado
+continua preservado após `trim`, mantendo o contrato existente de exibição e
+auditoria. O adapter e as regras dos leads automáticos não foram alterados.
+
+### Evidência RED → GREEN
+
+- RED dirigido: `4 failed, 7 passed`; falharam exatamente `a@b@c`,
+  `a b@example.com`, `abc` e `123`, todos ainda retornando `201` antes da
+  correção.
+- GREEN dirigido: `11 passed, 18 deselected`.
+- Focado: `32 passed, 3 skipped`.
+- Permissões e API correlata: `55 passed, 4 skipped`.
+- API completa: `213 passed, 12 skipped`.
+
+Os skips permanecem exclusivamente ligados à indisponibilidade local do
+replica set MongoDB `rs0`.

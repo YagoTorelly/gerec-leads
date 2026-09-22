@@ -272,7 +272,14 @@ def test_seller_cannot_create_manual_lead() -> None:
     [
         (_manual_payload(name="   "), {"Idempotency-Key": "manual-blank-name"}),
         (_manual_payload(email="invalid"), {"Idempotency-Key": "manual-invalid-email"}),
+        (_manual_payload(email="a@b@c"), {"Idempotency-Key": "manual-many-at"}),
+        (
+            _manual_payload(email="a b@example.com"),
+            {"Idempotency-Key": "manual-email-space"},
+        ),
         (_manual_payload(phone="   "), {"Idempotency-Key": "manual-blank-phone"}),
+        (_manual_payload(phone="abc"), {"Idempotency-Key": "manual-phone-alpha"}),
+        (_manual_payload(phone="123"), {"Idempotency-Key": "manual-phone-short"}),
         (_manual_payload(), {}),
     ],
 )
@@ -288,6 +295,32 @@ def test_manual_lead_route_rejects_invalid_fields_and_missing_idempotency_key(
 
     assert response.status_code == 422
     assert database["leads"].find_one({"source": "manual"}) is None
+
+
+@pytest.mark.parametrize(
+    ("email", "phone"),
+    [
+        ("Pessoa.Silva+Comercial@Example.COM", "(11) 99876-5432"),
+        ("contato@example.com.br", "+55 11 99876-5432"),
+        ("contato@example.test", "5511998765432"),
+    ],
+)
+def test_manual_lead_route_accepts_real_contact_formats(email: str, phone: str) -> None:
+    """Breaks if contact validation rejects supported punctuation or country-code formats."""
+    database = FakeDatabase()
+    _seed_queue(database)
+    client = _api_client(database, CurrentUser("admin-yago", "admin@example.test", "admin"))
+
+    response = client.post(
+        "/api/admin/leads/manual",
+        headers={"Idempotency-Key": f"manual-valid-contact:{phone}"},
+        json=_manual_payload(email=email, phone=phone),
+    )
+
+    assert response.status_code == 201
+    lead = database["leads"].find_one({"_id": ObjectId(response.json()["leadId"])})
+    assert lead["emailNormalized"] == email.casefold()
+    assert lead["phone"] == phone
 
 
 def test_manual_assignment_appears_in_the_existing_seller_notification_window() -> None:
