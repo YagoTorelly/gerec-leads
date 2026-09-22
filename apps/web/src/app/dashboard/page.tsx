@@ -6,6 +6,7 @@ import { AppShell } from "../../components/app-shell";
 import { LeadListControls } from "../../components/lead-list-controls";
 import { SellerDashboard } from "../../components/seller-dashboard";
 import { NewLeadsNotificationModal } from "../../components/new-leads-notification-modal";
+import { ManualLeadForm } from "../../components/manual-lead-form";
 import { getManagedUsers } from "../../lib/api/client";
 import { getSessionContext } from "../../lib/auth/session";
 import {
@@ -71,6 +72,7 @@ export default async function DashboardPage({
       {isAdminDashboard(dashboard) ? (
         <>
           <LeadListControls role="admin" sellers={transferTargets} current={filters} />
+          <ManualLeadForm latestCampaignDefaults={null} />
           <AdminDashboard dashboard={dashboard} transferTargets={transferTargets} />
         </>
       ) : (

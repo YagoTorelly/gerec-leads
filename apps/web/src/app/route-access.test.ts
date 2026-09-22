@@ -1,8 +1,9 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { getDashboardData, getSessionContext, redirect } = vi.hoisted(() => ({
+const { getDashboardData, getManagedUsers, getSessionContext, redirect } = vi.hoisted(() => ({
   getDashboardData: vi.fn(),
+  getManagedUsers: vi.fn(),
   getSessionContext: vi.fn(),
   redirect: vi.fn(),
 }));
@@ -14,6 +15,7 @@ vi.mock("next/navigation", () => ({
   useSearchParams: () => new URLSearchParams(),
 }));
 vi.mock("../lib/auth/session", () => ({ getSessionContext }));
+vi.mock("../lib/api/client", () => ({ getManagedUsers }));
 vi.mock("../lib/dashboard/queries", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/dashboard/queries")>()),
   getDashboardData,
@@ -86,5 +88,23 @@ describe("proteção das rotas operacionais", () => {
     expect(markup).toContain("Não foi possível carregar a visão geral.");
     expect(markup).toContain("Tente atualizar a página em alguns instantes.");
     expect(markup).not.toContain("INTERNAL_DETAIL_X");
+  });
+
+  it("mostra o cadastro manual no dashboard administrativo", async () => {
+    getSessionContext.mockResolvedValue({
+      ...sellerSession,
+      profile: { ...sellerSession.profile, role: "admin" as const },
+    });
+    getDashboardData.mockResolvedValue({
+      user: { id: "admin-1", email: "yago@wtgseguros.com.br", role: "admin" },
+      leads: { items: [], page: 1, pageSize: 50, total: 0 },
+      history: { items: [], page: 1, pageSize: 50, total: 0 },
+      queue: { position: 1, availability: "active", skipBalance: 0, items: [] },
+    });
+    getManagedUsers.mockResolvedValue({ items: [], page: 1, pageSize: 200, total: 0 });
+
+    const markup = renderToStaticMarkup(await DashboardPage({ searchParams: Promise.resolve({}) }));
+
+    expect(markup).toContain("Adicionar leads");
   });
 });
