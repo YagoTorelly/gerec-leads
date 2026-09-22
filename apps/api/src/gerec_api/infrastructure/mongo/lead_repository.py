@@ -123,6 +123,13 @@ class LeadRepository:
             "updatedAt": now,
         }
         company_id = self._companies.insert_one(company, session=session).inserted_id
+        audit_payload = dict(command.original_payload) if command.original_payload else {
+            "name": command.name,
+            "email": command.email,
+            "phone": command.phone,
+            "campaign": command.campaign,
+            "source": command.source,
+        }
         lead = {
             "companyId": company_id,
             "campaignId": campaign_id,
@@ -154,13 +161,7 @@ class LeadRepository:
                 "before": {},
                 "after": {
                     "manualQueueLeadId": manual_queue_lead_id,
-                    "payload": {
-                        "name": command.name,
-                        "email": command.email,
-                        "phone": command.phone,
-                        "campaign": command.campaign,
-                        "source": command.source,
-                    },
+                    "payload": audit_payload,
                 },
                 "createdAt": now,
                 "correlationId": command.idempotency_key,

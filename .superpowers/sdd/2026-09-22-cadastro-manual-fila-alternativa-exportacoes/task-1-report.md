@@ -46,3 +46,61 @@ campanha/origem, salto de vendedores pausados e recibo idempotente.
   escopo da Task 2; esta task já grava `lead.assigned` na outbox.
 - `apps/api/.env.example` removido e `tools/google-sheets-diagnostic/` não
   rastreado já estavam no worktree e foram preservados sem alteração/stage.
+
+## Correção pós-revisão — rodada 1
+
+### Findings corrigidos
+
+- O reconciliador e o FIFO automáticos agora excluem `source="manual"`. Foi
+  criado um reconciliador manual explícito que preserva a ordem própria e usa
+  somente o cursor `_id="manual"`; o ciclo estacionado/reativado não lê nem
+  altera cursor ou créditos automáticos.
+- O seletor público automático persiste cada crédito de pulo consumido na mesma
+  transação do avanço do cursor e registra auditoria/outbox
+  `seller.skip_consumed`.
+- A auditoria `lead.manual_created` preserva o payload recebido, anterior à
+  normalização usada para persistência.
+- Foram adicionados testes de MongoDB real para concorrência/idempotência,
+  unicidade física de `manualQueueLeadId`, rollback integral do comando manual
+  e rollback conjunto de cursor/crédito. A fixture só pula quando a conexão ou
+  o replica set requerido estão realmente indisponíveis; falhas de schema e de
+  execução continuam sendo falhas de teste.
+
+### Evidência RED → GREEN
+
+- RED de isolamento: o reconciliador genérico atribuiu o lead manual estacionado
+  como `normal` e avançou o cursor automático; GREEN após particionar consulta,
+  FIFO e comando de reconciliação manual.
+- RED de crédito: o seletor automático retornou o próximo vendedor, mas manteve
+  o saldo em `1`; GREEN após débito e auditoria transacionais.
+- RED de auditoria: o log continha e-mail/campos normalizados; GREEN após separar
+  payload original dos valores normalizados.
+- Os testes reais de concorrência e rollback foram coletados, mas não executados
+  neste ambiente porque não há membro disponível para o replica set `rs0`.
+
+### Arquivos alterados na correção
+
+- `apps/api/src/gerec_api/domain/manual_leads.py`
+- `apps/api/src/gerec_api/domain/queue.py`
+- `apps/api/src/gerec_api/infrastructure/mongo/lead_repository.py`
+- `apps/api/src/gerec_api/infrastructure/mongo/queue_repository.py`
+- `apps/api/tests/integration/test_manual_leads.py`
+- `.superpowers/sdd/2026-09-22-cadastro-manual-fila-alternativa-exportacoes/task-1-report.md`
+
+### Verificação da correção
+
+- `python -m pytest apps/api/tests/integration/test_manual_leads.py -q -rs`
+  — 11 passed, 3 skipped (replica set `rs0` indisponível).
+- `python -m pytest apps/api/tests/integration/test_queue_transactions.py apps/api/tests/integration/test_queue_concurrency.py apps/api/tests/integration/test_manual_leads.py -q -rs`
+  — 31 passed, 4 skipped (replica set `rs0` indisponível).
+- `python -m pytest apps/api/tests -q -rs`
+  — 198 passed, 12 skipped (todos os skips reportados por infraestrutura MongoDB
+  replica set indisponível).
+- `python -m compileall -q apps/api/src apps/api/tests` — exit 0.
+- `git diff --check` — exit 0.
+
+### Risco residual
+
+- Os três novos cenários transacionais reais permanecem pendentes de execução
+  em uma infraestrutura MongoDB replica set disponível; não houve fallback para
+  fake nesses testes. Todo o restante da suíte da API passou.

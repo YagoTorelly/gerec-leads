@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from time import sleep
 from typing import Any, Callable, TypeVar
+from uuid import uuid4
 
 from bson import ObjectId
 from pymongo import ReturnDocument
@@ -24,6 +25,7 @@ from gerec_api.infrastructure.mongo.collections import MongoCollections
 
 
 NORMAL_COMMAND = "queue.distribute_normal"
+MANUAL_COMMAND = "queue.distribute_manual"
 READY_COMMAND = "queue.distribute_ready"
 RECURRING_COMMAND = "queue.assign_recurring"
 TEMPORARY_COMMAND = "queue.assign_temporarily"
@@ -75,6 +77,16 @@ class QueueRepository:
                     sleep(0.01)
         raise QueueStateError(str(pending_error))
 
+    def distribute_manual(
+        self, lead_id: Any, command_id: str, *, actor_id: Any
+    ) -> AssignmentResult:
+        return self._execute(
+            MANUAL_COMMAND,
+            command_id,
+            AssignmentResult,
+            lambda session: self._distribute_manual(lead_id, command_id, actor_id, session),
+        )
+
     def select_next_seller(
         self,
         queue_kind: QueueKind,
@@ -85,9 +97,16 @@ class QueueRepository:
             raise ValueError("queue kind is invalid")
         if now.tzinfo is None or now.utcoffset() is None:
             raise ValueError("now must be timezone-aware")
+        command_id = f"queue.select_next_seller:{uuid4()}"
         with self._database.client.start_session() as session:
             return session.with_transaction(
-                lambda current: self._select_next_seller(queue_kind, now, current)
+                lambda current: self._select_next_seller(
+                    queue_kind,
+                    now,
+                    current,
+                    command_id=command_id,
+                    actor_id="system",
+                )
             )
 
     def snapshot(self) -> QueueSnapshot:
@@ -117,6 +136,7 @@ class QueueRepository:
                     "assigneeId": None,
                     "currentAssignmentId": None,
                     "archivedAt": None,
+                    "source": {"$ne": "manual"},
                 }
             )
         )
@@ -137,6 +157,42 @@ class QueueRepository:
                 lead["_id"], f"{command_prefix}:{lead['_id']}", actor_id=actor_id
             )
             if result.status == "parked" and result.assignment_type == "normal":
+                break
+            results.append(result)
+        return results
+
+    def reconcile_pending_manual(
+        self, command_prefix: str, *, actor_id: Any
+    ) -> list[AssignmentResult]:
+        """Retry parked manual leads without consulting the automatic cursor."""
+        candidates = list(
+            self._leads.find(
+                {
+                    "source": "manual",
+                    "assignmentStatus": {"$in": ["ready", "parked"]},
+                    "assigneeId": None,
+                    "currentAssignmentId": None,
+                    "archivedAt": None,
+                }
+            )
+        )
+        candidates = [
+            lead
+            for lead in candidates
+            if lead.get("parkReason") in (None, "no_eligible_seller")
+        ]
+        candidates.sort(
+            key=lambda lead: (
+                lead.get("createdAt") or datetime.max.replace(tzinfo=UTC),
+                lead.get("manualQueueLeadId") or str(lead["_id"]),
+            )
+        )
+        results: list[AssignmentResult] = []
+        for lead in candidates:
+            result = self.distribute_manual(
+                lead["_id"], f"{command_prefix}:{lead['_id']}", actor_id=actor_id
+            )
+            if result.status == "parked":
                 break
             results.append(result)
         return results
@@ -376,6 +432,9 @@ class QueueRepository:
         queue_kind: QueueKind,
         now: datetime,
         session: Any,
+        *,
+        command_id: str | None = None,
+        actor_id: Any = "system",
     ) -> SellerSelection:
         state_id = QUEUE_STATE_ID if queue_kind == "automatic" else MANUAL_QUEUE_STATE_ID
         queue_state = self._queue_state.find_one({"_id": state_id}, session=session)
@@ -401,11 +460,99 @@ class QueueRepository:
             )
             if updated.matched_count != 1:
                 raise QueueStateError(f"{queue_kind} queue state changed concurrently")
+            if queue_kind == "automatic":
+                for credit_index, seller_id in enumerate(decision.consumed_credit_seller_ids):
+                    previous_balance = self._balance(seller_id, session)
+                    consumed = self._skip_balances.update_one(
+                        {"sellerId": seller_id, "balance": {"$gte": 1}},
+                        {"$inc": {"balance": -1}, "$set": {"updatedAt": now}},
+                        session=session,
+                    )
+                    if consumed.matched_count != 1:
+                        raise QueueStateError("skip balance changed concurrently")
+                    if command_id is not None:
+                        self._record_event(
+                            event_type="seller.skip_consumed",
+                            entity_type="seller",
+                            entity_id=seller_id,
+                            action="seller.skip_consumed",
+                            command_id=command_id,
+                            actor_id=actor_id,
+                            before={"balance": previous_balance},
+                            after={"balance": previous_balance - 1},
+                            now=now,
+                            session=session,
+                            event_key=f"{command_id}:seller.skip_consumed:{credit_index}",
+                        )
         return SellerSelection(
             queue_kind=queue_kind,
             seller_id=decision.seller_id,
             next_seller_id=decision.next_seller_id,
             unavailable_seller_ids=decision.unavailable_seller_ids,
+        )
+
+    def _distribute_manual(
+        self,
+        lead_id: Any,
+        command_id: str,
+        actor_id: Any,
+        session: Any,
+    ) -> AssignmentResult:
+        now = self._now()
+        lead = self._available_lead(lead_id, session)
+        if lead.get("source") != "manual":
+            raise QueueStateError("manual distribution requires a manual lead")
+        self._require_manual_fifo(lead, session)
+        selection = self._select_next_seller("manual", now, session)
+        if selection.seller_id is None:
+            if not (
+                lead.get("assignmentStatus") == "parked"
+                and lead.get("parkReason") == "no_eligible_seller"
+            ):
+                self._leads.update_one(
+                    {"_id": lead_id, "currentAssignmentId": None},
+                    {
+                        "$set": {
+                            "assignmentStatus": "parked",
+                            "parkReason": "no_eligible_seller",
+                            "updatedAt": now,
+                        }
+                    },
+                    session=session,
+                )
+                self._record_event(
+                    event_type="lead.parked",
+                    entity_type="lead",
+                    entity_id=lead_id,
+                    action="queue.manual_parked",
+                    command_id=command_id,
+                    actor_id=actor_id,
+                    before={"assignmentStatus": lead.get("assignmentStatus")},
+                    after={
+                        "assignmentStatus": "parked",
+                        "parkReason": "no_eligible_seller",
+                        "assignmentType": "manual",
+                    },
+                    now=now,
+                    session=session,
+                )
+            return AssignmentResult(
+                lead_id=str(lead_id),
+                assignment_id=None,
+                seller_id=None,
+                assignment_type="manual",
+                status="parked",
+                owner_id=self._owner_id(lead, session),
+            )
+        return self._assign_effective(
+            lead,
+            selection.seller_id,
+            "manual",
+            None,
+            command_id,
+            actor_id,
+            now,
+            session,
         )
 
     def _distribute_ready(
@@ -416,6 +563,8 @@ class QueueRepository:
         session: Any,
     ) -> AssignmentResult:
         lead = self._available_lead(lead_id, session)
+        if lead.get("source") == "manual":
+            return self._distribute_manual(lead_id, command_id, actor_id, session)
         company = self._companies.find_one({"_id": lead["companyId"]}, session=session)
         if company is not None and company.get("ownerId") is not None:
             return self._assign_recurring(lead_id, command_id, actor_id, session)
@@ -797,6 +946,7 @@ class QueueRepository:
                 "assignmentStatus": {"$in": ["ready", "parked"]},
                 "assigneeId": None,
                 "archivedAt": None,
+                "source": {"$ne": "manual"},
             },
             session=session,
         ):
@@ -814,6 +964,32 @@ class QueueRepository:
         )
         if first["_id"] != lead["_id"]:
             raise _FifoPredecessorPending("normal lead would bypass FIFO order")
+
+    def _require_manual_fifo(self, lead: dict[str, Any], session: Any) -> None:
+        candidates = [
+            candidate
+            for candidate in self._leads.find(
+                {
+                    "source": "manual",
+                    "assignmentStatus": {"$in": ["ready", "parked"]},
+                    "assigneeId": None,
+                    "archivedAt": None,
+                },
+                session=session,
+            )
+            if candidate.get("parkReason") in (None, "no_eligible_seller")
+        ]
+        if not candidates:
+            return
+        first = min(
+            candidates,
+            key=lambda value: (
+                value.get("createdAt") or datetime.max.replace(tzinfo=UTC),
+                value.get("manualQueueLeadId") or str(value["_id"]),
+            ),
+        )
+        if first["_id"] != lead["_id"]:
+            raise _FifoPredecessorPending("manual lead would bypass FIFO order")
 
     def _owner_id(self, lead: dict[str, Any], session: Any) -> str | None:
         company = self._companies.find_one({"_id": lead["companyId"]}, session=session)

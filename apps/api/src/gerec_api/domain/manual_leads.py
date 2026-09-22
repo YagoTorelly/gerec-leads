@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Mapping, Protocol
 
@@ -15,6 +15,11 @@ class ManualLeadCommand:
     idempotency_key: str
     campaign: str | None = None
     source: str | None = None
+    original_payload: Mapping[str, Any] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
 
 @dataclass(frozen=True)
@@ -76,6 +81,13 @@ class ManualLeadService:
     ) -> ManualLeadResult:
         actor_id = _actor_id(actor)
         timestamp = _aware_utc(now)
+        original_payload = command.original_payload or {
+            "name": command.name,
+            "email": command.email,
+            "phone": command.phone,
+            "campaign": command.campaign,
+            "source": command.source,
+        }
         normalized = ManualLeadCommand(
             name=_required(command.name, "name"),
             email=_email(command.email),
@@ -83,6 +95,7 @@ class ManualLeadService:
             campaign=_optional(command.campaign),
             source=_optional(command.source),
             idempotency_key=_required(command.idempotency_key, "idempotency key"),
+            original_payload=dict(original_payload),
         )
         return self._persistence.create_manual_lead(actor_id, normalized, timestamp)
 
