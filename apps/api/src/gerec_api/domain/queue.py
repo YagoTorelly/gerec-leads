@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Literal, Mapping, Protocol, Sequence
 
 from bson import ObjectId
@@ -42,6 +43,17 @@ class QueueDecision:
     seller_id: Any | None
     next_seller_id: Any
     consumed_credit_seller_ids: tuple[Any, ...] = ()
+    unavailable_seller_ids: tuple[Any, ...] = ()
+
+
+QueueKind = Literal["automatic", "manual"]
+
+
+@dataclass(frozen=True)
+class SellerSelection:
+    queue_kind: QueueKind
+    seller_id: Any | None
+    next_seller_id: Any | None
     unavailable_seller_ids: tuple[Any, ...] = ()
 
 
@@ -110,6 +122,26 @@ class QueueRules:
                 consumed_credit_seller_ids=tuple(consumed),
                 unavailable_seller_ids=tuple(unavailable),
             )
+
+    @staticmethod
+    def select_manual(sellers: Sequence[SellerState], next_seller_id: Any) -> QueueDecision:
+        """Select by queue order while leaving automatic skip credits untouched."""
+        if not sellers:
+            raise ValueError("seller queue cannot be empty")
+        cursor = QueueRules._cursor_index(sellers, next_seller_id)
+        unavailable: list[Any] = []
+        for offset in range(len(sellers)):
+            seller = sellers[(cursor + offset) % len(sellers)]
+            if QueueRules.availability(seller).status != "active":
+                unavailable.append(seller.seller_id)
+                continue
+            next_index = (cursor + offset + 1) % len(sellers)
+            return QueueDecision(
+                seller_id=seller.seller_id,
+                next_seller_id=QueueRules._next_eligible_seller_id(sellers, next_index),
+                unavailable_seller_ids=tuple(unavailable),
+            )
+        return QueueDecision(seller_id=None, next_seller_id=next_seller_id)
 
     @staticmethod
     def _cursor_index(sellers: Sequence[SellerState], seller_id: Any) -> int:
@@ -203,6 +235,10 @@ class TransferResult:
 
 
 class QueuePersistence(Protocol):
+    def select_next_seller(
+        self, queue_kind: QueueKind, now: datetime
+    ) -> SellerSelection: ...
+
     def reconcile_pending(self, command_prefix: str, *, actor_id: Any) -> list[AssignmentResult]: ...
 
     def distribute_ready(
@@ -266,6 +302,10 @@ class QueueService:
             _required(command_id, "command id"),
             actor_id=self._actor_id,
         )
+
+    def select_next_seller(self, queue_kind: QueueKind, now: datetime) -> SellerSelection:
+        """Select through one explicitly named automatic or manual cursor."""
+        return self._persistence.select_next_seller(queue_kind, now)
 
     def distribute_ready(self, lead_id: Any, command_id: str) -> AssignmentResult:
         """Assign a ready lead using recurring ownership or the global queue."""

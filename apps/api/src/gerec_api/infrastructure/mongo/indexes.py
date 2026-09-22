@@ -124,6 +124,13 @@ INDEXES: Final[tuple[MongoIndex, ...]] = (
         "leads_assignee_assignment_sequence",
     ),
     MongoIndex(
+        MongoCollections.LEADS,
+        (("manualQueueLeadId", ASCENDING),),
+        "leads_manual_queue_lead_id_unique",
+        unique=True,
+        partial_filter={"manualQueueLeadId": {"$exists": True}},
+    ),
+    MongoIndex(
         MongoCollections.SALES,
         (("leadId", ASCENDING),),
         "sales_active_lead_unique",

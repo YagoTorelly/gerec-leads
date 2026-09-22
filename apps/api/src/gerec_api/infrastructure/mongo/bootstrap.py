@@ -51,10 +51,24 @@ SCHEMA_VALIDATORS: Final[dict[str, dict[str, Any]]] = {
         "$jsonSchema": {
             "bsonType": "object",
             "required": ["companyId", "campaignId", "archivedAt"],
+            "anyOf": [
+                {
+                    "required": ["source"],
+                    "properties": {
+                        "source": {"enum": ["manual"]},
+                        "campaignId": {"bsonType": ["objectId", "null"]},
+                    },
+                },
+                {"properties": {"campaignId": {"bsonType": "objectId"}}},
+            ],
             "properties": {
                 "companyId": {"bsonType": "objectId"},
-                "campaignId": {"bsonType": "objectId"},
+                "campaignId": {"bsonType": ["objectId", "null"]},
                 "archivedAt": {"bsonType": ["date", "null"]},
+                "manualQueueLeadId": {
+                    "bsonType": "string",
+                    "pattern": "^MAN-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                },
                 "commercialStatus": {"enum": ["undefined", "potential", "negotiation", "won"]},
                 "isDisqualified": {"bsonType": "bool"},
                 "commentCount": {"bsonType": "int", "minimum": 0},

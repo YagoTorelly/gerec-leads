@@ -4,17 +4,21 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any, Callable
+from uuid import uuid4
 
 from pymongo.errors import DuplicateKeyError
 
 from gerec_api.domain.documents import prepare_company_for_persistence
 from gerec_api.domain.leads import ArchiveResult, ImportResult
+from gerec_api.domain.manual_leads import ManualLeadCommand, ManualLeadResult
 from gerec_api.domain.normalization import NormalizedSourceRow
 from gerec_api.infrastructure.mongo.collections import MongoCollections
+from gerec_api.infrastructure.mongo.queue_repository import QueueRepository
 
 
 IMPORT_COMMAND = "lead.import"
 ARCHIVE_COMMAND = "lead.archive_missing"
+MANUAL_COMMAND = "lead.create_manual"
 
 
 class LeadRepository:
@@ -51,10 +55,294 @@ class LeadRepository:
                 raise
             return ArchiveResult.from_document(receipt["result"])
 
+    def create_manual_lead(
+        self,
+        actor: Any,
+        command: ManualLeadCommand,
+        now: datetime,
+    ) -> ManualLeadResult:
+        """Create and assign one manual lead atomically with an idempotent receipt."""
+        existing = self._manual_receipt(command.idempotency_key)
+        if existing is not None:
+            return ManualLeadResult.from_document(existing["result"])
+
+        def operation(session: Any) -> ManualLeadResult:
+            receipt = self._manual_receipt(command.idempotency_key, session=session)
+            if receipt is not None:
+                return ManualLeadResult.from_document(receipt["result"])
+            result = self._create_manual_in_transaction(actor, command, now, session)
+            self._command_results.insert_one(
+                {
+                    "commandName": MANUAL_COMMAND,
+                    "idempotencyKey": command.idempotency_key,
+                    "result": result.to_document(),
+                    "createdAt": now,
+                },
+                session=session,
+            )
+            return result
+
+        try:
+            with self._database.client.start_session() as session:
+                return session.with_transaction(operation)
+        except DuplicateKeyError:
+            receipt = self._manual_receipt(command.idempotency_key)
+            if receipt is None:
+                raise
+            return ManualLeadResult.from_document(receipt["result"])
+
     def _with_transaction(self, operation: Callable[[Any], Any]) -> Any:
         with self._database.client.start_session() as session:
             with session.start_transaction():
                 return operation(session)
+
+    def _create_manual_in_transaction(
+        self,
+        actor: Any,
+        command: ManualLeadCommand,
+        now: datetime,
+        session: Any,
+    ) -> ManualLeadResult:
+        manual_queue_lead_id = f"MAN-{uuid4()}"
+        inherited = self._latest_automatic_context(session)
+        campaign_id, campaign_name = self._manual_campaign(
+            command.campaign, inherited, now, session
+        )
+        inherited_origin = (
+            inherited.get("origin")
+            or inherited.get("adName")
+            or inherited.get("adExternalId")
+        )
+        origin = command.source if command.source is not None else inherited_origin
+        company = {
+            "sourceIdentity": f"manual:{manual_queue_lead_id}",
+            "name": command.name,
+            "ownerId": None,
+            "clientSince": None,
+            "createdAt": now,
+            "updatedAt": now,
+        }
+        company_id = self._companies.insert_one(company, session=session).inserted_id
+        lead = {
+            "companyId": company_id,
+            "campaignId": campaign_id,
+            "campaignName": campaign_name,
+            "origin": origin,
+            "manualQueueLeadId": manual_queue_lead_id,
+            "source": "manual",
+            "contactName": command.name,
+            "phone": command.phone,
+            "emailNormalized": command.email,
+            "commercialStatus": "undefined",
+            "isDisqualified": False,
+            "commentCount": 0,
+            "lastCommentAt": None,
+            "assignmentStatus": "ready",
+            "assigneeId": None,
+            "currentAssignmentId": None,
+            "archivedAt": None,
+            "createdAt": now,
+            "updatedAt": now,
+        }
+        lead_id = self._leads.insert_one(lead, session=session).inserted_id
+        self._audit_log.insert_one(
+            {
+                "actorId": actor,
+                "action": "lead.manual_created",
+                "entityType": "lead",
+                "entityId": lead_id,
+                "before": {},
+                "after": {
+                    "manualQueueLeadId": manual_queue_lead_id,
+                    "payload": {
+                        "name": command.name,
+                        "email": command.email,
+                        "phone": command.phone,
+                        "campaign": command.campaign,
+                        "source": command.source,
+                    },
+                },
+                "createdAt": now,
+                "correlationId": command.idempotency_key,
+            },
+            session=session,
+        )
+
+        queue = QueueRepository(self._database, now=lambda: now)
+        selection = queue._select_next_seller("manual", now, session)
+        if selection.seller_id is None:
+            self._leads.update_one(
+                {"_id": lead_id, "currentAssignmentId": None},
+                {
+                    "$set": {
+                        "assignmentStatus": "parked",
+                        "parkReason": "no_eligible_seller",
+                        "updatedAt": now,
+                    }
+                },
+                session=session,
+            )
+            self._audit_log.insert_one(
+                {
+                    "actorId": actor,
+                    "action": "queue.manual_parked",
+                    "entityType": "lead",
+                    "entityId": lead_id,
+                    "before": {"assignmentStatus": "ready"},
+                    "after": {
+                        "assignmentStatus": "parked",
+                        "parkReason": "no_eligible_seller",
+                    },
+                    "createdAt": now,
+                    "correlationId": command.idempotency_key,
+                },
+                session=session,
+            )
+            return ManualLeadResult(
+                lead_id=str(lead_id),
+                manual_queue_lead_id=manual_queue_lead_id,
+                assignee_id=None,
+                assigned_at=None,
+                status="parked",
+            )
+
+        assignment_sequence = queue._next_assignment_sequence(session)
+        assignment = {
+            "leadId": lead_id,
+            "sellerId": selection.seller_id,
+            "type": "manual",
+            "reason": None,
+            "current": True,
+            "startedAt": now,
+            "endedAt": None,
+            "commandId": command.idempotency_key,
+        }
+        assignment_id = self._assignments.insert_one(assignment, session=session).inserted_id
+        assigned = self._leads.update_one(
+            {"_id": lead_id, "currentAssignmentId": None},
+            {
+                "$set": {
+                    "assignmentStatus": "assigned",
+                    "assigneeId": selection.seller_id,
+                    "currentAssignmentId": assignment_id,
+                    "assignmentType": "manual",
+                    "assignedAt": now,
+                    "assignmentSequence": assignment_sequence,
+                    "updatedAt": now,
+                }
+            },
+            session=session,
+        )
+        if assigned.matched_count != 1:
+            raise RuntimeError("manual lead changed concurrently")
+        self._companies.update_one(
+            {"_id": company_id, "ownerId": None},
+            {"$set": {"ownerId": selection.seller_id, "updatedAt": now}},
+            session=session,
+        )
+        event_payload = {
+            "assignmentStatus": "assigned",
+            "assigneeId": selection.seller_id,
+            "assignmentType": "manual",
+            "manualQueueLeadId": manual_queue_lead_id,
+            "assignmentSequence": assignment_sequence,
+        }
+        self._audit_log.insert_one(
+            {
+                "actorId": actor,
+                "action": "queue.manual_assigned",
+                "entityType": "lead",
+                "entityId": lead_id,
+                "before": {"assignmentStatus": "ready", "assigneeId": None},
+                "after": event_payload,
+                "createdAt": now,
+                "correlationId": command.idempotency_key,
+            },
+            session=session,
+        )
+        self._notification_outbox.insert_one(
+            {
+                "eventType": "lead.assigned",
+                "aggregateId": lead_id,
+                "actorId": actor,
+                "idempotencyKey": f"{command.idempotency_key}:lead.assigned",
+                "status": "pending",
+                "attempts": 0,
+                "payload": event_payload,
+                "createdAt": now,
+            },
+            session=session,
+        )
+        return ManualLeadResult(
+            lead_id=str(lead_id),
+            manual_queue_lead_id=manual_queue_lead_id,
+            assignee_id=str(selection.seller_id),
+            assigned_at=now,
+        )
+
+    def _manual_receipt(
+        self,
+        idempotency_key: str,
+        *,
+        session: Any | None = None,
+    ) -> dict[str, Any] | None:
+        options = {} if session is None else {"session": session}
+        receipt = self._command_results.find_one({"idempotencyKey": idempotency_key}, **options)
+        if receipt is not None and receipt.get("commandName") != MANUAL_COMMAND:
+            raise ValueError("idempotency key already belongs to another command")
+        return receipt
+
+    def _latest_automatic_context(self, session: Any) -> dict[str, Any]:
+        candidates = list(
+            self._leads.find(
+                {"manualQueueLeadId": {"$exists": False}},
+                session=session,
+            )
+        )
+        if not candidates:
+            return {}
+        minimum = datetime.min.replace(tzinfo=UTC)
+        return max(
+            candidates,
+            key=lambda lead: lead.get("sourceEnteredAt") or lead.get("createdAt") or minimum,
+        )
+
+    def _manual_campaign(
+        self,
+        requested_name: str | None,
+        inherited: dict[str, Any],
+        now: datetime,
+        session: Any,
+    ) -> tuple[Any | None, str | None]:
+        if requested_name is None:
+            campaign_id = inherited.get("campaignId")
+            campaign_name = inherited.get("campaignName")
+            if campaign_name is None and campaign_id is not None:
+                campaign = self._campaigns.find_one({"_id": campaign_id}, session=session)
+                if campaign is not None:
+                    campaign_name = (
+                        campaign.get("displayName")
+                        or campaign.get("sourceName")
+                        or campaign.get("externalId")
+                    )
+            return campaign_id, campaign_name
+
+        identity_key = f"manual:{' '.join(requested_name.casefold().split())}"
+        campaign = self._campaigns.find_one({"identityKey": identity_key}, session=session)
+        if campaign is not None:
+            return campaign["_id"], requested_name
+        document = {
+            "identityKey": identity_key,
+            "externalId": None,
+            "sourceName": requested_name,
+            "displayName": requested_name,
+            "status": "approved",
+            "approvalMode": "manual_lead",
+            "createdAt": now,
+            "updatedAt": now,
+        }
+        campaign_id = self._campaigns.insert_one(document, session=session).inserted_id
+        return campaign_id, requested_name
 
     def _import_in_transaction(
         self,
@@ -448,6 +736,18 @@ class LeadRepository:
     @property
     def _command_results(self):
         return self._database[MongoCollections.COMMAND_RESULTS]
+
+    @property
+    def _assignments(self):
+        return self._database[MongoCollections.ASSIGNMENTS]
+
+    @property
+    def _audit_log(self):
+        return self._database[MongoCollections.AUDIT_LOG]
+
+    @property
+    def _notification_outbox(self):
+        return self._database[MongoCollections.NOTIFICATION_OUTBOX]
 
 
 def _campaign_identity(row: NormalizedSourceRow) -> str:

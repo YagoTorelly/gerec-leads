@@ -12,9 +12,11 @@ from pymongo.errors import DuplicateKeyError
 
 from gerec_api.domain.queue import (
     AssignmentResult,
+    QueueKind,
     QueueSnapshot,
     QueueRules,
     SellerAvailability,
+    SellerSelection,
     SellerState,
     TransferResult,
 )
@@ -28,6 +30,7 @@ TEMPORARY_COMMAND = "queue.assign_temporarily"
 TRANSFER_COMMAND = "queue.transfer_owner"
 TRANSFER_LEAD_COMMAND = "queue.transfer_lead"
 QUEUE_STATE_ID = "global"
+MANUAL_QUEUE_STATE_ID = "manual"
 
 ResultT = TypeVar("ResultT", AssignmentResult, TransferResult)
 
@@ -71,6 +74,21 @@ class QueueRepository:
                 if attempt < 99:
                     sleep(0.01)
         raise QueueStateError(str(pending_error))
+
+    def select_next_seller(
+        self,
+        queue_kind: QueueKind,
+        now: datetime,
+    ) -> SellerSelection:
+        """Advance one explicit queue cursor in a MongoDB transaction."""
+        if queue_kind not in {"automatic", "manual"}:
+            raise ValueError("queue kind is invalid")
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("now must be timezone-aware")
+        with self._database.client.start_session() as session:
+            return session.with_transaction(
+                lambda current: self._select_next_seller(queue_kind, now, current)
+            )
 
     def snapshot(self) -> QueueSnapshot:
         queue_state = self._queue_state.find_one({"_id": QUEUE_STATE_ID})
@@ -351,6 +369,43 @@ class QueueRepository:
             actor_id,
             now,
             session,
+        )
+
+    def _select_next_seller(
+        self,
+        queue_kind: QueueKind,
+        now: datetime,
+        session: Any,
+    ) -> SellerSelection:
+        state_id = QUEUE_STATE_ID if queue_kind == "automatic" else MANUAL_QUEUE_STATE_ID
+        queue_state = self._queue_state.find_one({"_id": state_id}, session=session)
+        sellers = self._seller_states(now, session)
+        if not sellers:
+            return SellerSelection(queue_kind, None, None)
+        if queue_state is None:
+            raise QueueStateError(f"{queue_kind} queue state is not initialized")
+        next_seller_id = queue_state.get("nextSellerId") or sellers[0].seller_id
+        decision = (
+            QueueRules.select_normal(sellers, next_seller_id)
+            if queue_kind == "automatic"
+            else QueueRules.select_manual(sellers, next_seller_id)
+        )
+        if decision.seller_id is not None:
+            updated = self._queue_state.update_one(
+                {"_id": state_id, "version": queue_state.get("version", 0)},
+                {
+                    "$set": {"nextSellerId": decision.next_seller_id, "updatedAt": now},
+                    "$inc": {"version": 1},
+                },
+                session=session,
+            )
+            if updated.matched_count != 1:
+                raise QueueStateError(f"{queue_kind} queue state changed concurrently")
+        return SellerSelection(
+            queue_kind=queue_kind,
+            seller_id=decision.seller_id,
+            next_seller_id=decision.next_seller_id,
+            unavailable_seller_ids=decision.unavailable_seller_ids,
         )
 
     def _distribute_ready(

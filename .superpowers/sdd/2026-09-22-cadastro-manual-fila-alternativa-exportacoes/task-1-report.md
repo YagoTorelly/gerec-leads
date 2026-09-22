@@ -1,0 +1,48 @@
+# Task 1 — Relatório de implementação
+
+## Status
+
+Implementada a criação transacional de leads manuais com fila/cursor próprios,
+ID `MAN-` + UUID4, situação inicial `undefined`, herança restrita de
+campanha/origem, salto de vendedores pausados e recibo idempotente.
+
+## Arquivos
+
+- Criado `apps/api/src/gerec_api/domain/manual_leads.py`.
+- Alterado `apps/api/src/gerec_api/domain/queue.py`.
+- Alterado `apps/api/src/gerec_api/infrastructure/mongo/lead_repository.py`.
+- Alterado `apps/api/src/gerec_api/infrastructure/mongo/queue_repository.py`.
+- Criado `apps/api/src/gerec_api/infrastructure/mongo/migrations/20260922_manual_queue_exportations.py`.
+- Alterado `apps/api/src/gerec_api/infrastructure/mongo/migrations/runner.py` para registrar a migração.
+- Alterado `apps/api/src/gerec_api/infrastructure/mongo/indexes.py` para declarar o índice único parcial de `manualQueueLeadId`.
+- Alterado `apps/api/src/gerec_api/infrastructure/mongo/bootstrap.py` para validar o UUID manual e permitir campanha vazia somente no contrato de origem manual.
+- Criado `apps/api/tests/integration/test_manual_leads.py`.
+
+## Evidência TDD
+
+- RED inicial: `python -m pytest apps/api/tests/integration/test_manual_leads.py -q`
+  falhou na coleta com `ModuleNotFoundError: gerec_api.domain.manual_leads`.
+- RED de schema: a mesma suíte apresentou 2 falhas pela migração e pelo índice
+  ainda ausentes.
+- RED de integração com o modelo automático real: o teste de herança falhou
+  com `origin=None` ao usar `adName` como origem persistida.
+- GREEN focado: 8 testes aprovados.
+
+## Comandos e contagens
+
+- `python -m pytest apps/api/tests/integration/test_manual_leads.py -q` — 8 passed.
+- `python -m pytest apps/api/tests/integration/test_queue_transactions.py apps/api/tests/integration/test_queue_concurrency.py apps/api/tests/integration/test_indexes.py apps/api/tests/integration/test_operational_migration.py -q` — 33 passed, 8 skipped.
+- `python -m compileall -q apps/api/src apps/api/tests` — exit 0.
+- `python -m pytest apps/api/tests -q` — 195 passed, 9 skipped.
+- `git diff --check` — exit 0.
+
+## Riscos e limites
+
+- O Docker Desktop/replica set local não estava disponível; por isso 9 testes
+  que dependem de MongoDB real foram pulados. Os testes transacionais com o
+  adapter em memória e toda a suíte restante passaram, mas concorrência e
+  aplicação física do novo índice ainda dependem do gate com replica set.
+- A rota/autorização HTTP e a integração final da janela de notificações são
+  escopo da Task 2; esta task já grava `lead.assigned` na outbox.
+- `apps/api/.env.example` removido e `tools/google-sheets-diagnostic/` não
+  rastreado já estavam no worktree e foram preservados sem alteração/stage.
