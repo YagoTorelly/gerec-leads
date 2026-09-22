@@ -169,6 +169,9 @@ class SyncJob:
                     counts[result.status] += 1
             if self._queue_service is not None:
                 self._queue_service.reconcile_pending(f"sync:{snapshot_id}:reconcile")
+                self._queue_service.reconcile_pending_manual(
+                    f"sync:{snapshot_id}:reconcile-manual"
+                )
             self._heartbeat(lease)
             archive = self._lead_service.archive_missing(snapshot_id)
         except Exception:

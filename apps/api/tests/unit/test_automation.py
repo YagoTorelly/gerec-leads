@@ -70,12 +70,16 @@ class RecordingQueueService:
     def __init__(self) -> None:
         self.commands: list[tuple[str, str]] = []
         self.reconciliations: list[str] = []
+        self.manual_reconciliations: list[str] = []
 
     def distribute_ready(self, lead_id: str, command_id: str) -> None:
         self.commands.append((lead_id, command_id))
 
     def reconcile_pending(self, command_prefix: str) -> None:
         self.reconciliations.append(command_prefix)
+
+    def reconcile_pending_manual(self, command_prefix: str) -> None:
+        self.manual_reconciliations.append(command_prefix)
 
 
 def test_sync_job_reconciles_all_pending_leads_after_the_complete_import() -> None:
@@ -89,6 +93,7 @@ def test_sync_job_reconciles_all_pending_leads_after_the_complete_import() -> No
 
     assert queue.commands == []
     assert queue.reconciliations == ["sync:run-20260827-1000:reconcile"]
+    assert queue.manual_reconciliations == ["sync:run-20260827-1000:reconcile-manual"]
 
 
 class InMemoryOutboxRepository:

@@ -10,6 +10,7 @@ from gerec_api.config import Settings
 from gerec_api.domain.business_time import BusinessClock, MongoHolidayRepository
 from gerec_api.domain.leads import LeadService
 from gerec_api.domain.lead_notifications import LeadNotificationService
+from gerec_api.domain.manual_leads import ManualLeadService
 from gerec_api.domain.operations import OperationsService
 from gerec_api.domain.queue import QueueService
 from gerec_api.domain.user_administration import UserAdministrationService
@@ -55,6 +56,8 @@ def create_app(
     app.state.dashboard_service = DashboardService(database)
     app.state.lead_service = LeadService(LeadRepository(database))
     database_clock = MongoClock(database)
+    app.state.database_clock = database_clock
+    app.state.manual_lead_service = ManualLeadService(LeadRepository(database))
     app.state.lead_notification_service = LeadNotificationService(
         MongoLeadNotificationRepository(database),
         signing_key=settings.app_secret.get_secret_value(),

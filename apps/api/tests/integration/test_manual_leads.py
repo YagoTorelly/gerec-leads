@@ -14,10 +14,15 @@ from uuid import uuid4
 
 import pytest
 from bson import ObjectId
+from fastapi.testclient import TestClient
 from pymongo import MongoClient
 from pymongo.errors import DuplicateKeyError, PyMongoError, ServerSelectionTimeoutError
 
+from gerec_api.auth.dependencies import get_current_user
+from gerec_api.auth.sessions import CurrentUser
+from gerec_api.config import Settings
 from gerec_api.domain.manual_leads import ManualLeadCommand, ManualLeadService
+from gerec_api.main import create_app
 from gerec_api.infrastructure.mongo.lead_repository import LeadRepository
 from gerec_api.infrastructure.mongo.indexes import INDEXES
 from gerec_api.infrastructure.mongo.bootstrap import ensure_schema
@@ -54,7 +59,7 @@ class FakeCollection:
         return next((deepcopy(item) for item in self.documents if _matches(item, query)), None)
 
     def find(self, query: dict[str, Any], **_: Any):
-        return [deepcopy(item) for item in self.documents if _matches(item, query)]
+        return FakeCursor(deepcopy(item) for item in self.documents if _matches(item, query))
 
     def insert_one(self, document: dict[str, Any], **_: Any):
         stored = deepcopy(document)
@@ -96,6 +101,26 @@ class FakeDatabase:
     def __getitem__(self, name: str):
         return self.collections.setdefault(name, FakeCollection())
 
+    def command(self, command: dict[str, Any]):
+        assert command == {"hello": 1}
+        return {"localTime": NOW}
+
+
+class FakeCursor(list[dict[str, Any]]):
+    def sort(self, key_or_list, direction=None):
+        fields = key_or_list if isinstance(key_or_list, list) else [(key_or_list, direction)]
+        for field, order in reversed(fields):
+            super().sort(key=lambda item: item.get(field), reverse=order < 0)
+        return self
+
+    def skip(self, amount: int):
+        del self[:amount]
+        return self
+
+    def limit(self, amount: int):
+        del self[amount:]
+        return self
+
 
 def _matches(document: dict[str, Any], query: dict[str, Any]) -> bool:
     for key, expected in query.items():
@@ -107,6 +132,10 @@ def _matches(document: dict[str, Any], query: dict[str, Any]) -> bool:
                 return False
             if "$in" in expected and actual not in expected["$in"]:
                 return False
+            if "$gt" in expected and not (actual is not None and actual > expected["$gt"]):
+                return False
+            if "$lte" in expected and not (actual is not None and actual <= expected["$lte"]):
+                return False
             continue
         if actual != expected:
             return False
@@ -116,7 +145,16 @@ def _matches(document: dict[str, Any], query: dict[str, Any]) -> bool:
 def _seed_queue(database: FakeDatabase) -> list[ObjectId]:
     sellers = [ObjectId() for _ in range(4)]
     for position, seller_id in enumerate(sellers, start=1):
-        database["users"].insert_one({"_id": seller_id, "active": True})
+        database["users"].insert_one(
+            {
+                "_id": seller_id,
+                "emailNormalized": f"seller-{position}@example.test",
+                "role": "seller",
+                "active": True,
+                "newLeadsSeenAt": NOW,
+                "newLeadsSeenAssignmentSequence": 10,
+            }
+        )
         database["seller_queue"].insert_one(
             {"sellerId": seller_id, "position": position, "paused": False}
         )
@@ -151,6 +189,158 @@ def _command(key: str, **overrides: Any) -> ManualLeadCommand:
     }
     values.update(overrides)
     return ManualLeadCommand(**values)
+
+
+def _settings() -> Settings:
+    return Settings(
+        MONGODB_URI="mongodb://localhost:27017/?replicaSet=rs0",
+        MONGODB_DATABASE="gerec_leads",
+        APP_SECRET="manual-lead-route-test-secret",
+    )
+
+
+def _api_client(database: FakeDatabase, user: CurrentUser) -> TestClient:
+    app = create_app(settings=_settings(), database=database)
+    app.dependency_overrides[get_current_user] = lambda: user
+    return TestClient(app)
+
+
+def _manual_payload(**overrides: Any) -> dict[str, Any]:
+    payload = {
+        "name": "Contato manual",
+        "email": "Contato@Example.com",
+        "phone": "+55 11 99999-1234",
+        "campaign": None,
+        "source": None,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_admin_manual_lead_route_returns_public_contract_and_replays_idempotently() -> None:
+    """Breaks if the HTTP boundary leaks internals or ignores the idempotency header."""
+    database = FakeDatabase()
+    sellers = _seed_queue(database)
+    client = _api_client(database, CurrentUser("admin-yago", "admin@example.test", "admin"))
+
+    first = client.post(
+        "/api/admin/leads/manual",
+        headers={"Idempotency-Key": "manual-api-1"},
+        json=_manual_payload(),
+    )
+    replay = client.post(
+        "/api/admin/leads/manual",
+        headers={"Idempotency-Key": "manual-api-1"},
+        json=_manual_payload(),
+    )
+
+    assert first.status_code == 201
+    assert replay.status_code == 201
+    assert replay.json() == first.json()
+    assert first.json() == {
+        "leadId": first.json()["leadId"],
+        "manualQueueLeadId": first.json()["manualQueueLeadId"],
+        "assigneeId": str(sellers[0]),
+        "assignedAt": NOW.isoformat().replace("+00:00", "Z"),
+        "commercialStatus": "undefined",
+        "source": "manual",
+    }
+    assert len([lead for lead in database["leads"].documents if lead.get("source") == "manual"]) == 1
+
+
+def test_seller_cannot_create_manual_lead() -> None:
+    """Breaks if frontend visibility is the only protection around manual creation."""
+    database = FakeDatabase()
+    sellers = _seed_queue(database)
+    client = _api_client(
+        database,
+        CurrentUser(str(sellers[0]), "seller@example.test", "seller"),
+    )
+
+    response = client.post(
+        "/api/admin/leads/manual",
+        headers={"Idempotency-Key": "manual-forbidden"},
+        json=_manual_payload(),
+    )
+
+    assert response.status_code == 403
+    assert database["leads"].find_one({"source": "manual"}) is None
+
+
+@pytest.mark.parametrize(
+    ("payload", "headers"),
+    [
+        (_manual_payload(name="   "), {"Idempotency-Key": "manual-blank-name"}),
+        (_manual_payload(email="invalid"), {"Idempotency-Key": "manual-invalid-email"}),
+        (_manual_payload(phone="   "), {"Idempotency-Key": "manual-blank-phone"}),
+        (_manual_payload(), {}),
+    ],
+)
+def test_manual_lead_route_rejects_invalid_fields_and_missing_idempotency_key(
+    payload: dict[str, Any], headers: dict[str, str]
+) -> None:
+    """Breaks if malformed commands can reach the transactional write boundary."""
+    database = FakeDatabase()
+    _seed_queue(database)
+    client = _api_client(database, CurrentUser("admin-yago", "admin@example.test", "admin"))
+
+    response = client.post("/api/admin/leads/manual", headers=headers, json=payload)
+
+    assert response.status_code == 422
+    assert database["leads"].find_one({"source": "manual"}) is None
+
+
+def test_manual_assignment_appears_in_the_existing_seller_notification_window() -> None:
+    """Breaks if a manual assignment does not publish the dashboard notification sequence."""
+    database = FakeDatabase()
+    sellers = _seed_queue(database)
+    admin = _api_client(database, CurrentUser("admin-yago", "admin@example.test", "admin"))
+
+    created = admin.post(
+        "/api/admin/leads/manual",
+        headers={"Idempotency-Key": "manual-notification"},
+        json=_manual_payload(name="Lead da janela"),
+    )
+    seller = _api_client(
+        database,
+        CurrentUser(str(sellers[0]), "seller@example.test", "seller"),
+    )
+    snapshot = seller.get("/api/lead-notifications/new")
+
+    assert created.status_code == 201
+    assert snapshot.status_code == 200
+    assert snapshot.json()["watermarkSequence"] == 11
+    assert snapshot.json()["items"] == [
+        {
+            "leadId": created.json()["leadId"],
+            "contactName": "Lead da janela",
+            "assignedAt": NOW.isoformat(),
+        }
+    ]
+
+
+def test_reactivating_a_seller_reconciles_parked_manual_leads() -> None:
+    """Breaks if manual leads remain stranded after an administrator restores availability."""
+    database = FakeDatabase()
+    sellers = _seed_queue(database)
+    for seller in database["seller_queue"].documents:
+        seller["paused"] = True
+    parked = _service(database).create_manual_lead(
+        "admin-yago", _command("manual-reactivation"), NOW
+    )
+    assert parked.status == "parked"
+    client = _api_client(database, CurrentUser("admin-yago", "admin@example.test", "admin"))
+
+    response = client.patch(
+        f"/api/admin/users/{sellers[0]}/availability",
+        json={"paused": False},
+    )
+
+    assert response.status_code == 200
+    lead = database["leads"].find_one({"_id": ObjectId(parked.lead_id)})
+    assert lead["assignmentStatus"] == "assigned"
+    assert lead["assigneeId"] == sellers[0]
+    assert lead["assignmentType"] == "manual"
 
 
 def test_manual_creation_sets_undefined_status_and_a_backend_uuid4_identifier() -> None:

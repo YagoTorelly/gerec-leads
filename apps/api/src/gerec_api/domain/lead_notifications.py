@@ -68,6 +68,7 @@ class LeadNotificationService:
         self._now = now or (lambda: datetime.now(UTC))
 
     def for_seller(self, user: CurrentUser, session_token: str) -> NewLeadNotificationSnapshot:
+        """Read every assignment type through the single persisted notification watermark."""
         self._require_seller(user)
         watermark = self._timestamp(self._now(), label="clock")
         watermark_sequence = self._persistence.watermark_sequence()
