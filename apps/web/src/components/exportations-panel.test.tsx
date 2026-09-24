@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { Page, ExportationHistoryItem } from "../lib/api/types";
@@ -34,9 +34,7 @@ describe("ExportationsPanel", () => {
   it("oferece somente o Excel de leads e mostra todo o hist\u00f3rico aprovado", () => {
     const screen = render(<ExportationsPanel history={history} />);
 
-    const download = screen.getByRole("link", { name: "Exportar leads em Excel" });
-    expect(download.getAttribute("href")).toBe("/exportacoes/download");
-    expect(download.hasAttribute("download")).toBe(true);
+    const download = screen.getByRole("button", { name: "Exportar leads em Excel" });
     expect(screen.queryByRole("link", { name: /hist\u00f3rico/i })).toBeNull();
     expect(screen.getByText("22/09/2026, 12:30")).toBeTruthy();
     expect(screen.getByText("Yago")).toBeTruthy();
@@ -56,7 +54,7 @@ describe("ExportationsPanel", () => {
       />,
     );
 
-    expect(screen.getByRole("link", { name: "Exportar leads em Excel" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Exportar leads em Excel" })).toBeTruthy();
     const retry = screen.getByRole("link", { name: "Tentar novamente" });
     expect(retry.getAttribute("href")).toBe("/exportacoes?page=2");
     expect(

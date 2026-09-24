@@ -1,6 +1,7 @@
 import { Pagination } from "./pagination";
 import type { ExportationHistoryItem, Page } from "../lib/api/types";
 import { formatDateTime } from "../lib/dashboard/format";
+import { ExportLeadsButton } from "./export-leads-button";
 
 const FILTER_LABELS: Record<string, string> = {
   situation: "Situação",
@@ -63,9 +64,7 @@ export function ExportationsPanel({
               Baixe todos os leads em Excel. O arquivo não inclui tratativas nem o histórico abaixo.
             </p>
           </div>
-          <a className="table-action exportations-download" href="/exportacoes/download" download>
-            Exportar leads em Excel
-          </a>
+          <ExportLeadsButton />
         </div>
       </section>
 
