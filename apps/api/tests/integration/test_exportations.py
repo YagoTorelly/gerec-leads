@@ -16,7 +16,7 @@ from openpyxl import load_workbook
 from gerec_api.auth.dependencies import get_current_user
 from gerec_api.auth.sessions import CurrentUser
 from gerec_api.config import Settings
-from gerec_api.domain.exportations import ExportationError, ExportationService
+from gerec_api.domain.exportations import ExportationError, ExportationService, _commercial_status_label
 from gerec_api.infrastructure.mongo.collections import MongoCollections
 from gerec_api.infrastructure.mongo.exportation_repository import MongoExportationRepository
 from gerec_api.infrastructure.mongo.bootstrap import SCHEMA_VALIDATORS
@@ -222,7 +222,7 @@ def test_exportation_service_builds_leads_only_workbook_with_text_and_sao_paulo_
         "ana@example.test",
         "Campanha Empresas",
         "Indicação",
-        "potential",
+        "Potencial",
         "Não",
         "2026-09-22T12:30:00-03:00",
         "2026-09-22T12:35:00-03:00",
@@ -236,6 +236,14 @@ def test_exportation_service_builds_leads_only_workbook_with_text_and_sao_paulo_
     assert result.media_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     assert database[MongoCollections.EXPORTATIONS].documents[0]["status"] == "success"
     assert database[MongoCollections.EXPORTATIONS].documents[0]["administratorName"] == "Yago"
+
+
+def test_exportation_translates_every_supported_commercial_status_to_portuguese() -> None:
+    assert _commercial_status_label("undefined") == "Indefinido"
+    assert _commercial_status_label("potential") == "Potencial"
+    assert _commercial_status_label("negotiation") == "Negociação"
+    assert _commercial_status_label("won") == "Ganho"
+    assert _commercial_status_label("unexpected") == "Indefinido"
 
 
 def test_empty_export_is_a_valid_header_only_workbook_and_records_zero() -> None:

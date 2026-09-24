@@ -31,6 +31,18 @@ EXPORT_HEADERS = (
     "Tipo de origem",
 )
 
+_COMMERCIAL_STATUS_LABELS = {
+    "undefined": "Indefinido",
+    "indefinido": "Indefinido",
+    "potential": "Potencial",
+    "potencial": "Potencial",
+    "negotiation": "Negociação",
+    "negociacao": "Negociação",
+    "negociação": "Negociação",
+    "won": "Ganho",
+    "ganho": "Ganho",
+}
+
 
 class ExportationError(RuntimeError):
     """Safe, recoverable failure exposed by the export application service."""
@@ -219,7 +231,7 @@ def _workbook_bytes(leads: list[dict[str, Any]]) -> bytes:
                 _text(lead.get("email")),
                 _text(lead.get("campaign")),
                 _text(lead.get("origin")),
-                _text(lead.get("commercialStatus")),
+                _commercial_status_label(lead.get("commercialStatus")),
                 "Sim" if bool(lead.get("isDisqualified")) else "Não",
                 _local_datetime(lead.get("createdAt")),
                 _local_datetime(lead.get("assignedAt")),
@@ -235,6 +247,11 @@ def _workbook_bytes(leads: list[dict[str, Any]]) -> bytes:
     output = BytesIO()
     workbook.save(output)
     return output.getvalue()
+
+
+def _commercial_status_label(value: Any) -> str:
+    normalized = str(value or "").strip().casefold()
+    return _COMMERCIAL_STATUS_LABELS.get(normalized, "Indefinido")
 
 
 def _administrator(actor: Any) -> tuple[str, str]:
