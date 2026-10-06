@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-  [string]$ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path,
+  [string]$ProjectRoot,
   [string]$MongoUri = $env:MONGODB_URI,
   [string]$MongoDatabase = $env:MONGODB_DATABASE,
   [string]$AppSecret = $env:APP_SECRET,
@@ -10,6 +10,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
+  $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+}
 $logDirectory = Join-Path $ProjectRoot ".local\logs"
 $null = New-Item -ItemType Directory -Force -Path $logDirectory
 

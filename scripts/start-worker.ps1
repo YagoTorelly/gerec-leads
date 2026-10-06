@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-  [string]$ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path,
+  [string]$ProjectRoot,
   [string]$MongoUri = $env:MONGODB_URI,
   [string]$MongoDatabase = $env:MONGODB_DATABASE,
   [string]$AppSecret = $env:APP_SECRET,
@@ -8,6 +8,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
+  $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+}
 
 if ([string]::IsNullOrWhiteSpace($MongoUri)) { throw "Define MONGODB_URI or pass -MongoUri." }
 if ([string]::IsNullOrWhiteSpace($MongoDatabase)) { throw "Define MONGODB_DATABASE or pass -MongoDatabase." }

@@ -16,8 +16,12 @@ from gerec_api.automation.workbook_adapter import EXPECTED_HEADERS, InvalidWorkb
 from gerec_api.domain.normalization import NormalizedSourceRow, normalize_source_row
 
 
+FIXED_HEADERS = EXPECTED_HEADERS[:12]
+LEAD_STATUS_HEADER = "lead_status"
+
+
 class GoogleSheetsAdapter:
-    """Read one complete `Leads!A:Q` snapshot through the Sheets Values API."""
+    """Read every campaign tab while allowing a variable question section."""
 
     def __init__(
         self,
@@ -56,25 +60,71 @@ class GoogleSheetsAdapter:
         )
 
     def read(self) -> Iterable[NormalizedSourceRow]:
-        values = self._fetch(self._url).get("values")
+        for sheet_title in self._sheet_titles():
+            yield from self._read_sheet(sheet_title)
+
+    def _sheet_titles(self) -> Iterable[str]:
+        response = self._fetch(self._metadata_url)
+        metadata = response.get("sheets")
+        # Keep the narrow one-range adapter contract usable in isolated tests.
+        if not isinstance(metadata, list) and isinstance(response.get("values"), list):
+            yield self._range_name.split("!", 1)[0] or "Leads"
+            return
+        if not isinstance(metadata, list) or not metadata:
+            raise InvalidWorkbookError("Google Sheets response has no tabs")
+        for sheet in metadata:
+            properties = sheet.get("properties") if isinstance(sheet, dict) else None
+            title = properties.get("title") if isinstance(properties, dict) else None
+            if isinstance(title, str) and title.strip():
+                yield title.strip()
+
+    def _read_sheet(self, sheet_title: str) -> Iterable[NormalizedSourceRow]:
+        values = self._fetch(self._values_url(sheet_title)).get("values")
         if not isinstance(values, list) or not values:
-            raise InvalidWorkbookError("Google Sheets response has no headers")
-        if tuple(values[0]) != EXPECTED_HEADERS:
-            raise InvalidWorkbookError("Google Sheets headers do not match the exact A-Q contract")
+            raise InvalidWorkbookError(f"Google Sheets tab {sheet_title!r} has no headers")
+        headers = tuple(str(value).strip() for value in values[0])
+        self._validate_headers(sheet_title, headers)
         for source_values in values[1:]:
-            row = [*source_values, *([None] * (len(EXPECTED_HEADERS) - len(source_values)))]
-            row = row[: len(EXPECTED_HEADERS)]
+            row = [*source_values, *([None] * (len(headers) - len(source_values)))]
+            row = row[: len(headers)]
             if str(row[0]).strip() in self._skip_source_ids:
                 continue
             if any(value is not None and str(value).strip() for value in row):
+                payload = dict(zip(headers, row, strict=True))
+                payload["source_sheet_name"] = sheet_title
+                if not payload.get("campaign_name"):
+                    payload["campaign_name"] = sheet_title
                 yield normalize_source_row(
-                    dict(zip(EXPECTED_HEADERS, row, strict=True)),
+                    payload,
                     required_fields={"contact_name", "phone", "email"},
                 )
 
+    @staticmethod
+    def _validate_headers(sheet_title: str, headers: tuple[str, ...]) -> None:
+        if len(headers) <= len(FIXED_HEADERS):
+            raise InvalidWorkbookError(
+                f"Google Sheets tab {sheet_title!r} must contain fixed columns and lead_status"
+            )
+        if headers[: len(FIXED_HEADERS)] != FIXED_HEADERS:
+            raise InvalidWorkbookError(
+                f"Google Sheets tab {sheet_title!r} has invalid fixed columns A-L"
+            )
+        if headers[-1] != LEAD_STATUS_HEADER:
+            raise InvalidWorkbookError(
+                f"Google Sheets tab {sheet_title!r} must end with lead_status"
+            )
+        if len(set(headers)) != len(headers):
+            raise InvalidWorkbookError(
+                f"Google Sheets tab {sheet_title!r} contains duplicate headers"
+            )
+
     @property
-    def _url(self) -> str:
-        return f"https://sheets.googleapis.com/v4/spreadsheets/{quote(self._spreadsheet_id, safe='')}/values/{quote(self._range_name, safe='')}"
+    def _metadata_url(self) -> str:
+        return f"https://sheets.googleapis.com/v4/spreadsheets/{quote(self._spreadsheet_id, safe='')}?fields=sheets.properties"
+
+    def _values_url(self, sheet_title: str) -> str:
+        range_name = f"{sheet_title}!A:ZZ"
+        return f"https://sheets.googleapis.com/v4/spreadsheets/{quote(self._spreadsheet_id, safe='')}/values/{quote(range_name, safe='')}"
 
     def _fetch_json(self, url: str) -> dict[str, Any]:
         request = Request(url, headers={"Authorization": f"Bearer {self._access_token}"})

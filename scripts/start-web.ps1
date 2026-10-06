@@ -1,11 +1,15 @@
 [CmdletBinding()]
 param(
-  [string]$ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path,
+  [string]$ProjectRoot,
   [string]$ApiUrl = $env:NEXT_PUBLIC_API_URL,
   [int]$Port = 3000
 )
 
 $ErrorActionPreference = "Stop"
+
+if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
+  $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+}
 
 if ([string]::IsNullOrWhiteSpace($ApiUrl)) { throw "Define NEXT_PUBLIC_API_URL or pass -ApiUrl." }
 

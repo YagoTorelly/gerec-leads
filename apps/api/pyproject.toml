@@ -15,6 +15,7 @@ dependencies = [
   "pydantic-settings>=2.6,<3",
   "pymongo>=4.10,<5",
   "requests>=2.32,<3",
+  "tzdata>=2024.1",
   "uvicorn[standard]>=0.30,<1",
 ]
 
